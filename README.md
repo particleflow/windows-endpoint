@@ -26,7 +26,7 @@ Use Node 24. No npm install is needed for the unit suite:
 
 ```sh
 node endpoint.mjs help
-node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs
+node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs
 ```
 
 The `Windows endpoint delivery checks` workflow runs on every pull request and
@@ -46,6 +46,11 @@ exact unsupported response while preserving the server, panes and an in-flight
 synthetic command. This is rejection safety, not seamless handoff support.
 Future Windows updates must use a controlled stop/restore design; update and
 rollback are not implemented by the current endpoint.
+
+The next transfer milestone consumes the fixed producer artifact instead of
+copying its Go implementation. The current artifact lacks the requested lifecycle
+summary, so automatic transfer wakes remain blocked. See the concrete
+[producer handoff and consumer acceptance entry points](docs/transfer-integration-gap.md).
 
 ## Boundaries
 
