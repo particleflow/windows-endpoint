@@ -1,0 +1,56 @@
+name: Windows endpoint delivery checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  delivery:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
+      - name: Verify delivery boundary and recovery fixtures
+        run: node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs
+      - name: Verify native PowerShell bootstrap and hash rejection
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $node = (Get-Command node.exe).Source
+          $hash = (Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash.ToLowerInvariant()
+          & ./endpoint.ps1 -NodePath $node -NodeSha256 $hash help
+          if ($LASTEXITCODE -ne 0) { throw 'Bootstrap failed' }
+          & ./endpoint.ps1 -NodePath $node -NodeSha256 ('0' * 64) help
+          if ($LASTEXITCODE -ne 2) { throw 'Bootstrap accepted incorrect hash' }
+          exit 0
+  official-dependencies:
+    name: Official Windows dependencies in isolated roots
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Assemble fixed official dependency fixture
+        shell: pwsh
+        run: ./official-smoke/prepare.ps1 -Root '${{ runner.temp }}/endpoint official Unicode 空格'
+      - name: Exercise actual binaries with no runner tool PATH
+        shell: pwsh
+        run: |
+          & '${{ runner.temp }}/endpoint official Unicode 空格/node/node.exe' ./official-smoke/verify.mjs '${{ runner.temp }}/endpoint official Unicode 空格'
+          if ($LASTEXITCODE -ne 0) { throw 'Official dependency smoke failed' }
+      - name: Exercise unified foreground lifecycle with official components
+        shell: pwsh
+        run: |
+          & '${{ runner.temp }}/endpoint official Unicode 空格/node/node.exe' ./official-smoke/lifecycle.mjs '${{ runner.temp }}/endpoint official Unicode 空格'
+          if ($LASTEXITCODE -ne 0) { throw 'Official lifecycle smoke failed' }

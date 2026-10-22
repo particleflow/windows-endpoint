@@ -1,0 +1,356 @@
+import { createHash, randomUUID } from 'node:crypto'
+import { createReadStream } from 'node:fs'
+import * as fs from 'node:fs/promises'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
+
+// Delivery coordination only. No Agent, task scheduler, transfer loop or server.
+const here = path.dirname(fileURLToPath(import.meta.url))
+export const catalog = JSON.parse(await fs.readFile(path.join(here, 'dependencies.json'), 'utf8'))
+const hashPattern = /^[a-f0-9]{64}$/
+const idPattern = /^[a-zA-Z0-9_-]{1,64}$/
+const uuidPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i
+const maxBundleBytes = 4 * 1024 ** 3
+const pathFields = ['bundleRoot', 'sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir', 'transferConfigDir', 'transferStateDir']
+const configFields = ['schema', ...pathFields, 'manifestSha256', 'nasOrigin', 'deviceId', 'instanceId', 'runtimeId', 'session']
+
+export class EndpointError extends Error {
+  constructor(code) { super(code); this.code = code }
+}
+function requireThat(ok, code) { if (!ok) throw new EndpointError(code) }
+function keys(value, required, optional = []) {
+  requireThat(value && typeof value === 'object' && !Array.isArray(value), 'invalid_object')
+  requireThat(required.every(k => Object.hasOwn(value, k)) && Object.keys(value).every(k => [...required, ...optional].includes(k)), 'unknown_or_missing_field')
+}
+function samePath(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
+}
+function overlaps(a, b) {
+  return [path.relative(a, b), path.relative(b, a)].some(r => r === '' || (!path.isAbsolute(r) && r !== '..' && !r.startsWith(`..${path.sep}`)))
+}
+function absolute(value) {
+  requireThat(typeof value === 'string' && path.isAbsolute(value) && value === path.normalize(value) && !/[\x00-\x1f]/.test(value), 'absolute_clean_path_required')
+  if (process.platform === 'win32') requireThat(/^[a-z]:\\/i.test(value) && !value.slice(2).includes(':'), 'local_drive_required')
+  return value
+}
+function relative(value) {
+  requireThat(typeof value === 'string' && value.length <= 240 && value.split('/').every(p => /^[^<>:"\\|?*\x00-\x1f]+$/.test(p) && !/^\.+$/.test(p) && !/[. ]$/.test(p) && !/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(p)), 'unsafe_package_path')
+  return value
+}
+async function regular(file) {
+  const st = await fs.lstat(file)
+  requireThat(st.isFile() && !st.isSymbolicLink() && st.nlink === 1, 'regular_private_copy_required')
+  return st
+}
+async function canonical(file) {
+  requireThat(samePath(await fs.realpath(file), file), 'noncanonical_path')
+  // Check every ancestor, including junctions; no package traversal through links.
+  for (let p = file; ; p = path.dirname(p)) {
+    requireThat(!(await fs.lstat(p)).isSymbolicLink(), 'reparse_point_rejected')
+    if (p === path.dirname(p)) break
+  }
+}
+async function readJSON(file, limit = 65536) {
+  requireThat((await regular(file)).size <= limit, 'json_too_large')
+  try { return JSON.parse(await fs.readFile(file, 'utf8')) }
+  catch { throw new EndpointError('invalid_json') }
+}
+export async function digest(file) {
+  const hash = createHash('sha256')
+  for await (const chunk of createReadStream(file)) hash.update(chunk)
+  return hash.digest('hex')
+}
+
+export function validateConfig(config) {
+  keys(config, configFields)
+  requireThat(config.schema === 1, 'config_version_unsupported')
+  for (const field of pathFields) absolute(config[field])
+  requireThat(hashPattern.test(config.manifestSha256), 'trusted_manifest_hash_required')
+  let origin
+  try { origin = new URL(config.nasOrigin) } catch { throw new EndpointError('https_origin_required') }
+  requireThat(origin.protocol === 'https:' && origin.origin === config.nasOrigin && !origin.hostname.endsWith('.invalid'), 'https_origin_required')
+  requireThat(uuidPattern.test(config.deviceId) && uuidPattern.test(config.runtimeId) && idPattern.test(config.instanceId) && idPattern.test(config.session), 'existing_identity_required')
+  requireThat(path.basename(config.herdrConfigRoot) === 'herdr' && path.basename(config.herdrStateRoot) === 'herdr', 'herdr_root_name_required')
+  requireThat(samePath(config.transferConfigDir, path.join(config.herdrConfigRoot, 'plugins/config/memoh.delivery')), 'herdr_plugin_config_mismatch')
+  requireThat(samePath(config.transferStateDir, path.join(config.herdrStateRoot, 'plugins/memoh.delivery')), 'herdr_plugin_state_mismatch')
+  for (const field of pathFields.filter(f => !['sourceRoot', 'bundleRoot'].includes(f))) {
+    requireThat(!overlaps(config.sourceRoot, config[field]) && !overlaps(config.bundleRoot, config[field]), 'data_package_overlap')
+  }
+  requireThat(!overlaps(config.sourceRoot, config.bundleRoot) && !overlaps(config.transferConfigDir, config.transferStateDir), 'data_package_overlap')
+  return config
+}
+
+async function walk(root, rel = '') {
+  const result = []
+  for (const item of await fs.readdir(path.join(root, rel), { withFileTypes: true })) {
+    const name = rel ? `${rel}/${item.name}` : item.name
+    relative(name)
+    requireThat(!item.isSymbolicLink(), 'reparse_point_rejected')
+    if (item.isDirectory()) result.push(...await walk(root, name))
+    else { await regular(path.join(root, name)); result.push(name) }
+    requireThat(result.length <= 50000, 'inventory_limit')
+  }
+  return result
+}
+
+export async function verifyBundle(root, expectedHash) {
+  absolute(root)
+  await canonical(root)
+  requireThat(hashPattern.test(expectedHash), 'trusted_manifest_hash_required')
+  const manifestFile = path.join(root, 'bundle.json')
+  await regular(manifestFile)
+  requireThat(await digest(manifestFile) === expectedHash, 'manifest_hash_mismatch')
+  const manifest = await readJSON(manifestFile, 8 * 1024 ** 2)
+  keys(manifest, ['schema', 'platform', 'qualification', 'components', 'files'])
+  requireThat(manifest.schema === 1 && manifest.platform === catalog.platform && manifest.qualification === 'review-only', 'bundle_contract_unsupported')
+  keys(manifest.components, Object.keys(catalog.components))
+  for (const [id, spec] of Object.entries(catalog.components)) {
+    const component = manifest.components[id]
+    keys(component, ['version', 'source', 'revision', 'entry'])
+    requireThat(component.source === spec.source && component.entry === spec.entry, 'component_source_mismatch')
+    requireThat(typeof component.version === 'string' && /^\d+\.\d+\.\d+(?:\.windows\.\d+)?$/.test(component.version), 'exact_version_required')
+    requireThat(typeof component.revision === 'string' && /^(?:[a-f0-9]{40}|v\d+\.\d+\.\d+(?:\.windows\.\d+)?)$/.test(component.revision), 'exact_revision_required')
+    requireThat((spec.version === null || component.version === spec.version) && (spec.revision === null || component.revision === spec.revision), 'component_version_mismatch')
+  }
+  requireThat(Array.isArray(manifest.files) && manifest.files.length > 0 && manifest.files.length <= 50000, 'inventory_limit')
+  const seen = new Set()
+  let totalBytes = 0
+  for (const file of manifest.files) {
+    keys(file, ['path', 'size', 'sha256'])
+    relative(file.path)
+    requireThat(file.path.toLowerCase() !== 'bundle.json' && !seen.has(file.path.toLowerCase()), 'duplicate_inventory_path')
+    seen.add(file.path.toLowerCase())
+    requireThat(Number.isSafeInteger(file.size) && file.size >= 0 && hashPattern.test(file.sha256), 'invalid_inventory_entry')
+    totalBytes += file.size
+    requireThat(totalBytes <= maxBundleBytes, 'bundle_capacity_limit')
+  }
+  const needed = [...Object.values(catalog.components).flatMap(c => [c.entry, ...(c.package ? [c.package] : [])]), ...catalog.requiredFiles]
+  requireThat(needed.every(f => seen.has(f.toLowerCase())), 'component_missing')
+  const actual = (await walk(root)).filter(f => f !== 'bundle.json').sort()
+  requireThat(JSON.stringify(actual) === JSON.stringify(manifest.files.map(f => f.path).sort()), 'inventory_mismatch')
+  for (const file of manifest.files) {
+    const full = path.join(root, file.path)
+    await canonical(full)
+    requireThat((await regular(full)).size === file.size && await digest(full) === file.sha256, 'payload_hash_mismatch')
+  }
+  for (const spec of Object.values(catalog.components).filter(c => c.package)) {
+    const pkg = await readJSON(path.join(root, spec.package))
+    requireThat(pkg.name === spec.name && pkg.version === spec.version, 'npm_package_mismatch')
+  }
+  const transfer = await readJSON(path.join(root, 'transfer/SHA256SUMS.json'))
+  requireThat(transfer.source_commit === manifest.components.transfer.revision && transfer.arch === 'amd64', 'transfer_provenance_mismatch')
+  for (const name of ['transferqueue.exe', 'herdr-plugin.toml']) {
+    const proof = transfer.files?.find(f => f.name === name)
+    requireThat(proof?.sha256 === manifest.files.find(f => f.path === `transfer/${name}`)?.sha256, 'transfer_provenance_mismatch')
+  }
+  return { manifest, totalBytes }
+}
+
+// Copy to a content-addressed candidate; never switch current binaries or touch data.
+// Incomplete .pending-* directories are inert. Retry creates a new one; no guessing
+// at a stale lock/PID and no destructive recovery. Explicit retention is deliberate.
+export async function stageBundle(source, destination, expectedHash) {
+  absolute(destination)
+  await canonical(destination)
+  requireThat(!overlaps(source, destination), 'stage_root_overlap')
+  const { manifest, totalBytes } = await verifyBundle(source, expectedHash)
+  const target = path.join(destination, expectedHash)
+  try {
+    await fs.lstat(target)
+    await verifyBundle(target, expectedHash)
+    return { state: 'already_staged', manifestSha256: expectedHash }
+  } catch (e) { if (e.code !== 'ENOENT') throw e }
+  const space = await fs.statfs(destination)
+  requireThat(space.bavail * space.bsize >= totalBytes + 64 * 1024 ** 2, 'insufficient_staging_space')
+  const pending = path.join(destination, `.pending-${expectedHash}-${randomUUID()}`)
+  await fs.mkdir(pending)
+  for (const file of [...manifest.files.map(f => f.path), 'bundle.json']) {
+    const output = path.join(pending, file)
+    await fs.mkdir(path.dirname(output), { recursive: true })
+    await fs.copyFile(path.join(source, file), output, 1)
+    const handle = await fs.open(output, 'r+')
+    try { await handle.sync() } finally { await handle.close() }
+  }
+  await verifyBundle(pending, expectedHash)
+  try { await fs.rename(pending, target) }
+  catch (error) {
+    if (!['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES'].includes(error.code)) throw error
+    await verifyBundle(target, expectedHash) // competing identical publication only
+    return { state: 'already_staged', manifestSha256: expectedHash, retainedPending: true }
+  }
+  return { state: 'staged_review_only', manifestSha256: expectedHash }
+}
+
+export async function configure(from, to) {
+  absolute(to)
+  const config = validateConfig(await readJSON(from))
+  await canonical(path.dirname(to))
+  requireThat(!pathFields.some(f => overlaps(config[f], to)), 'configuration_location_rejected')
+  // Exclusive creation; upgrading never overwrites the references or credentials.
+  const handle = await fs.open(to, 'wx')
+  try { await handle.writeFile(`${JSON.stringify(config, null, 2)}\n`); await handle.sync() }
+  finally { await handle.close() }
+  return { state: 'references_saved', credentialsRead: false, activation: 'blocked' }
+}
+
+export function managedEnvironment(config, inherited = process.env) {
+  const root = config.bundleRoot
+  const env = { ...inherited }
+  // Keep the caller's ordinary OS environment but remove shell/runtime injection.
+  for (const k of Object.keys(env)) {
+    if (/^(PATH|NODE_OPTIONS|NODE_PATH|BASH_ENV|BASH_FUNC_.*|ENV|CDPATH|SHELLOPTS|BASHOPTS|HERDR_.*|XDG_CONFIG_HOME|XDG_STATE_HOME|AGENVO_.*|PI_CODING_AGENT_DIR)$/i.test(k)) delete env[k]
+  }
+  const system = path.join(inherited.SystemRoot || 'C:\\Windows', 'System32')
+  env.PATH = [path.join(root, 'node'), path.join(root, 'herdr'), path.join(root, 'node_modules/.bin'), path.join(root, 'git/bin'), path.join(root, 'git/usr/bin'), path.join(root, 'git/mingw64/bin'), path.join(root, 'git/cmd'), system, path.join(system, 'WindowsPowerShell/v1.0')].join(path.delimiter)
+  env.HERDR_CONFIG_PATH = path.join(config.herdrConfigRoot, 'config.toml')
+  env.XDG_CONFIG_HOME = path.dirname(config.herdrConfigRoot)
+  env.XDG_STATE_HOME = path.dirname(config.herdrStateRoot)
+  env.AGENVO_CONFIG_DIR = config.agenvoConfigDir
+  env.PI_CODING_AGENT_DIR = config.piConfigDir
+  return env
+}
+export function launchPlan(config) {
+  const entry = id => path.join(config.bundleRoot, catalog.components[id].entry)
+  return {
+    activation: 'blocked', reason: 'compatibility_qualification_pending',
+    commands: [
+      { component: 'herdr', file: entry('herdr'), args: ['--session', config.session, 'server'] },
+      { component: 'connector', file: entry('node'), args: [entry('connector'), 'run'] },
+    ],
+    environment: { PATH: managedEnvironment(config).PATH, HERDR_CONFIG_PATH: path.join(config.herdrConfigRoot, 'config.toml'), XDG_CONFIG_HOME: path.dirname(config.herdrConfigRoot), XDG_STATE_HOME: path.dirname(config.herdrStateRoot), AGENVO_CONFIG_DIR: config.agenvoConfigDir, PI_CODING_AGENT_DIR: config.piConfigDir },
+    transfer: { owner: 'existing Herdr memoh.delivery actions', scheduler: 'existing task/result flow' },
+  }
+}
+function probe(file, args, env) {
+  const result = spawnSync(file, args, { env, encoding: 'utf8', timeout: 10000, maxBuffer: 16384, windowsHide: true, shell: false })
+  requireThat(!result.error && result.status === 0, 'dependency_probe_failed')
+  return result.stdout.trim()
+}
+
+export async function doctor(config, run = probe) {
+  validateConfig(config)
+  const checks = []
+  async function check(name, action) {
+    try { await action(); checks.push({ check: name, state: 'passed' }); return true }
+    catch (e) { checks.push({ check: name, state: 'blocked', code: e instanceof EndpointError ? e.code : 'dependency_unavailable' }); return false }
+  }
+  let bundle
+  const bundleOK = await check('bundle_inventory', async () => { bundle = await verifyBundle(config.bundleRoot, config.manifestSha256) })
+  await check('windows_host', () => requireThat(process.platform === 'win32' && process.arch === 'x64', 'windows_x64_required'))
+  for (const field of pathFields.filter(f => f !== 'bundleRoot')) await check(field, async () => {
+    await canonical(config[field]); requireThat((await fs.stat(config[field])).isDirectory(), 'directory_required')
+  })
+  await check('existing_device_mapping', async () => {
+    const cfg = await readJSON(path.join(config.agenvoConfigDir, 'config.json'))
+    requireThat(cfg.schema === 1 && cfg.deviceId === config.deviceId && Array.isArray(cfg.instances), 'device_identity_mismatch')
+    const instances = cfg.instances.filter(i => i.id === config.instanceId)
+    requireThat(instances.length === 1, 'instance_identity_mismatch')
+    const i = instances[0]
+    requireThat(i.kind === 'herdr' && samePath(i.binary, path.join(config.bundleRoot, catalog.components.herdr.entry)) && samePath(i.configRoot, config.herdrConfigRoot) && samePath(i.cwd, config.sourceRoot), 'approved_instance_path_mismatch')
+    // Check presence only. Never read/copy/refresh the official authentication file.
+    requireThat((await regular(path.join(config.agenvoConfigDir, 'credentials.json'))).size > 0, 'connector_credentials_missing')
+  })
+  await check('official_agent_configuration', async () => {
+    requireThat((await regular(path.join(config.piConfigDir, 'auth.json'))).size > 0, 'pi_authentication_missing')
+    await regular(path.join(config.herdrConfigRoot, 'config.toml'))
+  })
+  await check('transfer_configuration', async () => {
+    const cfg = await readJSON(path.join(config.transferConfigDir, 'transfer.json'), 8192)
+    keys(cfg, ['version', 'origin', 'source_root'])
+    requireThat(cfg.version === 1 && cfg.origin === config.nasOrigin && samePath(cfg.source_root, config.sourceRoot), 'transfer_configuration_mismatch')
+    requireThat((await regular(path.join(config.transferConfigDir, 'device.credential'))).size > 0, 'transfer_credential_missing')
+  })
+  await check('existing_transfer_plugin', async () => {
+    const registry = await readJSON(path.join(config.herdrConfigRoot, 'plugins.json'))
+    requireThat(Array.isArray(registry), 'plugin_registry_invalid')
+    const plugins = registry.filter(p => p.plugin_id === 'memoh.delivery')
+    requireThat(plugins.length === 1, 'transfer_plugin_missing')
+    const plugin = plugins[0]
+    const root = path.join(config.bundleRoot, 'transfer')
+    requireThat(plugin.enabled === true && plugin.version === catalog.components.transfer.version && samePath(plugin.plugin_root, root) && samePath(plugin.manifest_path, path.join(root, 'herdr-plugin.toml')), 'transfer_plugin_mapping_mismatch')
+  })
+  let connection = 'authentication_unverified'
+  try {
+    const status = await readJSON(path.join(config.agenvoConfigDir, 'status.json'))
+    const age = Date.now() - status.updatedAt
+    if (status.deviceId === config.deviceId && Number.isFinite(age) && age >= 0 && age <= 120000) {
+      if (['handshake_401', 'handshake_403'].includes(status.lastError)) connection = 'authentication_required'
+      else if (status.lastError === 'handshake_426') connection = 'protocol_upgrade_required'
+      else if (status.state === 'needs_attention') connection = 'needs_attention'
+      else if (status.state === 'online') connection = 'online_snapshot_unverified'
+    }
+  } catch { /* Optional official status snapshot; absence is unknown, not READY. */ }
+  // Only execute inventory-verified dependencies on their target OS.
+  if (bundleOK && process.platform === 'win32' && process.arch === 'x64') {
+    checks.push(...await verifyToolchain(config, bundle.manifest.components.git.version, run))
+  }
+  return {
+    schema: 1, ready: false, activation: 'blocked', checks,
+    capabilities: { connection, agent: 'readiness_unverified', desktop: 'unsupported_by_command_connector', transfer: 'native_storage_and_route_unverified' },
+    lifecycle: { owner: 'unified_endpoint', implementation: 'pending', idleQueueWake: 'missing', herdrStartupHook: 'available_one_shot_only', connectorReconnect: 'network_only', automaticRecovery: false },
+    blockers: [...catalog.blockers],
+    recovery: 'No restart or task resubmission. Authentication failure requires the existing authentication owner.',
+  }
+}
+
+// Shared by doctor and the isolated official-binary CI harness. Callers must
+// establish artifact provenance first. This never grants endpoint qualification.
+export async function verifyToolchain(config, gitVersion, run = probe) {
+  requireThat(process.platform === 'win32' && process.arch === 'x64', 'windows_x64_required')
+  const checks = []
+  async function check(name, action) {
+    try { await action(); checks.push({ check: name, state: 'passed' }) }
+    catch (e) { checks.push({ check: name, state: 'blocked', code: e instanceof EndpointError ? e.code : 'dependency_unavailable' }) }
+  }
+  const env = managedEnvironment(config)
+  const entry = id => path.join(config.bundleRoot, catalog.components[id].entry)
+  await check('git_version', () => requireThat(run(path.join(config.bundleRoot, 'git/cmd/git.exe'), ['--version'], env) === `git version ${gitVersion}`, 'executable_version_mismatch'))
+  await check('connector_version', () => {
+    let version
+    try { version = JSON.parse(run(entry('node'), [entry('connector'), '--version'], env)).version } catch { throw new EndpointError('executable_version_mismatch') }
+    requireThat(version === catalog.components.connector.version, 'executable_version_mismatch')
+  })
+  for (const id of ['node', 'herdr']) await check(`${id}_version`, () => {
+    const text = run(entry(id), ['--version'], env)
+    requireThat(text === `${id === 'node' ? 'v' : 'herdr '}${catalog.components[id].version}`, 'executable_version_mismatch')
+  })
+  await check('git_bash_toolchain', () => {
+    const script = 'case "$(uname -s)" in MINGW*|MSYS*) ;; *) exit 91;; esac; for t in base64 cygpath sha256sum wc mkdir mv rm rmdir node pi herdr; do command -v "$t" >/dev/null || exit 92; done; printf endpoint-git-bash-ok'
+    requireThat(run(entry('git'), ['--noprofile', '--norc', '-c', script], env) === 'endpoint-git-bash-ok', 'git_bash_required')
+  })
+  await check('pi_version', () => requireThat(run(entry('node'), [entry('pi'), '--version'], env) === catalog.components.pi.version, 'executable_version_mismatch'))
+  return checks
+}
+
+export async function main(args) {
+  const [command, ...rest] = args
+  const options = {}
+  for (let i = 0; i < rest.length; i += 2) {
+    requireThat(/^--[a-z-]+$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'invalid_arguments')
+    options[rest[i]] = rest[i + 1]
+  }
+  if (command === 'help' || !command) return { commands: ['configure --from FILE --config FILE', 'doctor --config FILE', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256'], status: 'review-only; start/activate/update/rollback/uninstall blocked pending qualification' }
+  if (['start', 'activate', 'update', 'rollback', 'uninstall'].includes(command)) throw new EndpointError('qualification_required_no_runtime_or_data_changed')
+  if (command === 'configure') { keys(options, ['--from', '--config']); return configure(options['--from'], options['--config']) }
+  if (command === 'stage') { keys(options, ['--source', '--destination', '--manifest-sha256']); return stageBundle(options['--source'], options['--destination'], options['--manifest-sha256']) }
+  requireThat(['doctor', 'plan'].includes(command), 'unknown_command')
+  keys(options, ['--config'])
+  const config = validateConfig(await readJSON(options['--config']))
+  if (command === 'doctor') return doctor(config)
+  await verifyBundle(config.bundleRoot, config.manifestSha256)
+  return launchPlan(config)
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const result = await main(process.argv.slice(2))
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+    if (result.ready === false) process.exitCode = 2
+  } catch (e) {
+    // Do not echo input, paths, native stdout/stderr, config or credentials.
+    process.stderr.write(`${JSON.stringify({ error: e instanceof EndpointError ? e.code : 'operation_failed' })}\n`)
+    process.exitCode = 2
+  }
+}
