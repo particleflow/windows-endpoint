@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto'
 import { fork } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { DeploymentTransactions, deploymentReferences } from './deployment.mjs'
+import { validateConfig } from './endpoint.mjs'
 import { EndpointLifecycle, acquireLeases, leaseKeys } from './lifecycle.mjs'
 import { TransferLifecycle } from './transfer-lifecycle.mjs'
 import { deploymentFixture, fixtureManager, syntheticBundle } from './test-support/deployment-fixture.mjs'
@@ -49,6 +50,58 @@ test('relative template resolves one root without creating identities or writing
   assert.equal(config.bundleRoot, path.join(f.root, 'packages', f.a.hash))
   assert.equal(config.deviceId, f.config.deviceId)
   assert.throws(() => deploymentReferences(f.root, { ...refs, deviceId: 'create-one-for-me' }))
+  await preserved(f)
+})
+
+test('mutable roots equal to or inside packages/control are rejected without writes', async t => {
+  const f = await deploymentFixture(t)
+  const before = await journal(f)
+  for (const protectedRoot of [f.manager.layout.packages, f.manager.layout.control]) {
+    for (const sourceRoot of [protectedRoot, path.join(protectedRoot, 'user-exports')]) {
+      await fs.mkdir(sourceRoot, { recursive: true })
+      const marker = path.join(sourceRoot, 'user-original.txt')
+      await fs.writeFile(marker, 'keep')
+      const config = { ...f.config, sourceRoot }
+      validateConfig(config)
+      const manager = fixtureManager({ ...f.settings, config })
+      await assert.rejects(manager.stage(f.a.directory, f.a.hash), { code: 'deployment_mutable_root_overlap' })
+      assert.equal(await journal(f), before)
+      assert.equal(await fs.readFile(marker, 'utf8'), 'keep')
+    }
+  }
+  await preserved(f)
+})
+
+test('packages/control inside any mutable ancestor, including custom sourceRoot, are rejected before initialization', async t => {
+  const f = await deploymentFixture(t)
+  const before = await journal(f)
+  const ancestors = [f.config.sourceRoot, f.lifecycleDirectory, ...['herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir', 'transferConfigDir', 'transferStateDir'].map(key => f.config[key])]
+  for (const ancestor of ancestors) {
+    const root = path.join(ancestor, 'nested-install')
+    await fs.mkdir(root)
+    validateConfig(f.config)
+    const manager = fixtureManager({ ...f.settings, root })
+    await assert.rejects(manager.initialize(), { code: 'deployment_mutable_root_overlap' })
+    assert.deepEqual(await fs.readdir(root), [])
+    assert.equal(await journal(f), before)
+  }
+  await preserved(f)
+})
+
+test('independent mutable directories sharing only a packages/control name prefix remain valid', async t => {
+  const f = await deploymentFixture(t)
+  for (const name of ['packages-exports', 'control-exports']) {
+    const sourceRoot = path.join(f.root, name)
+    await fs.mkdir(sourceRoot)
+    const marker = path.join(sourceRoot, 'user-original.txt')
+    await fs.writeFile(marker, 'keep')
+    const config = { ...f.config, sourceRoot }
+    validateConfig(config)
+    const manager = fixtureManager({ ...f.settings, config })
+    assert.equal((await manager.initialize()).state, 'already_initialized')
+    assert.ok(['staged_review_only', 'already_staged'].includes((await manager.stage(f.a.directory, f.a.hash)).state))
+    assert.equal(await fs.readFile(marker, 'utf8'), 'keep')
+  }
   await preserved(f)
 })
 

@@ -49,7 +49,7 @@ export class DeploymentTransactions {
   async locked(operation) {
     validateConfig(this.config)
     for (const target of [this.lifecycleDirectory, ...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir', 'transferConfigDir', 'transferStateDir'].map(key => this.config[key])]) {
-      demand(!contains(this.layout.packages, target) && !contains(this.layout.control, target), 'deployment_mutable_root_overlap')
+      demand([this.layout.packages, this.layout.control].every(root => !contains(root, target) && !contains(target, root)), 'deployment_mutable_root_overlap')
     }
     await validateDirectory(this.root)
     await validateDirectory(this.lifecycleDirectory)
