@@ -16,6 +16,8 @@ foreground lifecycle is exercised only in isolated tests.
 - `lifecycle.mjs`, `owned-herdr.ps1`: foreground coordination and owned-peer API client.
 - `transfer-lifecycle.mjs`, `transfer-contract.mjs`: internal finite command consumer
   and strict producer decisions; activation awaits a qualified producer artifact.
+- `deployment.mjs`, `deployment-layout.json`: offline candidate-selection
+  transactions and relative configuration defaults; no runtime activation.
 - `*.test.mjs`: synthetic delivery and lifecycle regression tests, using Node builtins.
 - `official-smoke/`: fixed official Windows binaries/npm lock and isolated CI fixtures.
 - `docs/`: delivery/lifecycle contracts, provenance and the source hash inventory.
@@ -28,7 +30,7 @@ Use Node 24. No npm install is needed for the unit suite:
 
 ```sh
 node endpoint.mjs help
-node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs
+node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs
 ```
 
 The `Windows endpoint delivery checks` workflow runs on every pull request and
@@ -56,6 +58,13 @@ producer PR56 is still under review and its first Windows CLI-path run failed.
 No new artifact has been qualified, so actual automatic transfer wakes remain
 blocked. See the concrete
 [producer handoff and consumer acceptance entry points](docs/transfer-integration-gap.md).
+
+The [offline deployment transaction batch](docs/deployment-transactions.md) reuses
+verified staging and endpoint ownership to test candidate selection and recovery.
+It preserves user config/data/logs, defers busy/unknown state and rejects incompatible
+rollback. Its component/state observations are synthetic; the public launcher does
+not consume the selection. Real installation and updates remain blocked pending
+official path approval, admission control and complete component qualification.
 
 ## Boundaries
 

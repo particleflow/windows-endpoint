@@ -52,6 +52,11 @@ async function canonical(file) {
     if (p === path.dirname(p)) break
   }
 }
+export async function validateDirectory(directory) {
+  absolute(directory)
+  await canonical(directory)
+  requireThat((await fs.stat(directory)).isDirectory(), 'directory_required')
+}
 async function readJSON(file, limit = 65536) {
   requireThat((await regular(file)).size <= limit, 'json_too_large')
   try { return JSON.parse(await fs.readFile(file, 'utf8')) }
@@ -151,7 +156,7 @@ export async function verifyBundle(root, expectedHash) {
 // Copy to a content-addressed candidate; never switch current binaries or touch data.
 // Incomplete .pending-* directories are inert. Retry creates a new one; no guessing
 // at a stale lock/PID and no destructive recovery. Explicit retention is deliberate.
-export async function stageBundle(source, destination, expectedHash) {
+export async function stageBundle(source, destination, expectedHash, { checkpoint = async () => {} } = {}) {
   absolute(destination)
   await canonical(destination)
   requireThat(!overlaps(source, destination), 'stage_root_overlap')
@@ -172,6 +177,7 @@ export async function stageBundle(source, destination, expectedHash) {
     await fs.copyFile(path.join(source, file), output, 1)
     const handle = await fs.open(output, 'r+')
     try { await handle.sync() } finally { await handle.close() }
+    await checkpoint('file_copied')
   }
   await verifyBundle(pending, expectedHash)
   try { await fs.rename(pending, target) }
