@@ -157,7 +157,7 @@ async function verify(root) {
     for (let i = 0; i < officialFiles.length; i++) assert.deepEqual(await fs.readFile(officialFiles[i]), originals[i])
     checked('owned_components_stopped_and_official_config_credentials_preserved')
     await verifyOwnership(config, driver.env, checked)
-    process.stdout.write(`${JSON.stringify({ lifecycleSmoke: results, liveHandoff: 'unsupported_on_windows', updateRollback: 'not_implemented', transferAutomaticRecovery: false, agentBusinessReplay: 'not_tested', customOrOldAgentResume: 'unverified', lockedDesktop: 'not_tested', loggedOut: 'no_autostart', physicalPowerLoss: 'not_tested', gui: 'not_tested' }, null, 2)}\n`)
+    process.stdout.write(`${JSON.stringify({ lifecycleSmoke: results, liveHandoff: false, liveHandoffReason: 'unsupported_on_windows', updateRollback: 'not_implemented', transferAutomaticRecovery: false, agentBusinessReplay: 'not_tested', customOrOldAgentResume: 'unverified', lockedDesktop: 'not_tested', loggedOut: 'no_autostart', physicalPowerLoss: 'not_tested', gui: 'not_tested' }, null, 2)}\n`)
   } finally {
     controller.abort(); await running
     if (lifecycle.release) await lifecycle.stop()
@@ -198,6 +198,11 @@ async function verifyOwnership(config, env, checked) {
     await assert.rejects(driver.stop('herdr'), /herdr_owner_mismatch/)
     assert.equal(status(outsiderSession).running, true)
     driver.marker = marker
+    assert.equal(owned.exited, false)
+    assert.equal(driver.alive('herdr'), true)
+    assert.equal(await driver.ownedGeneration(), owned.generation)
+    assert.equal((await driver.ownedHostRequest('ping')).type, 'pong')
+    assert.equal(status(ownedConfig.session).running, true)
     checked('foreign_endpoint_peer_rejected_without_stopping_either_server')
 
     // A separately launched official server takes over the SAME endpoint after
@@ -253,7 +258,7 @@ setTimeout(() => process.exit(3), 25000).unref()
     const paneIdentities = () => JSON.parse(driver.command(driver.herdr, ['--session', ownedConfig.session, 'pane', 'list'])).result.panes
       .map(({ pane_id, workspace_id, tab_id, terminal_id, restore_error }) => ({ pane_id, workspace_id, tab_id, terminal_id, restore_error }))
       .sort((a, b) => a.pane_id.localeCompare(b.pane_id))
-    const originalPanes = paneIdentities(), originalGeneration = owned.generation
+    const originalPanes = paneIdentities(), originalGeneration = owned.generation, originalPid = owned.process.pid
     assert.ok(originalPanes.some(item => item.pane_id === pane && !item.restore_error))
     handoffAttempted = true
     const handoff = spawnSync(driver.herdr, ['--session', ownedConfig.session, 'server', 'live-handoff', '--import-exe', driver.herdr, '--expected-version', '0.9.5'], { env: driver.env, cwd: config.sourceRoot, encoding: 'utf8', timeout: 30000, maxBuffer: 16384, windowsHide: true, shell: false })
@@ -269,6 +274,7 @@ setTimeout(() => process.exit(3), 25000).unref()
     })
     assert.equal(owned.exited, false)
     assert.equal(driver.alive('herdr'), true)
+    assert.equal(driver.children.get('herdr').process.pid, originalPid)
     assert.equal(await driver.ownedGeneration(), originalGeneration)
     assert.equal((await driver.ownedHostRequest('ping')).type, 'pong')
     assert.equal(status(ownedConfig.session).running, true)
@@ -276,6 +282,7 @@ setTimeout(() => process.exit(3), 25000).unref()
     assert.equal(await fs.readFile(effects, 'utf8'), started)
     await fs.writeFile(release, 'release-synthetic-task\n')
     await wait(async () => await fs.readFile(effects, 'utf8') === `${started}complete:${taskPid}\n`)
+    assert.equal(driver.children.get('herdr').process.pid, originalPid)
     assert.equal(await driver.ownedGeneration(), originalGeneration)
     assert.deepEqual(paneIdentities(), originalPanes)
     assert.equal(await fs.readFile(effects, 'utf8'), `${started}complete:${taskPid}\n`)

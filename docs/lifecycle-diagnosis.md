@@ -71,7 +71,9 @@ exactly one completion from the same PID. The ten previous lifecycle checks,
 including foreign-peer rejection and external same-session replacement safety,
 remain in place. The new check is not skipped or a claim of live handoff support.
 
-The smoke report explicitly says `liveHandoff: unsupported_on_windows` and
-`updateRollback: not_implemented`. Future Windows updates must use controlled
+The smoke report explicitly says `liveHandoff: false`,
+`liveHandoffReason: unsupported_on_windows` and `updateRollback: not_implemented`.
+The foreign-peer rejection check also directly probes the original owned server
+after rejection, proving both servers remain alive. Future Windows updates must use controlled
 stop/restore; neither seamless handoff nor real Agent pending-tool recovery is
 established by this fixture. Consult the corrected commit's CI for its result.
