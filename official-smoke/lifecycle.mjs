@@ -172,7 +172,7 @@ async function verifyOwnership(config, env, checked) {
   const ownedConfig = { ...config, session: 'ownership' }
   const driver = new NativeDriver(ownedConfig, { inheritedEnvironment: env })
   const outsiderSession = 'outside-coordinator'
-  let outsider, handoffCreated = false
+  let outsider, successor, handoffCreated = false
   const status = session => JSON.parse(driver.command(driver.herdr, ['--session', session, 'status', 'server', '--json']))
   async function wait(predicate) {
     const end = Date.now() + 30000
@@ -181,7 +181,8 @@ async function verifyOwnership(config, env, checked) {
   }
   try {
     await driver.start('herdr'); await driver.waitReady('herdr')
-    const owned = driver.children.get('herdr'), marker = driver.marker
+    let owned = driver.children.get('herdr')
+    const marker = driver.marker
     outsider = spawn(driver.herdr, ['--session', outsiderSession, 'server'], { env: driver.env, cwd: config.sourceRoot, stdio: ['ignore', 'pipe', 'pipe'] })
     outsider.stdout.resume(); outsider.stderr.resume()
     await wait(() => status(outsiderSession).running)
@@ -199,8 +200,37 @@ async function verifyOwnership(config, env, checked) {
     driver.marker = marker
     checked('foreign_endpoint_peer_rejected_without_stopping_either_server')
 
+    // A separately launched official server takes over the SAME endpoint after
+    // our owned child exits. This tests ownership loss on Windows independently
+    // of upstream live-handoff support; it is not a claim of live task migration.
+    await driver.stop('herdr')
+    assert.equal(owned.exited, true)
+    successor = spawn(driver.herdr, ['--session', ownedConfig.session, 'server'], { env: driver.env, cwd: config.sourceRoot, stdio: ['ignore', 'pipe', 'pipe'] })
+    successor.stdout.resume(); successor.stderr.resume()
+    await wait(() => status(ownedConfig.session).running)
+    const successorGeneration = await fs.readFile(marker, 'utf8')
+    assert.equal(successorGeneration.split(':')[0], String(successor.pid))
+    assert.notEqual(successorGeneration, owned.generation)
+    await driver.stop('herdr')
+    assert.equal(status(ownedConfig.session).running, true)
+    await assert.rejects(driver.start('herdr'), /existing_herdr_requires_handoff/)
+    assert.equal(status(ownedConfig.session).running, true)
+    assert.equal(await fs.readFile(marker, 'utf8'), successorGeneration)
+    assert.equal(successor.exitCode, null)
+    checked('same_session_external_successor_is_neither_adopted_restarted_nor_stopped')
+    const successorExit = once(successor, 'exit')
+    driver.command(driver.herdr, ['--session', ownedConfig.session, 'server', 'stop'], 20000)
+    await successorExit
+    successor = null
+
+    await driver.start('herdr'); await driver.waitReady('herdr')
+    owned = driver.children.get('herdr')
     driver.command(driver.herdr, ['--session', ownedConfig.session, 'workspace', 'create', '--cwd', config.sourceRoot])
-    driver.command(driver.herdr, ['--session', ownedConfig.session, 'server', 'live-handoff', '--import-exe', driver.herdr, '--expected-version', '0.9.5'], 30000)
+    const handoff = spawnSync(driver.herdr, ['--session', ownedConfig.session, 'server', 'live-handoff', '--import-exe', driver.herdr, '--expected-version', '0.9.5'], { env: driver.env, cwd: config.sourceRoot, encoding: 'utf8', timeout: 30000, maxBuffer: 16384, windowsHide: true, shell: false })
+    const unsupportedOnWindows = /live handoff is only supported on Unix/.test(`${handoff.stdout}\n${handoff.stderr}`)
+    // Keep the inherited positive acceptance assertion. Unsupported is a failing
+    // capability, never a skipped test or a successful live handoff.
+    assert.equal(handoff.status, 0, `Official live handoff failed: exit=${handoff.status}, unsupportedOnWindows=${unsupportedOnWindows}`)
     handoffCreated = true
     await wait(() => owned.exited)
     await wait(() => status(ownedConfig.session).running)
@@ -213,7 +243,7 @@ async function verifyOwnership(config, env, checked) {
   } finally {
     // Fixture-only cleanup of explicitly created isolated sessions. The product
     // driver above is deliberately forbidden from adopting the handoff successor.
-    if (handoffCreated && status(ownedConfig.session).running) driver.command(driver.herdr, ['--session', ownedConfig.session, 'server', 'stop'], 20000)
+    if ((handoffCreated || successor) && status(ownedConfig.session).running) driver.command(driver.herdr, ['--session', ownedConfig.session, 'server', 'stop'], 20000)
     else if (driver.alive('herdr')) await driver.stop('herdr')
     if (outsider && outsider.exitCode === null) {
       const exited = once(outsider, 'exit')

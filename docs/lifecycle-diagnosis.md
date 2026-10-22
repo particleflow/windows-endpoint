@@ -25,10 +25,26 @@ This snapshot read belongs only to the synthetic CI fixture, not to the endpoint
 driver or business retry decisions. Each completed lifecycle check now emits a
 bounded result immediately so a later failure cannot hide earlier evidence.
 
-## Separate upstream limitation to verify
+## Windows result and separate upstream limitation
+
+Fix commit `5e76947479630f2d303f51693ea7e0e0fd38a3be` passed both 45-test unit jobs,
+eight official dependency checks and nine lifecycle checks in
+[39831637555](https://github.com/particleflow/windows-endpoint/actions/runs/39831637555).
+The real persisted snapshot was observed after 1,758 ms of polling (after earlier
+CLI work); restoration of the original pane, no shell-command replay, real 401
+handling, owned shutdown and foreign-server peer rejection all passed. This
+confirms the persistence precondition fix on Windows rather than assuming that
+another fixed sleep is sufficient.
 
 The same pinned official source explicitly rejects live handoff on non-Unix
 systems: [headless/lifecycle.rs](https://github.com/herdrdev/herdr/blob/5bd900d88c80d95f5b145397e45bbeea398b8165/src/server/headless/lifecycle.rs#L234).
-The inherited positive Windows live-handoff fixture is therefore not established
-by this restoration fix. Its assertion is retained for the next Windows run;
+The next assertion failed at the official `server live-handoff` invocation.
+The inherited positive Windows live-handoff acceptance remains a failing check;
 no official implementation is patched and unsupported behavior is not called a pass.
+
+A further isolated fixture starts a separate official server at the same session
+endpoint after the owned child exits, then verifies that `stop` cannot stop the
+successor and `start` refuses to adopt it. It checks the real successor PID and
+unchanged generation before fixture-only cleanup. This tests external replacement
+safety independently of live task migration. The original positive live-handoff
+assertions remain after it. Its result must be read from the corresponding CI run.
