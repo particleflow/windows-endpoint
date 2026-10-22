@@ -61,7 +61,12 @@ async function verify(root) {
   const create = () => new EndpointLifecycle({ driver, store: new StateStore(state, config.deviceId), acquire: () => acquireLeases(leaseKeys(config), state), policy: { retryMs: 100 } })
   const lifecycle = create(), results = [], controller = new AbortController()
   let running, backgroundFailure
-  const checked = name => results.push({ check: name, state: 'passed' })
+  const checked = name => {
+    const result = { check: name, state: 'passed' }
+    results.push(result)
+    // Preserve completed evidence even if a later, independent boundary fails.
+    process.stdout.write(`${JSON.stringify({ lifecycleCheck: result })}\n`)
+  }
   async function until(predicate, message, timeout = 30000) {
     const end = Date.now() + timeout
     while (Date.now() < end) { if (backgroundFailure) throw backgroundFailure; if (await predicate()) return; await delay(100) }
@@ -110,13 +115,30 @@ async function verify(root) {
     const pane = created.result.root_pane.pane_id
     driver.command(driver.herdr, ['--session', config.session, 'pane', 'run', pane, 'node marker.cjs'])
     await until(async () => { try { return await fs.readFile(path.join(config.sourceRoot, 'executions.txt'), 'utf8') === 'once\n' } catch { return false } }, 'Ordinary pane command failed')
-    await delay(1500) // allow official persisted session snapshot
+    // Herdr 0.9.5 debounces session saves for FIVE seconds, then writes in the
+    // background. A 1.5-second sleep killed the host before any durable snapshot
+    // existed. Observe this isolated fixture's real snapshot; never fabricate it,
+    // invoke graceful stop, or alter official restore settings to pass a crash test.
+    const snapshotFile = path.join(config.herdrConfigRoot, 'sessions', config.session, 'session.json')
+    const persistenceStarted = Date.now()
+    await until(async () => {
+      let snapshot
+      try { snapshot = JSON.parse(await fs.readFile(snapshotFile, 'utf8')) }
+      catch (error) { if (error.code === 'ENOENT') return false; throw error }
+      assert.equal(snapshot.version, 3, 'Unexpected official persisted session schema')
+      return snapshot.workspaces.some(workspace => workspace.id === created.result.workspace.workspace_id &&
+        workspace.tabs.some(tab => Object.keys(tab.panes).length > 0))
+    }, 'Official session snapshot did not persist the fixture workspace')
+    process.stdout.write(`${JSON.stringify({ persistedFixtureObserved: true, elapsedMs: Date.now() - persistenceStarted })}\n`)
     await killOwned('herdr')
     await observeUntil(() => driver.alive('herdr') && lifecycle.state.restarts.length === 2 && lifecycle.snapshot().connection === 'online_snapshot', 'Herdr dependency recovery failed')
     await delay(2000)
     assert.equal(await fs.readFile(path.join(config.sourceRoot, 'executions.txt'), 'utf8'), 'once\n')
     const listed = JSON.parse(driver.command(driver.herdr, ['--session', config.session, 'pane', 'list']))
     assert.ok(listed.result.panes.length > 0, 'Persisted panes were not restored')
+    assert.ok(listed.result.panes.some(restored => restored.pane_id === pane &&
+      restored.workspace_id === created.result.workspace.workspace_id && !restored.restore_error),
+    'The original fixture pane must restore without an error')
     checked('ordinary_pane_restored_without_replaying_shell_command')
 
     rejectAuth = true
