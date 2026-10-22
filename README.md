@@ -14,6 +14,8 @@ foreground lifecycle is exercised only in isolated tests.
 
 - `endpoint.mjs`, `endpoint.ps1`: delivery CLI and explicit-hash Windows bootstrap.
 - `lifecycle.mjs`, `owned-herdr.ps1`: foreground coordination and owned-peer API client.
+- `transfer-lifecycle.mjs`, `transfer-contract.mjs`: internal finite command consumer
+  and strict producer decisions; activation awaits a qualified producer artifact.
 - `*.test.mjs`: synthetic delivery and lifecycle regression tests, using Node builtins.
 - `official-smoke/`: fixed official Windows binaries/npm lock and isolated CI fixtures.
 - `docs/`: delivery/lifecycle contracts, provenance and the source hash inventory.
@@ -26,7 +28,7 @@ Use Node 24. No npm install is needed for the unit suite:
 
 ```sh
 node endpoint.mjs help
-node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs
+node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs
 ```
 
 The `Windows endpoint delivery checks` workflow runs on every pull request and
@@ -47,9 +49,12 @@ synthetic command. This is rejection safety, not seamless handoff support.
 Future Windows updates must use a controlled stop/restore design; update and
 rollback are not implemented by the current endpoint.
 
-The next transfer milestone consumes the fixed producer artifact instead of
-copying its Go implementation. The current artifact lacks the requested lifecycle
-summary, so automatic transfer wakes remain blocked. See the concrete
+The internal lifecycle can now consume versioned transfer decisions, coalesce
+hints, honor persisted deadlines and drain an invocation before shutdown. Tests
+currently use mock command results. The old pinned artifact lacks the interface;
+producer PR56 is still under review and its first Windows CLI-path run failed.
+No new artifact has been qualified, so actual automatic transfer wakes remain
+blocked. See the concrete
 [producer handoff and consumer acceptance entry points](docs/transfer-integration-gap.md).
 
 ## Boundaries
@@ -61,7 +66,8 @@ loopback services and payloads are synthetic and temporary.
 Full bundle qualification, pending-tool Agent restoration, automatic transfer
 wakes, active update/rollback, real UI, capacity and physical power-loss
 acceptance remain incomplete. The [transfer lifecycle contract](docs/transfer-lifecycle-contract.md)
-is a proposal, not wired functionality. No production PC/NAS execution is part of CI.
+defines the consumer boundary; its real executable integration remains pending.
+No production PC/NAS execution is part of CI.
 
 See the [delivery reference](docs/delivery.md), [lifecycle contract](docs/lifecycle.md)
 and [source provenance](docs/provenance.md). The imported source retains its

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseLifecycleSummary } from './official-smoke/transfer-contract.mjs'
+import { parseLifecycleSummary, parseAdvanceDecision, deadlineMilliseconds } from './transfer-contract.mjs'
 
 const now = Date.parse('2026-10-22T18:00:00Z')
 const summary = overrides => ({ schema: 'memoh.delivery.lifecycle.v1', state: 'idle', next_due_at: null, error_class: 'none', ...overrides })
@@ -47,4 +47,33 @@ test('malformed and oversized output is bounded without echoing raw diagnostics'
   for (const raw of ['private diagnostic', '{', 'x'.repeat(16385)]) {
     assert.throws(() => parseLifecycleSummary(raw, now), error => error.code === 'transfer_summary_output_invalid' && !error.message.includes(raw))
   }
+})
+
+test('PR56 unknown busy/transient permits only a host hint, not an invented queue deadline', () => {
+  for (const error_class of ['transient', 'busy']) {
+    assert.equal(parse(summary({ state: 'unknown', error_class })).next_due_at, null)
+  }
+  for (const state of ['due', 'idle', 'unknown', 'blocked']) {
+    assert.throws(() => parse(summary({ state, next_due_at: '2026-10-22T18:00:05Z' })))
+  }
+  assert.throws(() => parse(summary({ state: 'due', error_class: 'unknown' })))
+})
+
+test('Go RFC3339Nano is retained exactly and rounded up for consumer wakes', () => {
+  const next_due_at = '2026-10-22T18:00:05.123456789Z'
+  assert.equal(parse(summary({ state: 'waiting', next_due_at })).next_due_at, next_due_at)
+  assert.equal(deadlineMilliseconds(next_due_at), now + 5124)
+  assert.equal(deadlineMilliseconds('2026-10-22T18:00:05.123000000Z'), now + 5123)
+  assert.throws(() => deadlineMilliseconds('2026-02-31T18:00:05.123456789Z'))
+})
+
+test('actual PR56 advance envelope projects decisions without claiming reference association', () => {
+  const value = { ...summary(), delivery_id: 'existing-delivery', phase: 'ready', offset: 7, admitted: true, associated: false,
+    reference: { delivery_id: 'existing-delivery', operation_id: 'existing-operation', bot_id: 'existing-bot', content_hash: 'a'.repeat(64), size_bytes: 7, mime: 'text/plain' } }
+  assert.deepEqual(parseAdvanceDecision(JSON.stringify(value), now), summary())
+  assert.throws(() => parseLifecycleSummary(JSON.stringify(value), now))
+  for (const patch of [{ credential: 'synthetic-private' }, { offset: -1 }, { associated: 'true' }, { reference: { ...value.reference, path: 'synthetic-private' } }]) {
+    assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, ...patch }), now))
+  }
+  assert.throws(() => parseAdvanceDecision(JSON.stringify(summary()), now))
 })

@@ -1,10 +1,11 @@
-# Requested minimal transfer lifecycle interface
+# Finite transfer lifecycle interface
 
-This is an interface request to the existing transfer owner, not an implemented
-CLI/action or a second queue. The endpoint currently reports `interface_pending`
-and does not invoke transfer work on an inferred retry policy.
+This contract is prewired in the internal endpoint lifecycle and tested with
+mock command results. The real producer executable is not yet qualified; public
+activation remains blocked. There is no second queue or legacy compatibility
+translation.
 
-Please expose one finite **read-only summary** (suggested existing CLI action
+The producer exposes one finite **read-only summary** (CLI action
 `-action lifecycle-summary`) and the same decision fields on the result of the
 existing finite `advance-results` action:
 
@@ -22,8 +23,8 @@ Only four required fields:
 | Field | Exact meaning |
 | --- | --- |
 | `schema` | Exact version literal, rejected on unknown versions. |
-| `state` | `due`: existing eligible durable work now; `idle`: no work; `waiting`: existing work is not due yet; `blocked`: owner intervention needed; `unknown`: authoritative outcome not established. |
-| `next_due_at` | UTC RFC3339 timestamp for the earliest eligible queue/association retry, or `null`. Mandatory and future for `waiting`; never invent or reset a queue deadline. `idle` is null. |
+| `state` | `due`: existing eligible durable work now; `idle`: no eligible work in the existing queue, **not business completion or discovery of unadmitted results**; `waiting`: existing work is not due yet; `blocked`: owner intervention needed; `unknown`: authoritative outcome not established. |
+| `next_due_at` | UTC RFC3339 timestamp (Go emits up to nine fractional digits) for the earliest eligible queue/association retry. Mandatory and future for `waiting`; all other states use `null`. Preserve the original string and round a Node wake up to the next millisecond. Never invent or reset a queue deadline. |
 | `error_class` | `none`, `transient` (network/server retry already governed by the queue), `busy` (another owner/worker), `authentication` (missing/expired/revoked authorization), `permission` (private storage/NTFS access failure), `configuration` (origin/root/digest/schema mismatch), `capacity`, or `unknown`. |
 
 Classification must come from the existing component's typed result, not from
@@ -45,6 +46,21 @@ summary covers missed events without a new task queue. `blocked`/`unknown` and
 authentication/permission/configuration/capacity stop automatic advancement;
 restore through the existing owner before explicit resume. `transient`/`busy`
 must carry a bounded next due or a documented finite retry hint, never a reset.
+
+PR56 at `5e4b883df9e4e8e734722ba3f59abcb3708d56de` documents
+`unknown` + `transient`/`busy` + `null` as allowing at most one read-only host
+retry after 30 seconds per external event. The consumer implements that bound;
+a repeated result requires explicit owner acknowledgement through the existing
+endpoint attention mechanism. Polling itself never replenishes this allowance.
+`advance-results` adds these four fields to its original delivery/reference
+envelope; the consumer validates that separate envelope and projects decisions
+only. A reference without confirmed association is not a delivered result.
+Nonzero `due`/`idle`, unsupported exits, malformed output, timeout or signal
+suspend wakes, regardless of any optimistic state field.
+
+This is source-level interface alignment only. PR56's first head has a reviewed
+corruption/advance failure and failed native CLI test. It is not an accepted
+executable. The consumer does not advance its artifact trust pin to that head.
 
 Please document the allowed Herdr invocation and completion/result correlation
 for these two finite actions, including multi-session contention and a host

@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { EndpointLifecycle, LifecycleError, StateStore, NativeDriver, acquireLeases, connectorAttention, leaseKeys } from './lifecycle.mjs'
 import { managedEnvironment } from './endpoint.mjs'
+import { TransferLifecycle } from './transfer-lifecycle.mjs'
 
 async function fixture(t, options = {}) {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'endpoint-life-')))
@@ -277,4 +278,49 @@ test('owned Herdr generation rejects replaced endpoint without sending stop', as
   await assert.rejects(driver.stop('herdr'), /herdr_owner_mismatch/)
   await fs.writeFile(driver.marker, '123:789')
   await assert.rejects(driver.stop('herdr'), /herdr_generation_changed/)
+})
+
+test('unified lifecycle persists transfer failure and cannot bypass it by restarting', async t => {
+  const actions = []
+  const transfer = new TransferLifecycle({ driver: { invoke: async action => {
+    actions.push(action)
+    return { status: 1, stdout: JSON.stringify({ schema: 'memoh.delivery.lifecycle.v1', state: 'unknown', next_due_at: null, error_class: 'permission' }) }
+  } } })
+  const { lifecycle, create } = await fixture(t, { transfer })
+  await lifecycle.start(); await lifecycle.tick()
+  assert.equal(lifecycle.state.attention, 'transfer_permission')
+  await lifecycle.stop()
+  const next = create()
+  await assert.rejects(next.start(), /transfer_permission/)
+  assert.deepEqual(actions, ['lifecycle-summary'])
+})
+
+test('unified stop drains in-flight transfer before stopping components or releasing ownership', async t => {
+  let finish, entered
+  const ready = new Promise(r => { entered = r })
+  const actions = []
+  const transfer = new TransferLifecycle({ driver: { invoke: action => {
+    actions.push(action)
+    return new Promise(r => { finish = () => r({ status: 0, stdout: JSON.stringify({ schema: 'memoh.delivery.lifecycle.v1', state: 'due', next_due_at: null, error_class: 'none' }) }); entered() })
+  } } })
+  const { lifecycle, alive, calls } = await fixture(t, { transfer })
+  await lifecycle.start()
+  const tick = lifecycle.tick(); await ready
+  const stop = lifecycle.stop()
+  lifecycle.transferHint('completion')
+  assert.equal(alive.size, 2); assert.ok(lifecycle.release)
+  finish(); await Promise.all([tick, stop])
+  assert.deepEqual(actions, ['lifecycle-summary'])
+  assert.deepEqual(calls.slice(-2), ['stop:connector', 'stop:herdr'])
+  assert.equal(alive.size, 0); assert.equal(lifecycle.release, null)
+})
+
+test('shared transfer state gets one endpoint lease even across devices and sessions', async t => {
+  const { directory } = await fixture(t)
+  const first = leaseKeys({ deviceId: 'one', session: 'one', herdrConfigRoot: 'one', agenvoConfigDir: 'one', transferStateDir: 'shared-state' })
+  const second = leaseKeys({ deviceId: 'two', session: 'two', herdrConfigRoot: 'two', agenvoConfigDir: 'two', transferStateDir: 'shared-state' })
+  const release = await acquireLeases(first, directory)
+  try { await assert.rejects(acquireLeases(second, directory), /endpoint_already_owned/) }
+  finally { await release() }
+  const releaseNext = await acquireLeases(second, directory); await releaseNext()
 })

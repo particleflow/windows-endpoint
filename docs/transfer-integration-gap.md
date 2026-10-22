@@ -1,104 +1,107 @@
-# Transfer integration: fixed producer gap and executable acceptance
+# Transfer consumer and remaining producer handoff
 
-This work starts from merged Windows endpoint `b8bdd409477d85b9d1ad6dc84ce91b43de8f5089`.
-It does not invent a compatibility translation, queue, task ID, OAuth flow or
-transfer service. Files still use the NAS transfer/association protocol; the
-control plane supplies tasks and references.
+The consumer starts from Windows endpoint main
+`b8bdd409477d85b9d1ad6dc84ce91b43de8f5089`. All transfer implementation stays in
+Memoh. This repository adds no Go copy, service, delivery ID, queue, credentials
+or Pi task replay.
 
-## Fixed producer facts
+## Source interface examined, not a qualified component
 
-Producer [PR 47](https://github.com/particleflow/Memoh/pull/47) remains at
-`6ddf61dcd8199758e4110398645c556a3d6d7375`. The immutable candidate identity is in
-[`transfer-artifact.json`](../official-smoke/transfer-artifact.json): artifact
-`12444231490` from run `39819368622`, ZIP SHA-256
-`48ac47ad36b0c21b350193d9f1b987f9c470354fc1bac07b722a701c36dde8df`.
-GitHub reports expiry `2026-10-29T17:07:52Z`. This is an expiring review artifact,
-not an install/update distribution channel.
+The fixed reference for this increment is producer
+[PR56 at 5e4b883df9e4e8e734722ba3f59abcb3708d56de](https://github.com/particleflow/Memoh/tree/5e4b883df9e4e8e734722ba3f59abcb3708d56de).
+The examined files are `cmd/transferqueue/main.go`, `cli_path_test.go`,
+`internal/transferclient/lifecycle.go` and its tests,
+`contrib/herdr/memoh-delivery/herdr-plugin.toml`, and
+`docs/delivery-lifecycle-summary.md`. The plugin version is 0.5.0.
 
-The actual [CLI source](https://github.com/particleflow/Memoh/blob/6ddf61dcd8199758e4110398645c556a3d6d7375/cmd/transferqueue/main.go)
-has no `lifecycle-summary` action. Unsupported actions exit 2 before accessing
-state. `advance-results` can emit `{"state":"idle"}` or
-`{"state":"pending_or_unavailable","feedback_status":""}`. Success emits
-the existing delivery/phase/offset/admission/association/reference fields.
-There is no versioned due-time or stable authentication/permission decision.
+It implements `lifecycle-summary`, returns the same four decision fields in
+`advance-results`, and supplies a test-only CLI dispatch subprocess with injected
+TLS trust. The production CLI has no TLS bypass. This first source head is
+**not accepted**: review found that a damaged record can coexist with a legal
+`due` record while `advance-results` fails during reclamation; native Windows run
+`39839491654` also failed its enqueue-result CLI subprocess and skipped packaging.
+The producer owner is fixing the original PR. A later unreviewed head is not an
+implicit trust update here.
 
-The [plugin](https://github.com/particleflow/Memoh/blob/6ddf61dcd8199758e4110398645c556a3d6d7375/contrib/herdr/memoh-delivery/herdr-plugin.toml)
-has `verify-storage`, `collect-result`, `advance-delivery` and `fixture-check`.
-`advance-delivery` invokes the finite CLI `advance-results`. The queue's `nextDue`
-skips future retries, blocked jobs and uncertain creates. Therefore `idle` cannot
-be translated into an empty queue or a fabricated retry deadline. `probe` only
-reports storage availability; it is not complete config/auth/readiness evidence.
+Three concrete differences from the earlier proposed consumer contract are now
+handled explicitly:
 
-## Minimum change requested from the producer owner
+- `advance-results` has the four fields alongside its existing delivery/reference
+  envelope. Summary remains exactly four fields; the parsers are separate.
+- Go timestamps can have nine fractional digits. The consumer retains them and
+  rounds a wake up, never before the persisted deadline.
+- `unknown` + `busy`/`transient` with a null deadline permits at most one read-only
+  retry after 30 seconds per external event. It is not a transfer retry deadline.
+  Repeated failure suspends this consumer until explicit owner acknowledgement.
 
-1. Implement the existing [four-field contract](transfer-lifecycle-contract.md)
-   as a finite read-only `lifecycle-summary` action and an explicit plugin action.
-   Preserve queue/association due times and classify empty, waiting, due, blocked
-   and unknown from authoritative component state. Do not call reclaim/admission,
-   rewrite journals or reset backoff during summary. Tests must compare persisted
-   state before/after the read.
-2. Return the same decision fields alongside the existing `advance-results`
-   result. Preserve all delivery/reference IDs and existing operation/attempt
-   ownership. Use typed errors for authentication, NTFS permissions, configuration,
-   capacity, transient transport and busy; do not make consumers parse stderr.
-   Document correlation and shutdown behavior for a finite plugin invocation.
-3. Supply a fixed, hash-addressed Windows artifact with the changed CLI/plugin,
-   source commit and manifest in a durable download channel suitable for read-only
-   consumer CI. Do not require a writable token or production secret on PR runs.
-4. Add a packaged **real CLI-path test** using the existing implementation with a
-   test-only injected TLS client/root, not a parallel protocol implementation or
-   TLS bypass. It should run closed-result admission, finite advance, inspect and
-   reference association against an ephemeral HTTPS NAS fixture, using a small
-   payload and the same IDs across process invocations. Inject a lost response,
-   reopen durable state, finish once, and assert no second original task/Pi run.
-   A test entry in `cmd/transferqueue` can reuse the actual CLI dispatch and JSON
-   output; production still uses its normal transport. No system trust/ACL repair
-   or production credential is needed.
+`idle` describes this existing queue only. It says nothing about unfinished
+producer closure/admission or business completion. A ready reference does not
+prove NAS association. Nonzero `due`/`idle` suspends rather than immediately
+advancing again, including the reported corruption case.
 
-The existing packaged `transferqueue.test.exe` tests the component directly with
-an injected TLS client. The production CLI hardcodes the normal transport. Running
-the component test is useful evidence but must not be relabeled as external CLI
-end-to-end evidence. The Windows endpoint will not copy Go code to close this gap.
+## Executable consumer increment
 
-## Executable consumer checks prepared here
+`transfer-lifecycle.mjs` integrates with the existing `EndpointLifecycle`:
 
-`transfer-contract.test.mjs` checks the requested versioned response and explicitly
-rejects actual legacy JSON shapes, missing/expired deadlines, unknown fields,
-private payloads and malformed/oversized output. These are contract acceptance
-tests, not evidence that the current producer implements it. No timer or mutation
-is wired to an inferred legacy result.
+- Startup reads the producer summary on the first tick. Each tick may invoke at
+  most one finite `advance-results`; calls coalesce and never overlap. A positive
+  due result is paced at no more than one advance per second.
+- Waiting uses the producer deadline; idle gets a 30-second read-only summary.
+  Completion hints and observed offline-to-online edges coalesce. Hints never
+  shorten the documented 30-second busy/transient retry floor. There is no new
+  timer process; the foreground endpoint loop drives checks.
+- Stop closes the hint gate, waits for the finite invocation to finish, then
+  stops owned components and releases the existing lease. A shared transfer root
+  adds a lease key even across different device/session settings.
+- Unknown/error/malformed/timeout outcomes suspend. Attention is persisted in the
+  existing endpoint lifecycle journal, so ordinary stop/start cannot bypass it.
+  Recovery re-reads the producer queue and never calls collect/enqueue/Pi.
+- The internal native adapter permits only summary and advance, uses the fixed
+  executable with no shell, bounded output and a 125-second process ceiling for
+  the producer's 120-second budget. Invocation results are correlated by the
+  owned child callback; raw stderr, paths and credentials are not diagnostics.
+- Shared config checks bind origin, source, plugin config and state roots to the
+  endpoint configuration. Existing credential presence is checked without reading
+  its contents. Actual private storage/NTFS and authorization checks stay with the
+  producer. No ACL or trust-store repair is attempted.
 
-For an already obtained fixed archive on an isolated Windows runner:
+The native adapter requires an explicit qualification function. There is no
+qualified producer supplied by the public CLI or official-component fixture;
+the old catalog pin remains unchanged. `start`/activation still fails closed.
+The endpoint reports automatic transfer recovery as false. An explicit completion
+hint entry point exists, but connecting the real task completion/collection owner
+is not claimed by these tests.
 
-```powershell
-./official-smoke/prepare-transfer.ps1 -ArchivePath $FixedArchive -Root $FreshTransferFixture
-& $VerifiedNode ./official-smoke/transfer.mjs $FreshTransferFixture
-if ($LASTEXITCODE -ne 0) { throw 'Transfer consumer fixture failed' }
-```
+`transfer-contract.test.mjs` and `transfer-lifecycle.test.mjs` exercise mock command
+outputs, time, errors and stop/restart races. Lifecycle tests also use the actual
+endpoint journal and OS lease with mock official drivers. These are consumer unit
+tests on Linux/Windows, **not real transfer CLI, TLS, NTFS or NAS data-chain proof**.
+The unchanged official Herdr/Agenvo fixture verifies its own separate lifecycle.
 
-Preparation verifies the exact ZIP hash, seven exact members, bounded extraction,
-source commit, architecture and every producer payload hash. It installs nothing,
-changes no OS permissions and builds no producer source. The harness requires the
-actual current CLI's explicit unsupported-summary response and missing-root
-failure without state creation. It also runs four named tests from the unchanged
-packaged producer executable, checking that every test exists, runs and passes.
-Those tests include a **seven-byte** TLS upload, durable reopen/lost-association
-recovery, one final reference commit and unchanged source/operation identity, plus
-config/source-root failures. The evidence remains component-level, not a new CLI
-or automatic-wake completion claim.
+## Artifact handoff remains blocked
 
-## Execution limits at this checkpoint
+The old review pin is still artifact `12444231490` from run `39819368622`, source
+`6ddf61dcd8199758e4110398645c556a3d6d7375`, ZIP SHA-256
+`48ac47ad36b0c21b350193d9f1b987f9c470354fc1bac07b722a701c36dde8df`, reported expiry
+`2026-10-29T17:07:52Z`. It has no lifecycle-summary. Its prepared
+`official-smoke/prepare-transfer.ps1` and `transfer.mjs` acceptance harness remains
+an **unexecuted legacy artifact check**, not a PR56 harness. Its old hash/seven-file
+allowlist was not silently changed to accept the proposed eight-file bundle.
 
-The connected GitHub artifact read/download succeeded and returned a temporary
-file reference. Materializing that file into this cloud workspace failed at the
-network proxy's CONNECT stage with **403 Forbidden**. No bytes were obtained;
-this is a file-download network-policy rejection, not a GitHub repository
-permission failure. No alternate credential or route was tried after rejection.
+The GitHub connector previously returned a hosted file reference, but workspace
+materialization failed before receiving a body at proxy CONNECT with **403
+Forbidden**. No ZIP bytes were obtained. That download is paused; no new request,
+alternate address, proxy, credential or machine is used. This does not imply all
+GitHub access failed.
 
-Consequently the new artifact harness is prepared but **not executed** here.
-Current CI runs its JavaScript/PowerShell syntax checks and the contract unit
-tests; it does not quietly skip an advertised artifact integration job. Real
-consumer artifact execution and external CLI data-chain acceptance remain pending
-the producer handoff/materialization path. Automatic transfer wakes, product
-activation, updates/rollback, Agent pending-tool recovery, large-file/count and
-physical power-loss acceptance remain incomplete.
+The minimal next dependency is a reviewed, fixed producer commit with successful
+native Windows CLI-path CI and its exact Windows artifact/manifest/hash, followed
+by an approved supported artifact handoff. Then update the immutable pin and
+explicit member list, verify the real small-file CLI chain and only then wire a
+qualification closure. The seven-byte synthetic TLS fixture must preserve original
+IDs across lost responses/restarts and collect one associated reference without
+another Pi run. The current mock results do not establish that outcome.
+
+Full bundle qualification, actual transfer wake/restart acceptance, update/rollback,
+pending-tool Agent restoration, real GUI/capacity/large-file-count and physical
+power-loss acceptance remain incomplete. No production PC or NAS is used here.
