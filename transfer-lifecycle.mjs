@@ -32,6 +32,7 @@ export class NativeTransferDriver {
       const reason = ['EACCES', 'EPERM'].includes(error.code) ? 'permission' : error.code === 'transfer_credential_missing' ? 'authentication' : 'configuration'
       throw new TransferError(`transfer_${reason}`)
     }
+    // This cancellation is emitted only before execFile: no child was spawned.
     if (!mayInvoke()) throw new TransferError('transfer_stopping')
     const options = { env: this.env, cwd: this.config.sourceRoot, encoding: 'utf8',
       timeout: 125000, maxBuffer: 16384, windowsHide: true, shell: false }
@@ -100,7 +101,9 @@ export class TransferLifecycle {
   async read(action) {
     const observedAt = this.clock()
     const result = await this.driver.invoke(action, () => !this.stopping)
-    if (this.stopping) return null
+    // Stop closes the invocation gate, not the result gate. An issued command
+    // must still be classified so EndpointLifecycle can persist its attention
+    // before owned-component cleanup and lease release.
     if (!result || result.signal || result.error || result.timedOut || !Number.isInteger(result.status)) throw new TransferError('transfer_command_outcome_unknown')
     const parse = action === 'lifecycle-summary' ? parseLifecycleSummary : parseAdvanceDecision
     this.accept(parse(result.stdout, observedAt), result.status)
@@ -124,7 +127,8 @@ export class TransferLifecycle {
         await this.read('advance-results')
       }
     } catch (error) {
-      if (!this.stopping) this.suspend(error instanceof TransferError || error instanceof TransferContractError ? error.code : 'transfer_command_outcome_unknown')
+      const cancelledBeforeInvocation = this.stopping && error instanceof TransferError && error.code === 'transfer_stopping'
+      if (!cancelledBeforeInvocation) this.suspend(error instanceof TransferError || error instanceof TransferContractError ? error.code : 'transfer_command_outcome_unknown')
     }
     return this.snapshot()
   }

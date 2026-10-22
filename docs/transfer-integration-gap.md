@@ -53,6 +53,9 @@ advancing again, including the reported corruption case.
 - Stop closes the hint gate, waits for the finite invocation to finish, then
   stops owned components and releases the existing lease. A shared transfer root
   adds a lease key even across different device/session settings.
+  Issued results and rejections are still classified during this drain; failure
+  attention is persisted before cleanup. Only a pre-spawn gate cancellation is
+  treated as not invoked, so stop/start cannot erase an in-flight failure.
 - Unknown/error/malformed/timeout outcomes suspend. Attention is persisted in the
   existing endpoint lifecycle journal, so ordinary stop/start cannot bypass it.
   Recovery re-reads the producer queue and never calls collect/enqueue/Pi.

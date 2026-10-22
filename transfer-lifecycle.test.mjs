@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { TransferLifecycle, NativeTransferDriver, transferCommand } from './transfer-lifecycle.mjs'
+import { TransferError, TransferLifecycle, NativeTransferDriver, transferCommand } from './transfer-lifecycle.mjs'
 import { transferEnvironment } from './endpoint.mjs'
 
 // Mock command boundary only. No Go queue, TLS, NTFS or actual CLI is exercised.
@@ -138,6 +138,24 @@ test('stop drains a finite advance once without launching a replacement', async 
   const stop = transfer.stop(); transfer.hint('completion'); finish()
   await Promise.all([tick, stop, transfer.tick()])
   assert.deepEqual(calls, ['lifecycle-summary', 'advance-results'])
+  assert.equal(transfer.snapshot().state, 'stopped')
+})
+
+test('stop during preflight cancels before invocation without inventing a failed command', async () => {
+  let finish, entered, invoked = false
+  const ready = new Promise(r => { entered = r })
+  const transfer = new TransferLifecycle({ driver: { invoke: async (_action, mayInvoke) => {
+    await new Promise(r => { finish = r; entered() })
+    if (!mayInvoke()) throw new TransferError('transfer_stopping')
+    invoked = true
+    return output('lifecycle-summary', decision('due'))
+  } } })
+  transfer.start()
+  const tick = transfer.tick(); await ready
+  const stop = transfer.stop(); finish()
+  await Promise.all([tick, stop])
+  assert.equal(invoked, false)
+  assert.equal(transfer.snapshot().attention, null)
   assert.equal(transfer.snapshot().state, 'stopped')
 })
 
