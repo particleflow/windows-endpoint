@@ -39,12 +39,39 @@ another fixed sleep is sufficient.
 The same pinned official source explicitly rejects live handoff on non-Unix
 systems: [headless/lifecycle.rs](https://github.com/herdrdev/herdr/blob/5bd900d88c80d95f5b145397e45bbeea398b8165/src/server/headless/lifecycle.rs#L234).
 The next assertion failed at the official `server live-handoff` invocation.
-The inherited positive Windows live-handoff acceptance remains a failing check;
-no official implementation is patched and unsupported behavior is not called a pass.
+The inherited positive Windows live-handoff expectation was incorrect for this
+official platform capability; no official implementation is patched.
 
 A further isolated fixture starts a separate official server at the same session
 endpoint after the owned child exits, then verifies that `stop` cannot stop the
 successor and `start` refuses to adopt it. It checks the real successor PID and
 unchanged generation before fixture-only cleanup. This tests external replacement
-safety independently of live task migration. The original positive live-handoff
-assertions remain after it. Its result must be read from the corresponding CI run.
+safety independently of live task migration. These ten lifecycle checks passed at
+`44a4efef8e6f82bfabc5338d2c6df7760ccd1457` in
+[39832125317](https://github.com/particleflow/windows-endpoint/actions/runs/39832125317),
+before the unsupported live-handoff invocation failed.
+
+## Correct Windows capability assertion
+
+The corrected fixture replaces the invalid success expectation with an executed
+negative test. It requires exit code 1, no spawn error or timeout, and the exact
+official response ID, `handoff_failed` code and `live handoff is only supported on
+Unix` message. The response mapping is in the pinned
+[headless server](https://github.com/herdrdev/herdr/blob/5bd900d88c80d95f5b145397e45bbeea398b8165/src/server/headless.rs#L2931)
+and the exit code is in the pinned
+[CLI](https://github.com/herdrdev/herdr/blob/5bd900d88c80d95f5b145397e45bbeea398b8165/src/cli/server.rs#L213).
+An arbitrary failure, signal or malformed response cannot pass.
+
+Before the request, a bounded synthetic Node command records its PID and waits
+for a fixture-only release file. After rejection, the test verifies that the
+owned server is still alive with the same generation and responds through the
+PID-verified pipe; pane/workspace/tab/terminal identities remain identical. The
+original command must still have only its start record. Releasing it must produce
+exactly one completion from the same PID. The ten previous lifecycle checks,
+including foreign-peer rejection and external same-session replacement safety,
+remain in place. The new check is not skipped or a claim of live handoff support.
+
+The smoke report explicitly says `liveHandoff: unsupported_on_windows` and
+`updateRollback: not_implemented`. Future Windows updates must use controlled
+stop/restore; neither seamless handoff nor real Agent pending-tool recovery is
+established by this fixture. Consult the corrected commit's CI for its result.

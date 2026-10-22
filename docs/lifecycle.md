@@ -13,7 +13,7 @@ the finite status contract is missing. It reports `ready:false` and
 
 | Source | Available trigger | Limit |
 | --- | --- | --- |
-| [Herdr plugin startup](https://github.com/herdrdev/herdr/blob/5bd900d88c80d95f5b145397e45bbeea398b8165/docs/next/website/src/content/docs/plugins.mdx#startup-hooks), [implementation](https://github.com/herdrdev/herdr/blob/5bd900d88c80d95f5b145397e45bbeea398b8165/src/app/api/plugins/runtime.rs) | One-shot after session restoration/API readiness; again for a new server during live handoff. Existing plugin config/state environment is supplied. | No rerun on client attach, config reload, linking or enabling a plugin. Asynchronous failure does not stop Herdr. The hook is not a supervised daemon. |
+| [Herdr plugin startup](https://github.com/herdrdev/herdr/blob/5bd900d88c80d95f5b145397e45bbeea398b8165/docs/next/website/src/content/docs/plugins.mdx#startup-hooks), [implementation](https://github.com/herdrdev/herdr/blob/5bd900d88c80d95f5b145397e45bbeea398b8165/src/app/api/plugins/runtime.rs) | One-shot after session restoration/API readiness; again for a new server during Unix live handoff. Existing plugin config/state environment is supplied. | Live handoff is unsupported on Windows. No rerun on client attach, config reload, linking or enabling a plugin. Asynchronous failure does not stop Herdr. The hook is not a supervised daemon. |
 | [Herdr event hooks](https://github.com/herdrdev/herdr/blob/5bd900d88c80d95f5b145397e45bbeea398b8165/src/api/schema/events.rs) | Workspace/worktree/tab/pane events, including pane exit and Agent status changes. | No idle timer, queue-next-due event, Windows network-restored event or guaranteed event replay in this hook contract. Pane exit does not prove a closed delivery manifest exists. Concurrent plugin commands are capped at 32; a hook can fail rather than wait. |
 | [Agenvo connector](https://github.com/Xuanwo/agenvo/blob/a89415e557c415faf5626354f8e87233eb69d877/packages/connector/src/main.ts) | In-process WebSocket reconnect/backoff and heartbeat; status snapshots. | Does not launch/supervise Herdr or call transfer actions. 401/403/426 and terminal socket closes stop network retries and need attention. Restarting the connector must not erase those states. |
 | [Agenvo Herdr events](https://github.com/Xuanwo/agenvo/blob/a89415e557c415faf5626354f8e87233eb69d877/apps/herdr/src/herdr-events.ts) | Reconnect native subscriptions and publish `agenvo.resync_required`. | A remote observer notification, not a local transfer wake. A missed subscription needs resync; it cannot be the sole durable wake source. |
@@ -46,7 +46,7 @@ per existing endpoint identity:
 1. After endpoint start and Herdr API/plugin readiness, run a bounded reconciliation
    pass on existing durable work. A Herdr startup hook may request the same wake;
    it must not start another coordinator or recreate a task.
-2. After an official host restart/live handoff, revalidate the actual session and
+2. After a controlled official Windows host restart, revalidate the actual session and
    plugin mapping, then resync and wake. PID existence or an old status file is
    insufficient. Herdr session restoration is not proof that old processes or
    business operations survived.
@@ -183,14 +183,26 @@ The exact requested read-only transfer interface is in
 [transfer-lifecycle-contract.md](transfer-lifecycle-contract.md). It is a proposal,
 not an assumed upstream implementation. No transfer/migration source is changed.
 
-## Ownership checkpoint awaiting Windows evidence
+## Windows ownership and unsupported live handoff
 
-The ownership increment adds an actual separate Herdr fixture, wrong-peer stop
-rejection, and official live handoff. An exited owned child cannot confer ownership
-of its successor; a live host found during recovery requires handoff and is not
-adopted. These new checks are **pending until the exact checkpoint's Windows run
-passes**. The earlier f79ca696 run proves the preexisting 43 checks and 8+8 official
-smoke checks, not this newly added helper or handoff boundary.
+The isolated Windows fixture checks wrong-peer stop rejection and a separately
+started official server taking over the same session after the owned child exits.
+An exited owned child cannot confer ownership of its successor; a live host found
+during recovery is not adopted, restarted or stopped. These ten existing lifecycle
+checks passed at `44a4efe` in [CI 39832125317](https://github.com/particleflow/windows-endpoint/actions/runs/39832125317).
+
+That run also exposed an invalid test premise: official Herdr 0.9.5 supports live
+handoff only on Unix. The Windows test now requires the exact unsupported error,
+the original server PID/generation and pane/terminal identities, and completion
+of the same in-flight synthetic command exactly once after rejection. No test is
+skipped and no official implementation or Agent restoration setting is changed.
+See [lifecycle diagnosis](lifecycle-diagnosis.md) for the source and run history;
+the corrected rejection check requires its own exact-head Windows CI evidence.
+
+Windows updates must be designed around controlled stop and restore, with owned
+component boundaries and unknown business outcomes preserved. Seamless hot
+handoff is unsupported; active update/rollback remains unimplemented. A synthetic
+ordinary command is not proof about real Agent pending-tool recovery.
 
 Sources: [Herdr Windows generation](https://github.com/herdrdev/herdr/blob/5bd900d88c80d95f5b145397e45bbeea398b8165/src/ipc.rs),
 [official API](https://github.com/herdrdev/herdr/blob/5bd900d88c80d95f5b145397e45bbeea398b8165/src/api/schema.rs),

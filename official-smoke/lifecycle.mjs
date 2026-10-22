@@ -157,7 +157,7 @@ async function verify(root) {
     for (let i = 0; i < officialFiles.length; i++) assert.deepEqual(await fs.readFile(officialFiles[i]), originals[i])
     checked('owned_components_stopped_and_official_config_credentials_preserved')
     await verifyOwnership(config, driver.env, checked)
-    process.stdout.write(`${JSON.stringify({ lifecycleSmoke: results, transferAutomaticRecovery: false, agentBusinessReplay: 'not_tested', customOrOldAgentResume: 'unverified', lockedDesktop: 'not_tested', loggedOut: 'no_autostart', physicalPowerLoss: 'not_tested', gui: 'not_tested' }, null, 2)}\n`)
+    process.stdout.write(`${JSON.stringify({ lifecycleSmoke: results, liveHandoff: 'unsupported_on_windows', updateRollback: 'not_implemented', transferAutomaticRecovery: false, agentBusinessReplay: 'not_tested', customOrOldAgentResume: 'unverified', lockedDesktop: 'not_tested', loggedOut: 'no_autostart', physicalPowerLoss: 'not_tested', gui: 'not_tested' }, null, 2)}\n`)
   } finally {
     controller.abort(); await running
     if (lifecycle.release) await lifecycle.stop()
@@ -172,7 +172,7 @@ async function verifyOwnership(config, env, checked) {
   const ownedConfig = { ...config, session: 'ownership' }
   const driver = new NativeDriver(ownedConfig, { inheritedEnvironment: env })
   const outsiderSession = 'outside-coordinator'
-  let outsider, successor, handoffCreated = false
+  let outsider, successor, handoffAttempted = false
   const status = session => JSON.parse(driver.command(driver.herdr, ['--session', session, 'status', 'server', '--json']))
   async function wait(predicate) {
     const end = Date.now() + 30000
@@ -225,25 +225,65 @@ async function verifyOwnership(config, env, checked) {
 
     await driver.start('herdr'); await driver.waitReady('herdr')
     owned = driver.children.get('herdr')
-    driver.command(driver.herdr, ['--session', ownedConfig.session, 'workspace', 'create', '--cwd', config.sourceRoot])
+    const created = JSON.parse(driver.command(driver.herdr, ['--session', ownedConfig.session, 'workspace', 'create', '--cwd', config.sourceRoot]))
+    const pane = created.result.root_pane.pane_id
+    // A bounded ordinary command stays in flight across the rejected request.
+    // Releasing it afterwards proves the same process continues and completes
+    // once; this is not an Agent pending-tool or business-task acceptance test.
+    const effects = path.join(config.sourceRoot, 'handoff-task-effects.txt')
+    const release = path.join(config.sourceRoot, 'handoff-task-release')
+    await fs.writeFile(path.join(config.sourceRoot, 'handoff-task.cjs'), `
+const fs = require('node:fs')
+fs.appendFileSync('handoff-task-effects.txt', 'start:' + process.pid + '\\n')
+const timer = setInterval(() => {
+  if (!fs.existsSync('handoff-task-release')) return
+  clearInterval(timer)
+  fs.appendFileSync('handoff-task-effects.txt', 'complete:' + process.pid + '\\n')
+}, 100)
+setTimeout(() => process.exit(3), 25000).unref()
+`)
+    driver.command(driver.herdr, ['--session', ownedConfig.session, 'pane', 'run', pane, 'node handoff-task.cjs'])
+    let started
+    await wait(async () => {
+      try { started = await fs.readFile(effects, 'utf8') }
+      catch (error) { if (error.code === 'ENOENT') return false; throw error }
+      return /^start:\d+\n$/.test(started)
+    })
+    const taskPid = started.match(/^start:(\d+)\n$/)[1]
+    const paneIdentities = () => JSON.parse(driver.command(driver.herdr, ['--session', ownedConfig.session, 'pane', 'list'])).result.panes
+      .map(({ pane_id, workspace_id, tab_id, terminal_id, restore_error }) => ({ pane_id, workspace_id, tab_id, terminal_id, restore_error }))
+      .sort((a, b) => a.pane_id.localeCompare(b.pane_id))
+    const originalPanes = paneIdentities(), originalGeneration = owned.generation
+    assert.ok(originalPanes.some(item => item.pane_id === pane && !item.restore_error))
+    handoffAttempted = true
     const handoff = spawnSync(driver.herdr, ['--session', ownedConfig.session, 'server', 'live-handoff', '--import-exe', driver.herdr, '--expected-version', '0.9.5'], { env: driver.env, cwd: config.sourceRoot, encoding: 'utf8', timeout: 30000, maxBuffer: 16384, windowsHide: true, shell: false })
-    const unsupportedOnWindows = /live handoff is only supported on Unix/.test(`${handoff.stdout}\n${handoff.stderr}`)
-    // Keep the inherited positive acceptance assertion. Unsupported is a failing
-    // capability, never a skipped test or a successful live handoff.
-    assert.equal(handoff.status, 0, `Official live handoff failed: exit=${handoff.status}, unsupportedOnWindows=${unsupportedOnWindows}`)
-    handoffCreated = true
-    await wait(() => owned.exited)
-    await wait(() => status(ownedConfig.session).running)
-    assert.notEqual(await fs.readFile(marker, 'utf8'), owned.generation)
-    await driver.stop('herdr') // exited owned handle: must not send stop to its successor
+    // Official 0.9.5 implements live handoff only on Unix. Require the exact
+    // Windows rejection, not an arbitrary failure, skip, or successful handoff.
+    assert.equal(handoff.error, undefined, 'Live-handoff probe must execute without a spawn/timeout error')
+    assert.equal(handoff.signal, null)
+    assert.equal(handoff.status, 1)
+    assert.equal(handoff.stdout.trim(), '')
+    assert.deepEqual(JSON.parse(handoff.stderr), {
+      id: 'cli:server:live-handoff',
+      error: { code: 'handoff_failed', message: 'live handoff is only supported on Unix' },
+    })
+    assert.equal(owned.exited, false)
+    assert.equal(driver.alive('herdr'), true)
+    assert.equal(await driver.ownedGeneration(), originalGeneration)
+    assert.equal((await driver.ownedHostRequest('ping')).type, 'pong')
     assert.equal(status(ownedConfig.session).running, true)
-    await assert.rejects(driver.start('herdr'), /existing_herdr_requires_handoff/)
-    assert.equal(status(ownedConfig.session).running, true)
-    checked('official_live_handoff_successor_is_neither_adopted_restarted_nor_stopped')
+    assert.deepEqual(paneIdentities(), originalPanes)
+    assert.equal(await fs.readFile(effects, 'utf8'), started)
+    await fs.writeFile(release, 'release-synthetic-task\n')
+    await wait(async () => await fs.readFile(effects, 'utf8') === `${started}complete:${taskPid}\n`)
+    assert.equal(await driver.ownedGeneration(), originalGeneration)
+    assert.deepEqual(paneIdentities(), originalPanes)
+    assert.equal(await fs.readFile(effects, 'utf8'), `${started}complete:${taskPid}\n`)
+    checked('windows_live_handoff_rejected_without_disrupting_owned_server_panes_or_command')
   } finally {
     // Fixture-only cleanup of explicitly created isolated sessions. The product
-    // driver above is deliberately forbidden from adopting the handoff successor.
-    if ((handoffCreated || successor) && status(ownedConfig.session).running) driver.command(driver.herdr, ['--session', ownedConfig.session, 'server', 'stop'], 20000)
+    // driver above is deliberately forbidden from adopting an external successor.
+    if ((handoffAttempted || successor) && status(ownedConfig.session).running) driver.command(driver.herdr, ['--session', ownedConfig.session, 'server', 'stop'], 20000)
     else if (driver.alive('herdr')) await driver.stop('herdr')
     if (outsider && outsider.exitCode === null) {
       const exited = once(outsider, 'exit')

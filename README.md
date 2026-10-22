@@ -36,9 +36,16 @@ It uses read-only repository permissions and no repository secrets. Windows
 behavior is verified on Windows runners; Linux fixture results are not Windows
 runtime evidence. Branch protection is configured separately in GitHub.
 
-The migration starts from a known failing Windows lifecycle checkpoint:
-`Persisted panes were not restored`. See [provenance](docs/provenance.md) for the
-exact source and CI evidence. Passing tests apply only to the tested commit.
+The migration started from `Persisted panes were not restored`; the fixture now
+waits for the official persisted snapshot before injecting a crash. See
+[lifecycle diagnosis](docs/lifecycle-diagnosis.md) for source and CI evidence.
+Passing tests apply only to the tested commit.
+
+Official Herdr 0.9.5 live handoff is Unix-only. The Windows fixture asserts its
+exact unsupported response while preserving the server, panes and an in-flight
+synthetic command. This is rejection safety, not seamless handoff support.
+Future Windows updates must use a controlled stop/restore design; update and
+rollback are not implemented by the current endpoint.
 
 ## Boundaries
 
