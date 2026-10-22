@@ -243,8 +243,9 @@ export class NativeDriver {
 }
 
 export class EndpointLifecycle {
-  constructor({ driver, store, acquire, clock = Date.now, delay = sleep, policy = {} }) {
+  constructor({ driver, store, acquire, transfer = null, clock = Date.now, delay = sleep, policy = {} }) {
     this.driver = driver; this.store = store; this.acquire = acquire
+    this.transfer = transfer
     this.clock = clock; this.delay = delay
     this.policy = { maxRestarts: 3, windowMs: 600000, retryMs: 1000, ...policy }
     this.active = null; this.stopping = false; this.release = null
@@ -253,7 +254,7 @@ export class EndpointLifecycle {
   snapshot() {
     return { schema: 1, phase: this.state?.phase || 'stopped', attention: this.state?.attention || null, restartsInWindow: this.state?.restarts.length || 0, ready: false,
       journal: this.journalError ? 'unavailable' : this.state ? 'observed' : 'unverified', cleanupAttention: this.cleanupError ? code(this.cleanupError) : null,
-      connection: this.observedConnection, agent: 'official_restore_semantics_retained', desktop: 'interactive_session_unverified', transfer: 'lifecycle_interface_pending',
+      connection: this.observedConnection, agent: 'official_restore_semantics_retained', desktop: 'interactive_session_unverified', transfer: this.transfer?.snapshot() || 'lifecycle_interface_pending',
       lifecycle: { foreground: true, singleInstance: Boolean(this.release), componentRecovery: 'bounded', transferAutomaticRecovery: false, lockedDesktop: 'no_desktop_readiness_claim', loggedOut: 'not_running_no_autostart' } }
   }
   async save() {
@@ -267,6 +268,7 @@ export class EndpointLifecycle {
   }
   async cleanupOwned() {
     this.cleanupError = null
+    try { await this.transfer?.stop() } catch (error) { this.cleanupError = error }
     for (const component of ['connector', 'herdr']) {
       try { await this.driver.stop(component) }
       catch (error) { this.cleanupError ??= error }
@@ -299,6 +301,7 @@ export class EndpointLifecycle {
       demand(!this.stopping, 'startup_cancelled')
       await this.driver.start('connector'); await this.driver.waitReady('connector')
       demand(!this.stopping, 'startup_cancelled')
+      this.transfer?.start()
       this.state.phase = 'running'; await this.save()
       return this.snapshot()
     } catch (error) {
@@ -351,8 +354,10 @@ export class EndpointLifecycle {
     this.active = (async () => {
       if (this.stopping || this.state?.phase !== 'running') return this.snapshot()
       try {
+        const previousConnection = this.observedConnection
         const s = await this.driver.connectorStatus()
         this.observedConnection = s?.state === 'online' ? 'online_snapshot' : s?.state || 'unverified'
+        if (this.observedConnection === 'online_snapshot' && previousConnection !== 'online_snapshot') this.transfer?.hint('network')
         const reason = connectorAttention(s)
         if (reason) { await this.attention(reason); return this.snapshot() }
         if (!this.driver.alive('herdr')) await this.recover('herdr')
@@ -360,6 +365,10 @@ export class EndpointLifecycle {
         else {
           const host = await this.driver.ownedHostStatus()
           demand(host.running && host.version === '0.9.5' && host.endpoint_compatible === true, 'herdr_observation_unknown')
+        }
+        if (!this.stopping && this.state.phase === 'running' && this.transfer) {
+          const transfer = await this.transfer.tick()
+          if (transfer.attention) await this.attention(transfer.attention)
         }
       } catch (error) {
         try { await this.attention(code(error)) } catch { throw error }
@@ -370,9 +379,13 @@ export class EndpointLifecycle {
   }
   async stop() {
     this.stopping = true
+    this.transfer?.requestStop()
     if (this.closing) return this.closing
     this.closing = this.stopOwned()
     try { return await this.closing } finally { this.closing = null }
+  }
+  transferHint(kind) {
+    if (!this.stopping && this.release && this.state?.phase === 'running') this.transfer?.hint(kind)
   }
   async stopOwned() {
     let firstError
@@ -421,5 +434,6 @@ export class EndpointLifecycle {
 }
 
 export function leaseKeys(config) {
-  return [`device:${config.deviceId}`, `herdr:${config.herdrConfigRoot}:${config.session}`, `connector:${config.agenvoConfigDir}`]
+  return [`device:${config.deviceId}`, `herdr:${config.herdrConfigRoot}:${config.session}`, `connector:${config.agenvoConfigDir}`,
+    ...(config.transferStateDir ? [`transfer:${config.transferStateDir}`] : [])]
 }

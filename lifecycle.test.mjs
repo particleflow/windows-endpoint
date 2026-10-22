@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { EndpointLifecycle, LifecycleError, StateStore, NativeDriver, acquireLeases, connectorAttention, leaseKeys } from './lifecycle.mjs'
 import { managedEnvironment } from './endpoint.mjs'
+import { TransferError, TransferLifecycle } from './transfer-lifecycle.mjs'
 
 async function fixture(t, options = {}) {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'endpoint-life-')))
@@ -22,7 +23,7 @@ async function fixture(t, options = {}) {
     recoverConnectorLock: async () => { calls.push('recover:lock') },
   }
   const store = new StateStore(directory, 'fixture-device')
-  const create = () => new EndpointLifecycle({ driver, store, acquire: () => acquireLeases([directory], directory), clock: () => 1000000, delay: async () => {}, ...options })
+  const create = (overrides = {}) => new EndpointLifecycle({ driver, store, acquire: () => acquireLeases([directory], directory), clock: () => 1000000, delay: async () => {}, ...options, ...overrides })
   const lifecycle = create()
   t.after(async () => { if (lifecycle.release) await lifecycle.stop(); await fs.rm(directory, { recursive: true, force: true }) })
   return { lifecycle, create, driver, alive, calls, store, directory }
@@ -278,3 +279,113 @@ test('owned Herdr generation rejects replaced endpoint without sending stop', as
   await fs.writeFile(driver.marker, '123:789')
   await assert.rejects(driver.stop('herdr'), /herdr_generation_changed/)
 })
+
+test('unified lifecycle persists transfer failure and cannot bypass it by restarting', async t => {
+  const actions = []
+  const transfer = new TransferLifecycle({ driver: { invoke: async action => {
+    actions.push(action)
+    return { status: 1, stdout: JSON.stringify({ schema: 'memoh.delivery.lifecycle.v1', state: 'unknown', next_due_at: null, error_class: 'permission' }) }
+  } } })
+  const { lifecycle, create } = await fixture(t, { transfer })
+  await lifecycle.start(); await lifecycle.tick()
+  assert.equal(lifecycle.state.attention, 'transfer_permission')
+  await lifecycle.stop()
+  const next = create()
+  await assert.rejects(next.start(), /transfer_permission/)
+  assert.deepEqual(actions, ['lifecycle-summary'])
+})
+
+test('unified stop drains in-flight transfer before stopping components or releasing ownership', async t => {
+  let finish, entered
+  const ready = new Promise(r => { entered = r })
+  const actions = []
+  const transfer = new TransferLifecycle({ driver: { invoke: action => {
+    actions.push(action)
+    return new Promise(r => { finish = () => r({ status: 0, stdout: JSON.stringify({ schema: 'memoh.delivery.lifecycle.v1', state: 'due', next_due_at: null, error_class: 'none' }) }); entered() })
+  } } })
+  const { lifecycle, alive, calls } = await fixture(t, { transfer })
+  await lifecycle.start()
+  const tick = lifecycle.tick(); await ready
+  const stop = lifecycle.stop()
+  lifecycle.transferHint('completion')
+  assert.equal(alive.size, 2); assert.ok(lifecycle.release)
+  finish(); await Promise.all([tick, stop])
+  assert.deepEqual(actions, ['lifecycle-summary'])
+  assert.deepEqual(calls.slice(-2), ['stop:connector', 'stop:herdr'])
+  assert.equal(alive.size, 0); assert.equal(lifecycle.release, null)
+})
+
+test('shared transfer state gets one endpoint lease even across devices and sessions', async t => {
+  const { directory } = await fixture(t)
+  const first = leaseKeys({ deviceId: 'one', session: 'one', herdrConfigRoot: 'one', agenvoConfigDir: 'one', transferStateDir: 'shared-state' })
+  const second = leaseKeys({ deviceId: 'two', session: 'two', herdrConfigRoot: 'two', agenvoConfigDir: 'two', transferStateDir: 'shared-state' })
+  const release = await acquireLeases(first, directory)
+  try { await assert.rejects(acquireLeases(second, directory), /endpoint_already_owned/) }
+  finally { await release() }
+  const releaseNext = await acquireLeases(second, directory); await releaseNext()
+})
+
+const transferDecision = (state, error_class = 'none') => ({ schema: 'memoh.delivery.lifecycle.v1', state, next_due_at: null, error_class })
+const transferResult = (action, value, status = 0) => ({ status, stdout: JSON.stringify(action === 'advance-results' ?
+  { ...value, delivery_id: 'original-delivery', phase: 'uploading', offset: 3, admitted: true, associated: false } : value) })
+
+for (const action of ['lifecycle-summary', 'advance-results']) {
+  for (const failure of [
+    { name: 'due with exit 1', reason: 'transfer_command_outcome_unknown', result: () => transferResult(action, transferDecision('due'), 1) },
+    { name: 'native timeout rejection', reason: 'transfer_command_outcome_unknown', reject: () => new TransferError('transfer_command_outcome_unknown') },
+    { name: 'permission decision', reason: 'transfer_permission', result: () => transferResult(action, transferDecision('blocked', 'permission'), 1) },
+    { name: 'native permission rejection', reason: 'transfer_permission', reject: () => new TransferError('transfer_permission') },
+    { name: 'malformed JSON', reason: 'transfer_summary_output_invalid', result: () => ({ status: 0, stdout: '{' }) },
+    { name: 'signaled process', reason: 'transfer_command_outcome_unknown', result: () => ({ status: null, signal: 'SIGTERM', stdout: '' }) },
+  ]) {
+    test(`stop drain preserves ${action} ${failure.name} before cleanup and across restart`, async t => {
+      let finish, entered, completed = false
+      const ready = new Promise(r => { entered = r })
+      const actions = []
+      const commandDriver = { invoke: async (requested, mayInvoke) => {
+        assert.ok(mayInvoke()); actions.push(requested)
+        if (completed) return transferResult(requested, transferDecision('idle'))
+        if (requested !== action) return transferResult(requested, transferDecision('due'))
+        return new Promise((resolve, reject) => {
+          finish = () => { completed = true; if (failure.reject) reject(failure.reject()); else resolve(failure.result()) }
+          entered()
+        })
+      } }
+      const transfer = new TransferLifecycle({ driver: commandDriver })
+      const f = await fixture(t, { transfer })
+      const cleanupObservations = []
+      const originalStop = f.driver.stop
+      f.driver.stop = async component => {
+        cleanupObservations.push({ component, attention: (await f.store.load()).attention, heldLease: Boolean(f.lifecycle.release) })
+        await originalStop(component)
+      }
+      await f.lifecycle.start()
+      const tick = f.lifecycle.tick(); await ready
+      const stop = f.lifecycle.stop()
+      const duplicateStop = f.lifecycle.stop()
+      f.lifecycle.transferHint('completion')
+      assert.equal(f.alive.size, 2); assert.ok(f.lifecycle.release)
+      assert.equal(cleanupObservations.length, 0)
+      finish(); await Promise.all([tick, stop, duplicateStop])
+      const expectedActions = action === 'advance-results' ? ['lifecycle-summary', 'advance-results'] : ['lifecycle-summary']
+      assert.deepEqual(actions, expectedActions)
+      assert.deepEqual(cleanupObservations, ['connector', 'herdr'].map(component => ({ component, attention: failure.reason, heldLease: true })))
+      assert.equal(transfer.snapshot().attention, failure.reason)
+      assert.equal(f.lifecycle.state.phase, 'stopped')
+      assert.equal((await f.store.load()).attention, failure.reason)
+      assert.equal(f.alive.size, 0); assert.equal(f.lifecycle.release, null)
+
+      // A fresh consumer has no in-memory attention. The persisted endpoint gate
+      // must reject restart before another producer command or owned child starts.
+      const next = f.create({ transfer: new TransferLifecycle({ driver: commandDriver }) })
+      const starts = f.calls.filter(c => c.startsWith('start:')).length
+      await assert.rejects(next.start(), { code: failure.reason })
+      assert.equal(f.calls.filter(c => c.startsWith('start:')).length, starts)
+      assert.deepEqual(actions, expectedActions)
+      // Explicit acknowledgement rechecks the same producer, never re-enqueues.
+      await next.start({ acknowledgeAttention: true }); await next.tick(); await next.stop()
+      assert.deepEqual(actions, [...expectedActions, 'lifecycle-summary'])
+      assert.equal((await f.store.load()).attention, null)
+    })
+  }
+}
