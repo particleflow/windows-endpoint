@@ -3,13 +3,59 @@
   "qualification": "blocked",
   "platform": "win32-x64",
   "components": {
-    "herdr": {"version": "0.9.5", "source": "https://github.com/herdrdev/herdr", "revision": "5bd900d88c80d95f5b145397e45bbeea398b8165", "entry": "herdr/herdr.exe"},
-    "connector": {"version": "0.2.0", "source": "https://github.com/Xuanwo/agenvo", "revision": "a89415e557c415faf5626354f8e87233eb69d877", "entry": "node_modules/@agenvo/herdr/dist/cli.js", "package": "node_modules/@agenvo/herdr/package.json", "name": "@agenvo/herdr"},
-    "pi": {"version": "1.2.0", "source": "https://github.com/earendil-works/pi", "revision": "06a466935536f8c9bcacb2d5efc0fc021be1bdff", "entry": "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", "package": "node_modules/@earendil-works/pi-coding-agent/package.json", "name": "@earendil-works/pi-coding-agent"},
-    "node": {"version": "24.14.0", "source": "https://nodejs.org", "revision": "v24.14.0", "entry": "node/node.exe"},
-    "git": {"version": null, "source": "https://github.com/git-for-windows/git", "revision": null, "entry": "git/bin/bash.exe"},
-    "transfer": {"version": "0.3.0", "source": "https://github.com/particleflow/Memoh", "revision": "6ddf61dcd8199758e4110398645c556a3d6d7375", "entry": "transfer/transferqueue.exe"}
+    "herdr": {
+      "version": "0.9.5",
+      "source": "https://github.com/herdrdev/herdr",
+      "revision": "5bd900d88c80d95f5b145397e45bbeea398b8165",
+      "entry": "herdr/herdr.exe"
+    },
+    "connector": {
+      "version": "0.2.0",
+      "source": "https://github.com/Xuanwo/agenvo",
+      "revision": "a89415e557c415faf5626354f8e87233eb69d877",
+      "entry": "node_modules/@agenvo/herdr/dist/cli.js",
+      "package": "node_modules/@agenvo/herdr/package.json",
+      "name": "@agenvo/herdr"
+    },
+    "pi": {
+      "version": "1.2.0",
+      "source": "https://github.com/earendil-works/pi",
+      "revision": "06a466935536f8c9bcacb2d5efc0fc021be1bdff",
+      "entry": "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+      "package": "node_modules/@earendil-works/pi-coding-agent/package.json",
+      "name": "@earendil-works/pi-coding-agent"
+    },
+    "node": {
+      "version": "24.14.0",
+      "source": "https://nodejs.org",
+      "revision": "v24.14.0",
+      "entry": "node/node.exe"
+    },
+    "git": {
+      "version": "2.51.0.windows.1",
+      "source": "https://github.com/git-for-windows/git",
+      "revision": "v2.51.0.windows.1",
+      "entry": "git/bin/bash.exe"
+    },
+    "transfer": {
+      "version": "0.7.0",
+      "source": "https://github.com/particleflow/Memoh",
+      "revision": "4c880e07ecdff1b6caadd86348779603fce9e8aa",
+      "entry": "transfer/transferqueue.exe"
+    }
   },
-  "requiredFiles": ["git/cmd/git.exe", "node_modules/.bin/pi", "node_modules/.bin/pi.cmd", "transfer/herdr-plugin.toml", "transfer/SHA256SUMS.json"],
-  "blockers": ["transfer_candidate_not_qualified", "git_version_not_selected", "official_artifact_hashes_not_locked", "clean_windows_acceptance_pending", "approved_binary_path_update_contract_pending", "unified_lifecycle_idle_recovery_missing"]
+  "requiredFiles": [
+    "git/cmd/git.exe",
+    "node_modules/.bin/pi",
+    "node_modules/.bin/pi.cmd",
+    "transfer/herdr-plugin.toml",
+    "transfer/SHA256SUMS.json"
+  ],
+  "blockers": [
+    "release_bundle_not_qualified",
+    "production_tls_and_authorization_unverified",
+    "clean_windows_user_acceptance_pending",
+    "approved_binary_path_update_contract_pending",
+    "agent_tool_recovery_unverified"
+  ]
 }

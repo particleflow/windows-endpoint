@@ -5,11 +5,12 @@ import { fileURLToPath } from 'node:url'
 import { EndpointError, validateConfig, validateDirectory, verifyBundle } from './endpoint.mjs'
 import { deploymentLayout, deploymentReferences } from './deployment.mjs'
 import { acquireLeases, connectorAttention, LifecycleError, StateStore } from './lifecycle.mjs'
+import { createExplicitRuntime, validateRuntimeRequest, RuntimeError } from './runtime.mjs'
 
 export class HostError extends Error {
   constructor(code) { super(code); this.code = code }
 }
-const safeCode = error => error instanceof HostError || error instanceof LifecycleError || error instanceof EndpointError ? error.code :
+const safeCode = error => error instanceof HostError || error instanceof LifecycleError || error instanceof EndpointError || error instanceof RuntimeError ? error.code :
   ['EACCES', 'EPERM', 'EROFS'].includes(error?.code) ? 'host_storage_permission_denied' : error?.code === 'ENOSPC' ? 'host_storage_full' : 'host_operation_failed'
 const samePath = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
 async function regular(file, limit) {
@@ -31,9 +32,9 @@ function validatedStatus(value) {
   const objectFields = (item, names) => item && typeof item === 'object' && Object.keys(item).sort().join(',') === names.sort().join(',')
   const invalid = () => { throw new HostError('host_status_invalid') }
   if (!value || typeof value !== 'object' || Object.keys(value).sort().join(',') !== fields.sort().join(',') || value.schema !== 1 || value.owner !== 'windows-endpoint-host' || !Number.isSafeInteger(value.updatedAt) || value.ready !== false || value.transferAutomaticRecovery !== false) invalid()
-  if (!/^[a-f0-9-]{36}$/.test(value.runId) || !Number.isSafeInteger(value.pid) || value.pid < 1 || !['starting', 'running', 'stopping', 'stopped', 'failed', 'stop_failed'].includes(value.phase) || !['needs_attention', 'blocked', 'observed_fixture'].includes(value.health) || !code(value.attention)) invalid()
-  if (!['unverified', 'missing', 'loaded', 'invalid', 'changed_restart_required'].includes(value.configuration) || !['unavailable_unqualified', 'unavailable_missing', 'unavailable_invalid', 'synthetic_fixture'].includes(value.components) || !['unverified', 'authorization_unverified', 'authorization_required', 'online_snapshot', 'offline', 'connecting', 'authenticating', 'stopped', 'needs_attention', 'recovering'].includes(value.connection)) invalid()
-  if (!['host_process_only', 'synthetic_components'].includes(value.evidence) || value.desktop !== 'unavailable' || value.agent !== 'unavailable_unqualified' || !['unverified', 'recording', 'capacity_reached'].includes(value.log)) invalid()
+  if (!/^[a-f0-9-]{36}$/.test(value.runId) || !Number.isSafeInteger(value.pid) || value.pid < 1 || !['starting', 'running', 'stopping', 'stopped', 'failed', 'stop_failed'].includes(value.phase) || !['needs_attention', 'blocked', 'observed_fixture', 'observed_components'].includes(value.health) || !code(value.attention)) invalid()
+  if (!['unverified', 'missing', 'loaded', 'invalid', 'changed_restart_required'].includes(value.configuration) || !['unavailable_unqualified', 'unavailable_missing', 'unavailable_invalid', 'synthetic_fixture', 'verified_local'].includes(value.components) || !['unverified', 'authorization_unverified', 'authorization_required', 'online_snapshot', 'offline', 'connecting', 'authenticating', 'stopped', 'needs_attention', 'recovering'].includes(value.connection)) invalid()
+  if (!['host_process_only', 'synthetic_components', 'native_components'].includes(value.evidence) || value.desktop !== 'unavailable' || value.agent !== 'unavailable_unqualified' || !['unverified', 'recording', 'capacity_reached'].includes(value.log)) invalid()
   if (Object.hasOwn(value, 'control') && !['unverified', 'stdin_open', 'stdin_closed'].includes(value.control)) invalid()
   if (value.componentLifecycle !== null) {
     const c = value.componentLifecycle
@@ -50,6 +51,7 @@ export class ForegroundHost {
     this.statusFile = path.join(this.stateDirectory, 'host-status.json')
     this.logDirectory = path.join(this.layout.logs, 'endpoint-host')
     this.configFile = path.join(this.layout.config, 'endpoint.json')
+    this.runtimeFile = path.join(this.layout.config, 'runtime.json')
     this.emit = emit; this.createTestRuntime = createTestRuntime
     this.runId = randomUUID(); this.phase = 'starting'; this.attention = null
     this.stopReason = null; this.control = 'unverified'
@@ -64,17 +66,17 @@ export class ForegroundHost {
     const attention = this.stopReason || this.attention || runtime?.attention || runtime?.cleanupAttention || null
     const connection = attention === 'connector_authentication_required' ? 'authorization_required' : runtime?.connection || this.connection
     return { schema: 1, owner: 'windows-endpoint-host', runId: this.runId, pid: process.pid, updatedAt: Date.now(),
-      phase: this.phase, control: this.control, health: attention ? 'needs_attention' : this.configuration !== 'loaded' || !this.runtime ? 'blocked' : 'observed_fixture',
+      phase: this.phase, control: this.control, health: attention ? 'needs_attention' : this.configuration !== 'loaded' || !this.runtime ? 'blocked' : this.createTestRuntime ? 'observed_fixture' : 'observed_components',
       attention, configuration: this.configuration, components: this.components, connection,
       componentLifecycle: runtime ? { phase: runtime.phase, attention: runtime.attention, cleanupAttention: runtime.cleanupAttention, journal: runtime.journal, restartsInWindow: runtime.restartsInWindow } : null,
       transfer: runtime?.transfer && typeof runtime.transfer === 'object' ? { state: runtime.transfer.state, attention: runtime.transfer.attention, active: runtime.transfer.active } : 'not_included_pending_qualification',
-      evidence: this.createTestRuntime ? 'synthetic_components' : 'host_process_only',
+      evidence: this.createTestRuntime ? 'synthetic_components' : this.components === 'verified_local' ? 'native_components' : 'host_process_only',
       ready: false, desktop: 'unavailable', agent: 'unavailable_unqualified', transferAutomaticRecovery: false, log: this.logState }
   }
-  async configRaw() {
+  async configRaw(file = this.configFile) {
     try {
       await validateDirectory(this.layout.config)
-      return await regular(this.configFile, 65536)
+      return await regular(file, 65536)
     } catch (error) { if (error.code === 'ENOENT') return null; throw error }
   }
   publish() {
@@ -129,17 +131,27 @@ export class ForegroundHost {
           if (!samePath(config[key], expected[key])) throw new HostError('host_configuration_root_mismatch')
         }
         this.configuration = 'loaded'
+        const runtimeRaw = await this.configRaw(this.runtimeFile)
+        this.runtimeStamp = stamp(runtimeRaw)
+        let request = null
+        if (runtimeRaw !== null) {
+          try { request = validateRuntimeRequest(JSON.parse(runtimeRaw), config) }
+          catch (error) { throw error instanceof RuntimeError ? error : new RuntimeError('runtime_request_invalid') }
+        }
         await this.observeAuthorization(config)
         const previous = await new StateStore(this.stateDirectory, config.deviceId).load()
         if (previous.attention) this.attention = previous.attention
         else if (previous.phase !== 'stopped') this.attention = 'host_previous_runtime_uncertain'
         try { await verifyBundle(config.bundleRoot, config.manifestSha256) }
         catch (error) { this.components = error.code === 'ENOENT' ? 'unavailable_missing' : 'unavailable_invalid' }
-        // Test injection exists only in a separate source fixture, never in CLI
-        // arguments/config/environment. No real component qualification exists.
+        // Test injection remains confined to the separate source fixture.
         if (this.createTestRuntime && !this.stopRequested && !this.attention) {
           this.runtime = await this.createTestRuntime({ config, stateDirectory: this.stateDirectory })
           if (!this.stopRequested) { await this.runtime.start(); this.components = 'synthetic_fixture' }
+        } else if (request && !this.stopRequested && !this.attention) {
+          this.runtime = createExplicitRuntime({ config, stateDirectory: this.stateDirectory, request })
+          await this.runtime.start()
+          if (!this.stopRequested) this.components = 'verified_local'
         }
       }
     } catch (error) {
@@ -171,7 +183,8 @@ export class ForegroundHost {
     this.active = (async () => {
       if (this.stopRequested || this.phase !== 'running') return
       const raw = await this.configRaw()
-      if (stamp(raw) !== this.configStamp) {
+      const runtimeRaw = await this.configRaw(this.runtimeFile)
+      if (stamp(raw) !== this.configStamp || this.configuration === 'loaded' && stamp(runtimeRaw) !== this.runtimeStamp) {
         this.configuration = 'changed_restart_required'; this.attention = 'host_configuration_changed'
         if (this.runtime?.state && !this.runtime.state.attention) await this.runtime.attention('host_configuration_changed')
       }

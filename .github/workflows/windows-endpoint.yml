@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: '24.14.0'
       - name: Verify delivery boundary and recovery fixtures
-        run: node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs
+        run: node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs
       - name: Validate transfer fixture JavaScript syntax
         run: node --check official-smoke/transfer.mjs
       - name: Validate transfer fixture PowerShell syntax
@@ -64,3 +64,47 @@ jobs:
         run: |
           & '${{ runner.temp }}/endpoint official Unicode 空格/node/node.exe' ./official-smoke/lifecycle.mjs '${{ runner.temp }}/endpoint official Unicode 空格'
           if ($LASTEXITCODE -ne 0) { throw 'Official lifecycle smoke failed' }
+  explicit-runtime:
+    name: Explicit Windows host with source-built transfer CLI
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: particleflow/Memoh
+          ref: 4c880e07ecdff1b6caadd86348779603fce9e8aa
+          path: producer-source
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: producer-source/go.mod
+          cache: false
+      - name: Build exact public producer source with its unchanged build script
+        shell: pwsh
+        working-directory: producer-source
+        run: |
+          if ((git rev-parse HEAD) -ne '4c880e07ecdff1b6caadd86348779603fce9e8aa') { throw 'Wrong producer source' }
+          python scripts/build-transferqueue-bundle.py --output '${{ runner.temp }}/endpoint-transfer-source-build'
+          if ($LASTEXITCODE -ne 0) { throw 'Producer source build failed' }
+      - name: Verify producer native fixtures (test dispatcher has fixture-only CA injection)
+        shell: pwsh
+        run: |
+          & '${{ runner.temp }}/endpoint-transfer-source-build/verify-fixtures.ps1'
+          if ($LASTEXITCODE -ne 0) { throw 'Producer native fixtures failed' }
+      - name: Assemble fixed component inventory for explicit host review
+        shell: pwsh
+        run: |
+          $root = '${{ runner.temp }}/endpoint explicit components'
+          ./official-smoke/prepare.ps1 -Root $root
+          Move-Item -LiteralPath (Join-Path $root 'build-cache') -Destination '${{ runner.temp }}/endpoint-explicit-npm-cache'
+          Copy-Item -LiteralPath '${{ runner.temp }}/endpoint-transfer-source-build' -Destination (Join-Path $root 'transfer') -Recurse
+          & (Join-Path $root 'node/node.exe') ./official-smoke/inventory.mjs $root
+          if ($LASTEXITCODE -ne 0) { throw 'Explicit component inventory failed' }
+      - name: Exercise public host and production CLI with isolated configuration
+        shell: pwsh
+        run: |
+          & '${{ runner.temp }}/endpoint explicit components/node/node.exe' ./official-smoke/host.mjs '${{ runner.temp }}/endpoint explicit components' '${{ runner.temp }}/endpoint explicit data'
+          if ($LASTEXITCODE -ne 0) { throw 'Explicit host integration failed' }

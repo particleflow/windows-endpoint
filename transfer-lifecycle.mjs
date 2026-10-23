@@ -13,9 +13,8 @@ export function transferCommand(config, action) {
   return { file: path.join(config.bundleRoot, catalog.components.transfer.entry), args: ['-action', action] }
 }
 
-// Internal adapter, not activated by the public CLI. Qualification must validate
-// the exact executable/plugin inventory AND the implemented lifecycle contract.
-// The old pinned artifact and the unreviewed PR56 source do not qualify.
+// Activated only through the explicit runtime request and verified inventory.
+// This finite command adapter never creates a queue or replays an Agent task.
 export class NativeTransferDriver {
   constructor(config, { qualify, inheritedEnvironment = process.env } = {}) {
     this.config = structuredClone(config)
@@ -72,7 +71,7 @@ export class TransferLifecycle {
   snapshot() {
     return { state: this.state, attention: this.attention,
       decision: this.decision, nextCheckAt: this.nextCheck === null ? null : new Date(this.nextCheck).toISOString(),
-      active: Boolean(this.active), businessCompletion: 'not_inferred', evidence: 'consumer_unit_boundary' }
+      active: Boolean(this.active), businessCompletion: 'not_inferred', evidence: this.driver instanceof NativeTransferDriver ? 'native_cli_decisions' : 'consumer_unit_boundary' }
   }
   suspend(reason) {
     this.attention = reason; this.state = 'needs_attention'; this.nextCheck = null

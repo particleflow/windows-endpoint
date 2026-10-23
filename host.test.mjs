@@ -123,6 +123,26 @@ test('a complete inert bundle inventory never activates unqualified public compo
   await assert.rejects(fs.lstat(path.join(f.stateDirectory, 'lifecycle.json')), { code: 'ENOENT' })
 })
 
+test('public entry rejects a malformed explicit request without starting components or rewriting it', async t => {
+  const f = await fixture(t, true), file = path.join(f.root, 'config/runtime.json')
+  const raw = JSON.stringify({ schema: 1, mode: 'explicit-review', manifestSha256: f.config.manifestSha256, transfer: 'existing-queue', qualified: true })
+  await fs.writeFile(file, raw)
+  const p = launch(t, f)
+  const s = await attention(p, 'runtime_request_invalid')
+  assert.equal(s.componentLifecycle, null); assert.equal(s.ready, false)
+  assert.equal((await stop(p)).code, 2)
+  assert.equal(await fs.readFile(file, 'utf8'), raw)
+})
+
+test('adding explicit activation to a running observer requires restart and never hot-starts', async t => {
+  const f = await fixture(t, true), p = launch(t, f)
+  await running(p)
+  await fs.writeFile(path.join(f.root, 'config/runtime.json'), JSON.stringify({ schema: 1, mode: 'explicit-review', manifestSha256: f.config.manifestSha256, transfer: 'existing-queue' }))
+  const s = await attention(p, 'host_configuration_changed')
+  assert.equal(s.configuration, 'changed_restart_required'); assert.equal(s.componentLifecycle, null)
+  assert.equal((await stop(p)).code, 2)
+})
+
 test('a linked authorization directory is rejected without observing foreign status', async t => {
   const f = await fixture(t, true)
   const foreign = path.join(f.root, 'foreign')

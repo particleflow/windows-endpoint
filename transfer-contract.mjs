@@ -67,5 +67,9 @@ export function parseAdvanceDecision(raw, now = Date.now()) {
     for (const k of ['bot_id', 'delivery_id', 'operation_id', 'mime']) requireContract(typeof ref[k] === 'string' && ref[k].length > 0 && ref[k].length <= 256 && !/[\x00-\x1f]/.test(ref[k]))
     requireContract(ref.delivery_id === value.delivery_id && /^[a-f0-9]{64}$/.test(ref.content_hash) && Number.isSafeInteger(ref.size_bytes) && ref.size_bytes >= 0)
   }
+  if (Object.hasOwn(value, 'feedback_status')) {
+    requireContract(['recorded', 'unavailable'].includes(value.feedback_status))
+    requireContract(value.feedback_status === 'recorded', 'transfer_feedback_unavailable')
+  }
   return result
 }

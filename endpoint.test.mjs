@@ -63,7 +63,7 @@ test('verified full inventory is still review-only, with explicit blockers', asy
   assert.equal(result.capabilities.desktop, 'unsupported_by_command_connector')
   assert.equal(result.lifecycle.automaticRecovery, false)
   assert.equal(result.lifecycle.idleQueueWake, 'missing')
-  assert.ok(result.blockers.includes('transfer_candidate_not_qualified'))
+  assert.ok(result.blockers.includes('release_bundle_not_qualified'))
   assert.ok(!JSON.stringify(result).includes('DO-NOT-DISCLOSE'))
 })
 

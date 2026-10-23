@@ -1,3 +1,10 @@
+# Historical handoff; current explicit adapter
+
+The PR56/old-artifact state below records the earlier frozen consumer boundary.
+The new source pin and native public-host integration are described in
+[explicit runtime](explicit-runtime.md). Neither the old artifact nor these earlier
+mock tests are evidence for that newer executable build.
+
 # Transfer consumer and remaining producer handoff
 
 The consumer starts from Windows endpoint main

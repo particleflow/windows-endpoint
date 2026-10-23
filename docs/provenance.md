@@ -49,3 +49,9 @@ report their own Windows CI evidence. Official Herdr/Pi/Agenvo source is not pat
 
 No full installer, real Agent pending-tool, automatic transfer, update/rollback,
 real UI, capacity or physical power-loss acceptance is established by these tests.
+
+The explicit runtime CI additionally builds the public Memoh source at
+[`4c880e07ecdff1b6caadd86348779603fce9e8aa`](https://github.com/particleflow/Memoh/commit/4c880e07ecdff1b6caadd86348779603fce9e8aa)
+using that commit's unchanged build script. Its plugin version is 0.7.0. No Go
+implementation is imported, no old denied artifact is fetched, and no binary is
+redistributed by this repository. See [scope and limits](explicit-runtime.md).

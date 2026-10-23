@@ -2,10 +2,11 @@
 
 This is a runnable local host entry in the existing endpoint, not an installed
 Windows service or a qualified product bundle. It owns a single foreground
-process, observes configuration and writes bounded diagnostics. Real component
-activation remains unavailable pending complete qualification and connection
-authorization. The public CLI cannot enable synthetic components or override
-qualification with a config flag, environment variable or command argument.
+process, observes configuration and writes bounded diagnostics. The default
+remains observation-only; [explicit runtime review](explicit-runtime.md) adds
+inventory-verified official component startup and an existing-queue consumer.
+Release qualification and production connection authorization remain separate.
+The public CLI cannot enable synthetic components or override verification.
 
 ## Run and observe
 
@@ -83,16 +84,16 @@ the missing component qualification.
 Missing config is `host_configuration_missing`; invalid config and changed config
 are distinct attention states. A config edit requires stop/restart and never hot
 reloads identities or component roots. Missing/invalid bundles remain unavailable;
-a valid inventory still remains `unavailable_unqualified`. Missing credential
+a valid inventory without an explicit request remains `unavailable_unqualified`. Missing credential
 metadata or a fresh matching 401/403 observation is `authorization_required`,
 not machine offline. Credential contents are not read. Existing credential
 metadata alone is only `authorization_unverified`, not authorization success.
 
 The status `phase` describes this host process. A running host with missing config
 is useful for diagnosis, not PC capability readiness. `componentLifecycle`, when
-present in tests, separately describes the reused coordinator. Public production
-status reports `host_process_only` evidence and
-`transfer:not_included_pending_qualification`.
+present, separately describes the reused coordinator. The observation-only mode
+reports `host_process_only` evidence and `transfer:not_included_pending_qualification`;
+the explicit native mode and its narrower readiness states are described separately.
 
 Snapshots and log events exclude configured addresses, identities, paths, credential
 contents, arbitrary component output and task payloads. State-change logs stop at
@@ -176,9 +177,10 @@ are unchanged; no lock deletion, serial test mode, skipped cases or weaker owner
 assertions are used. Synthetic identity generation is not production registration.
 
 The existing official Windows dependency/lifecycle job remains separate. Its
-coverage does not make this new host a qualified real-component launcher. Needed
-before activation: complete supported artifact handoff and qualification, approved
-official runtime paths, connection authorization and real executable integration.
+coverage alone does not qualify the public host. The new explicit runtime job
+covers that entry with native components; it still requires approved official
+runtime paths, existing credentials and local inventory verification, and does
+not confer release qualification or production connection authorization.
 Agent pending-tool recovery, automatic transfer wakes, active updates/rollback,
 desktop GUI/session behavior and physical power-loss/capacity acceptance remain
 unimplemented or unverified. No service, production PC or NAS is used by these tests.
