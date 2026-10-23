@@ -28,9 +28,13 @@ The same production `transferqueue.exe` is built from unchanged public source
 1. The original isolated host test still requires untrusted TLS rejection with
    no transfer HTTP request, queue persistence and connector-auth failure checks.
 2. After account trust, both leaves' signatures are checked against the same CA.
-   The wrong-name leaf must fail in the production CLI: exit 1, persisted waiting
-   state, no uploaded bytes/association, TLS failure and no HTTP request. A killed
-   process, timeout or another exit code cannot satisfy the assertion.
+   The wrong-name leaf must be refused in the production CLI: persisted
+   waiting/queued/connection state with a future retry, recorded feedback, no
+   uploaded bytes/association, TLS failure and no HTTP request. The fixed
+   producer's `queue.go:fail` returns the durable-save result, so this recorded
+   refusal requires exit 0; it is not upload success. A killed process, timeout
+   or nonzero exit cannot satisfy the assertion. The initial fixture commit
+   `351105a` mistakenly expected exit 1; source review caught that mismatch.
 3. Switching only the served leaf to the matching name allows the real host's
    existing finite consumer to upload the original seven bytes in two chunks.
    The fixture checks original task/delivery namespace, synthetic authorization,

@@ -137,8 +137,13 @@ try {
     for (const leaf of [wrongCert, rightCert]) assert.equal(leaf.verify(rootCert.publicKey), true)
     assert.equal(wrongCert.checkIP('127.0.0.1'), undefined); assert.equal(rightCert.checkIP('127.0.0.1'), '127.0.0.1')
     relay.setSecureContext({ cert: mismatch, key: await fs.readFile(path.join(trusted, 'mismatch.key')) })
-    const refused = await cli('advance-results', null, null, 1)
+    // Producer fail() returns the durable-save result: a recorded network
+    // refusal exits 0 with waiting/connection, not exit 1. Never infer success
+    // from that exit code; require the persisted failure and zero HTTP requests.
+    const refused = await cli('advance-results')
     assert.equal(refused.state, 'waiting'); assert.equal(refused.error_class, 'transient')
+    assert.equal(refused.phase, 'queued'); assert.equal(refused.error_code, 'connection')
+    assert.equal(refused.feedback_status, 'recorded'); assert.ok(Date.parse(refused.next_due_at) > Date.now())
     assert.equal(refused.associated, false); assert.equal(refused.offset, 0)
     assert.equal(nasRequests, 0); assert.ok(tlsFailures > 0)
     checked('production_cli_rejects_trusted_chain_with_wrong_hostname')
