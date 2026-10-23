@@ -1,7 +1,7 @@
 # Opt-in, disposable GitHub-hosted CI ONLY. Changes only CurrentUser Root.
 # The test CA is never exported as an artifact or installed on a PC/NAS.
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$BundleRoot, [Parameter(Mandatory=$true)][string]$Root)
+param([Parameter(Mandatory=$true)][string]$BundleRoot, [Parameter(Mandatory=$true)][string]$Root, [switch]$UntrustedOnly)
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows') { throw 'Disposable Windows GitHub runner required' }
 $temp = (Resolve-Path -LiteralPath $env:RUNNER_TEMP).Path.TrimEnd('\') + '\'
@@ -15,25 +15,96 @@ if (-not (Test-Path -LiteralPath $openssl)) { $openssl = Join-Path $BundleRoot '
 $node = Join-Path $BundleRoot 'node/node.exe'
 $config = Join-Path $certs 'openssl.cnf'
 [IO.File]::WriteAllText($config, '')
-function Invoke-FixtureOpenSSL([string[]]$Arguments) {
-    & $openssl @Arguments 2>$null
-    if ($LASTEXITCODE -ne 0) { throw 'Ephemeral test certificate generation failed' }
+$emptyInput = Join-Path $Root 'empty-stdin'
+[IO.File]::WriteAllText($emptyInput, '')
+$pwsh = (Get-Process -Id $PID).Path
+Write-Output '{"tlsStage":"initialize_supervisor","state":"started"}'
+Add-Type -Path (Join-Path $PSScriptRoot 'fixture-job.cs')
+$script:stageNumber = 0
+function Invoke-BoundedFixture([string]$Stage, [string]$Program, [string[]]$Arguments, [int]$Seconds) {
+    $script:stageNumber++
+    $stem = Join-Path $Root ('stage-' + $script:stageNumber)
+    $inputFile = $stem + '.json'
+    $job = [OwnedFixtureJob]::new()
+    [IO.File]::WriteAllText($inputFile, (@{ program = $Program; arguments = $Arguments; jobName = $job.Name } | ConvertTo-Json -Compress))
+    $supervisor = (Join-Path $PSScriptRoot 'fixture-process.ps1').Replace("'", "''")
+    $quotedInput = $inputFile.Replace("'", "''")
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("& '$supervisor' -InputFile '$quotedInput'"))
+    Write-Output (@{ tlsStage = $Stage; state = 'started'; deadlineSeconds = $Seconds } | ConvertTo-Json -Compress)
+    $process = $null
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $failure = $null
+    try {
+        $process = Start-Process -FilePath $pwsh -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',$encoded) -RedirectStandardInput $emptyInput -RedirectStandardOutput ($stem + '.out') -RedirectStandardError ($stem + '.err') -PassThru
+        while (-not $process.WaitForExit(100)) {
+            if ($watch.Elapsed.TotalSeconds -gt $Seconds) { $failure = 'deadline'; break }
+            foreach ($suffix in @('.out','.err')) {
+                if ((Get-Item -LiteralPath ($stem + $suffix)).Length -gt 1048576) { $failure = 'output_limit'; break }
+            }
+            if ($failure) { break }
+        }
+    } finally {
+        try {
+            if ($process -and -not $process.HasExited) {
+                $process.Kill()
+                if (-not $process.WaitForExit(10000)) { throw "Fixture supervisor termination unconfirmed: $Stage" }
+            }
+            if ($job.Finish()) { if (-not $failure) { $failure = 'owned_tree_required_termination' } }
+            Write-Output (@{ tlsStage = $Stage; ownedTree = 'empty_confirmed' } | ConvertTo-Json -Compress)
+        } finally {
+            $job.Dispose()
+        }
+    }
+    foreach ($suffix in @('.out','.err')) {
+        $file = $stem + $suffix
+        if ((Get-Item -LiteralPath $file).Length -gt 1048576) { $failure = 'output_limit' }
+        else { Get-Content -LiteralPath $file | Write-Output }
+    }
+    $exitCode = $process.ExitCode
+    $process.Dispose()
+    Write-Output (@{ tlsStage = $Stage; state = $(if ($failure -or $exitCode -ne 0) { 'failed' } else { 'passed' }); exitCode = $exitCode; failure = $failure } | ConvertTo-Json -Compress)
+    if ($failure -or $exitCode -ne 0) { throw "Fixture stage failed: $Stage ($failure; exit $exitCode)" }
+}
+function Invoke-FixtureOpenSSL([string]$Stage, [string[]]$Arguments) {
+    Invoke-BoundedFixture -Stage $Stage -Program $openssl -Arguments $Arguments -Seconds 30
+}
+if ($UntrustedOnly) {
+    # Exercise forced cleanup before any trust mutation: an unrelated synthetic
+    # peer must survive while the separate owned job and its grandchild vanish.
+    $peer = Start-Process -FilePath $pwsh -ArgumentList @('-NoProfile','-NonInteractive','-Command','Start-Sleep 120') -PassThru
+    try {
+        $marker = Join-Path $Root 'containment-ready'
+        $expectedTimeout = $false
+        try { Invoke-BoundedFixture -Stage 'containment_probe' -Program $node -Arguments @((Join-Path $PSScriptRoot 'fixture-tree.mjs'),$marker) -Seconds 10 }
+        catch {
+            if ($_.Exception.Message -notmatch '^Fixture stage failed: containment_probe \(deadline; exit ') { throw }
+            $expectedTimeout = $true
+        }
+        if (-not $expectedTimeout -or -not (Test-Path -LiteralPath $marker) -or $peer.HasExited) { throw 'Fixture containment/peer preservation failed' }
+        Write-Output '{"fixtureContainment":"passed","ownedTree":"empty_confirmed","unrelatedSyntheticPeer":"preserved"}'
+    } finally {
+        if (-not $peer.HasExited) { $peer.Kill() }
+        if (-not $peer.WaitForExit(10000)) { throw 'Synthetic peer cleanup unconfirmed' }
+        $peer.Dispose()
+    }
+    Invoke-BoundedFixture -Stage 'untrusted_host' -Program $node -Arguments @((Join-Path $PSScriptRoot 'host.mjs'),$BundleRoot,(Join-Path $Root 'data')) -Seconds 300
+    return
 }
 $oldConfig = $env:OPENSSL_CONF
 $thumbprint = $null
 $cleanupArmed = $false
 try {
     $env:OPENSSL_CONF = $config
-    Invoke-FixtureOpenSSL -Arguments @('req','-x509','-newkey','rsa:2048','-nodes','-keyout',(Join-Path $certs 'root.key'),'-out',(Join-Path $certs 'root.pem'),'-days','1','-subj','/CN=Endpoint disposable CI root','-addext','basicConstraints=critical,CA:TRUE,pathlen:0','-addext','keyUsage=critical,keyCertSign,cRLSign')
+    Invoke-FixtureOpenSSL -Stage 'generate_root' -Arguments @('req','-batch','-x509','-newkey','rsa:2048','-nodes','-keyout',(Join-Path $certs 'root.key'),'-out',(Join-Path $certs 'root.pem'),'-days','1','-subj','/CN=Endpoint disposable CI root','-addext','basicConstraints=critical,CA:TRUE,pathlen:0','-addext','keyUsage=critical,keyCertSign,cRLSign')
     foreach ($name in @('server','mismatch')) {
         $san = if ($name -eq 'server') { 'DNS:localhost,IP:127.0.0.1' } else { 'DNS:wrong-name.invalid' }
         $extensions = Join-Path $certs ($name + '.ext')
         [IO.File]::WriteAllText($extensions, "basicConstraints=critical,CA:FALSE`nkeyUsage=critical,digitalSignature,keyEncipherment`nextendedKeyUsage=serverAuth`nsubjectAltName=$san`n")
-        Invoke-FixtureOpenSSL -Arguments @('req','-new','-newkey','rsa:2048','-nodes','-keyout',(Join-Path $certs ($name + '.key')),'-out',(Join-Path $certs ($name + '.csr')),'-subj','/CN=Endpoint CI leaf')
-        Invoke-FixtureOpenSSL -Arguments @('x509','-req','-in',(Join-Path $certs ($name + '.csr')),'-CA',(Join-Path $certs 'root.pem'),'-CAkey',(Join-Path $certs 'root.key'),'-set_serial',$(if ($name -eq 'server') { '2' } else { '3' }),'-days','1','-extfile',$extensions,'-out',(Join-Path $certs ($name + '.pem')))
+        Invoke-FixtureOpenSSL -Stage ('generate_' + $name) -Arguments @('req','-batch','-new','-newkey','rsa:2048','-nodes','-keyout',(Join-Path $certs ($name + '.key')),'-out',(Join-Path $certs ($name + '.csr')),'-subj','/CN=Endpoint CI leaf')
+        Invoke-FixtureOpenSSL -Stage ('sign_' + $name) -Arguments @('x509','-req','-in',(Join-Path $certs ($name + '.csr')),'-CA',(Join-Path $certs 'root.pem'),'-CAkey',(Join-Path $certs 'root.key'),'-set_serial',$(if ($name -eq 'server') { '2' } else { '3' }),'-days','1','-extfile',$extensions,'-out',(Join-Path $certs ($name + '.pem')))
     }
     $der = Join-Path $certs 'root.cer'
-    Invoke-FixtureOpenSSL -Arguments @('x509','-in',(Join-Path $certs 'root.pem'),'-outform','DER','-out',$der)
+    Invoke-FixtureOpenSSL -Stage 'encode_root' -Arguments @('x509','-in',(Join-Path $certs 'root.pem'),'-outform','DER','-out',$der)
     $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($der)
     $thumbprint = $certificate.Thumbprint
     $certificate.Dispose()
@@ -42,17 +113,21 @@ try {
     if (Test-Path -LiteralPath $location) { throw 'Fixture root already trusted; refuse ownership' }
     # Arm BEFORE import, so an uncertain/partially successful import is cleaned.
     $cleanupArmed = $true
-    $imported = @(Import-Certificate -FilePath $der -CertStoreLocation 'Cert:\CurrentUser\Root')
-    if ($imported.Count -ne 1 -or $imported[0].Thumbprint -ne $thumbprint -or -not (Test-Path -LiteralPath $location)) { throw 'Test root import not confirmed' }
+    Invoke-BoundedFixture -Stage 'import_current_user_root' -Program $pwsh -Arguments @('-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot 'fixture-trust.ps1'),'-Action','Import','-CertificateFile',$der,'-Thumbprint',$thumbprint) -Seconds 30
+    if (-not (Test-Path -LiteralPath $location)) { throw 'Test root import not confirmed' }
     Write-Output (@{ tlsTrust = 'imported'; scope = 'CurrentUser'; thumbprint = $thumbprint } | ConvertTo-Json -Compress)
-    & $node (Join-Path $PSScriptRoot 'host.mjs') $BundleRoot (Join-Path $Root 'data') $certs
-    if ($LASTEXITCODE -ne 0) { throw 'Trusted production CLI host fixture failed' }
+    Invoke-BoundedFixture -Stage 'trusted_host' -Program $node -Arguments @((Join-Path $PSScriptRoot 'host.mjs'),$BundleRoot,(Join-Path $Root 'data'),$certs) -Seconds 420
 } finally {
     $env:OPENSSL_CONF = $oldConfig
     if ($cleanupArmed) {
         $location = 'Cert:\CurrentUser\Root\' + $thumbprint
-        if (Test-Path -LiteralPath $location) { Remove-Item -LiteralPath $location -ErrorAction Stop }
+        Write-Output (@{ tlsTrust = 'cleanup_check'; scope = 'CurrentUser'; thumbprint = $thumbprint; present = [bool](Test-Path -LiteralPath $location) } | ConvertTo-Json -Compress)
+        if (Test-Path -LiteralPath $location) {
+            Invoke-BoundedFixture -Stage 'remove_current_user_root' -Program $pwsh -Arguments @('-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot 'fixture-trust.ps1'),'-Action','Remove','-CertificateFile',$der,'-Thumbprint',$thumbprint) -Seconds 30
+        }
         if (Test-Path -LiteralPath $location) { throw 'CI test root cleanup failed' }
         Write-Output (@{ tlsTrust = 'removed_and_absent'; scope = 'CurrentUser'; thumbprint = $thumbprint } | ConvertTo-Json -Compress)
+    } else {
+        Write-Output (@{ tlsTrust = 'not_attempted'; reason = 'preparation_not_completed' } | ConvertTo-Json -Compress)
     }
 }

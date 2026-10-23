@@ -22,6 +22,31 @@ A hard VM termination cannot promise execution of `finally`; that job cannot
 pass and the disposable VM owns final destruction. Never reuse this wrapper on
 a self-hosted runner or treat it as an installation command.
 
+Runs `39907414574` (`351105a`) and `39907573571` (`a9cea73`) reached
+the job deadline in the new TLS step, before any confirmed import, trusted
+admission or cleanup marker. Their 34 native + 7 CLI tests and original six
+host checks passed. They establish neither successful import nor cleanup. The
+precise certificate preparation/import hang is unresolved from those logs;
+the separate unbounded host stop was not observed as their cause.
+
+The diagnostic revision bounds each OpenSSL and CurrentUser trust subprocess
+to 30 seconds, closes stdin (OpenSSL requests also use `-batch`), preserves
+bounded stdout/stderr and logs every phase. The trusted Node scenario has a
+420-second overall deadline; the unchanged untrusted scenario has 300 seconds.
+Node stop waits for process/stdio close for at most 20 seconds, including in
+`finally`; fixture network close has five seconds. These do not extend any
+production timeout, change trust policy or suppress a Windows consent dialog.
+
+Each stage's child supervisor joins a fresh, parent-owned Windows Job before
+starting the actual command. Parent cleanup confirms zero members; forced
+termination is a failing stage, even when cleanup succeeds. The Job cannot
+include unrelated peers. A pre-trust synthetic child/grandchild timeout checks
+that containment and confirms an independent peer remains alive. Only those
+synthetic/fixture processes can be terminated. If import times out, cleanup first
+observes the exact fingerprint and removes it if present; absence is logged even
+when no import occurred. A cleanup failure still fails the job. No production
+runtime or official process implementation is changed for these test bounds.
+
 The same production `transferqueue.exe` is built from unchanged public source
 `4c880e07ecdff1b6caadd86348779603fce9e8aa` and retains normal TLS verification:
 
@@ -40,7 +65,9 @@ The same production `transferqueue.exe` is built from unchanged public source
    The fixture checks original task/delivery namespace, synthetic authorization,
    size, per-chunk hash/offset, whole-file hash and one original receipt.
 4. The fixture accepts commit but drops its response. The host stops with the
-   persisted association unknown, and a fresh host reopens that queue. It must
+   persisted association unknown, and a fresh host reopens that queue. The
+   public host status exposes no producer `decision`: only the post-drain
+   production CLI `inspect` provides the new outcome evidence. The fresh host must
    resolve the original commit, expose `associated:true` and exactly the original
    immutable result reference, without a second upload/complete/commit.
 5. Reopening the completed queue produces no new NAS requests. Original files,

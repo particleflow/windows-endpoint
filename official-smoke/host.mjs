@@ -19,8 +19,13 @@ const config = deploymentReferences(root, { manifestSha256: await digest(path.jo
 config.bundleRoot = bundle
 const node = path.join(bundle, 'node/node.exe'), herdr = path.join(bundle, 'herdr/herdr.exe')
 const endpoint = fileURLToPath(new URL('../endpoint.mjs', import.meta.url))
-const result = [], children = new Set()
+const result = [], children = new Map()
 const checked = check => { result.push(check); process.stdout.write(JSON.stringify({ explicitHostCheck: check, state: 'passed' }) + '\n') }
+async function bounded(promise, milliseconds, message) {
+  let timer
+  try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), milliseconds) })]) }
+  finally { clearTimeout(timer) }
+}
 const hash = raw => createHash('sha256').update(raw).digest('hex')
 for (const dir of [path.join(root, 'config'), path.join(root, 'data'), config.herdrConfigRoot, config.herdrStateRoot, config.agenvoConfigDir, config.piConfigDir, path.dirname(config.transferConfigDir), path.dirname(config.transferStateDir)]) await fs.mkdir(dir, { recursive: true })
 const trusted = process.argv[4] ? await fs.realpath(process.argv[4]) : null
@@ -99,11 +104,18 @@ async function cli(action, input, id, expectedExit = 0) {
 }
 function launch() {
   const child = spawn(node, [endpoint, 'host', 'run', '--root', root], { env: { ...process.env, NODE_EXTRA_CA_CERTS: ca }, stdio: ['pipe', 'pipe', 'pipe'] })
-  children.add(child)
-  const states = []; let buffer = '', ended = false
+  const states = []; let buffer = '', ended = false, stopRequested = false
   child.stdout.on('data', chunk => { buffer += chunk; const lines = buffer.split('\n'); buffer = lines.pop(); for (const line of lines) states.push(JSON.parse(line)) })
   child.stderr.resume()
-  const done = new Promise(resolve => child.once('exit', code => { ended = true; children.delete(child); resolve(code) }))
+  child.once('error', () => { ended = true })
+  child.once('exit', () => { ended = true })
+  child.stdin.on('error', () => {}) // exit/close evidence decides, never EPIPE alone
+  const done = new Promise(resolve => child.once('close', code => { children.delete(child); resolve(code) }))
+  const stop = async () => {
+    if (!ended && !stopRequested && !child.stdin.destroyed) { stopRequested = true; child.stdin.write('{"action":"stop"}\n') }
+    return bounded(done, 20000, 'fixture host stop/stdio close deadline exceeded')
+  }
+  children.set(child, { stop })
   const until = async predicate => {
     const end = Date.now() + 120000
     let lastStatus = 0
@@ -121,7 +133,7 @@ function launch() {
     }
     throw new Error(`explicit host observation timeout: ${JSON.stringify(states.at(-1))}`)
   }
-  return { child, states, done, until, stop: () => { child.stdin.write('{"action":"stop"}\n'); return done } }
+  return { child, states, done, until, stop }
 }
 try {
   const admitted = await cli('enqueue-result', closed)
@@ -149,7 +161,9 @@ try {
     checked('production_cli_rejects_trusted_chain_with_wrong_hostname')
     relay.setSecureContext({ cert: await fs.readFile(cert), key: await fs.readFile(key) })
     const host = launch()
-    await host.until(s => nas.stats.commits === 1 && s.connection === 'online_snapshot' && s.transfer?.state === 'waiting' && s.transfer.decision?.next_due_at !== refused.next_due_at)
+    // Public status exposes no decision. This is only a stop hint; the drained
+    // producer journal inspected below is the actual new-outcome evidence.
+    await host.until(s => nas.stats.commits === 1 && s.connection === 'online_snapshot' && s.transfer?.state === 'waiting')
     assert.equal(await host.stop(), 0)
     const unknown = await cli('inspect', null, deliveryId)
     assert.equal(unknown.associated, false); assert.equal(unknown.association_state, 'unknown')
@@ -217,9 +231,13 @@ try {
   process.stdout.write(JSON.stringify({ explicitHostChecks: result, producer: catalog.components.transfer.revision, ready: false, positiveProductionTLS: 'unverified', realPCandNAS: 'not_run', modelRequests: 0 }) + '\n')
   }
 } finally {
-  for (const child of children) { child.stdin.write('{"action":"stop"}\n') }
-  // Do not kill official grandchildren if cleanup is unknown. A failing job
-  // retains diagnostics; only the disposable CI runner owns final teardown.
+  const cleanup = await Promise.allSettled([...children.values()].map(child => child.stop()))
   for (const socket of sockets) socket.terminate()
-  wss.close(); relay.close()
+  relay.closeAllConnections()
+  await bounded(Promise.all([new Promise(resolve => wss.close(resolve)), new Promise(resolve => relay.close(resolve))]), 5000, 'fixture network close deadline exceeded')
+  process.stdout.write(JSON.stringify({ fixtureCleanup: 'observed', remainingHosts: children.size, stopFailures: cleanup.filter(r => r.status === 'rejected').length }) + '\n')
+  // No PID guessing or killing peers. On failure, the outer CI supervisor
+  // terminates and confirms only members of this fixture's Windows Job.
+  assert.equal(cleanup.filter(r => r.status === 'rejected').length, 0, 'fixture host cleanup failed')
+  assert.equal(children.size, 0, 'fixture host stdio/processes still open')
 }
