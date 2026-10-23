@@ -61,8 +61,8 @@ does not prove that a control channel is still reachable.
 
 The host creates only its data/log directories; it never creates credentials or
 fills in identity/configuration values. It reads `config/endpoint.json` and checks
-the same schema as the existing delivery CLI. The mutable paths must agree with
-`deployment-layout.json`, resolved under this root:
+the same schema as the existing delivery CLI. In schema 1 (bundle review), the
+mutable paths must agree with `deployment-layout.json`, resolved under this root:
 
 | Location | Purpose |
 | --- | --- |
@@ -76,10 +76,20 @@ the same schema as the existing delivery CLI. The mutable paths must agree with
 | `logs/endpoint-host/<run-id>.jsonl` | Bounded state-change log for one run |
 
 `deploymentReferences(root, existingReferences)` produces these references in code;
-it does not generate credentials or approve a bundle. The older delivery example
+it does not generate credentials or approve a bundle. The older schema-1 delivery example
 with separate roots is not a host configuration. The offline package selection is
 not consumed by this host. Bundle verification is read-only and does not establish
 the missing component qualification.
+
+In schema 2 ([existing official installations](existing-installations-plan.md)),
+only the endpoint's own configuration, lifecycle/status journal and host logs use
+this root. Official programs, Herdr/Pi/Agenvo configuration, source exports and
+the existing transfer journal remain at their explicitly referenced locations.
+Those references must not overlap the host's config/data/log directories; the
+component data/program separation checks also remain in force. Do not copy user
+configuration or historical sessions into the schema-1 layout to use this mode.
+Reference acceptance does not grant ownership of an external process or permission
+to resume a historical task.
 
 Missing config is `host_configuration_missing`; invalid config and changed config
 are distinct attention states. A config edit requires stop/restart and never hot
