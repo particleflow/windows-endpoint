@@ -10,14 +10,16 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { deploymentReferences } from './deployment.mjs'
 import { acquireLeases, leaseKeys } from './lifecycle.mjs'
 import { readHostStatus } from './host.mjs'
-import { syntheticBundle } from './test-support/deployment-fixture.mjs'
+import { deploymentFixture, syntheticBundle } from './test-support/deployment-fixture.mjs'
 
 const endpoint = fileURLToPath(new URL('./endpoint.mjs', import.meta.url))
 const worker = fileURLToPath(new URL('./test-support/host-runtime.mjs', import.meta.url))
 async function fixture(t, configured = false) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'endpoint host 空格 ')))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
-  const config = deploymentReferences(root, { manifestSha256: 'a'.repeat(64), nasOrigin: 'https://nas.example.test', deviceId: '11111111-1111-4111-8111-111111111111', runtimeId: '22222222-2222-4222-8222-222222222222', instanceId: 'synthetic-instance', session: 'default' })
+  // Windows device leases are machine-wide across test-file processes. Each
+  // independent fixture gets an identity; restarts reuse this saved config.
+  const config = deploymentReferences(root, { manifestSha256: 'a'.repeat(64), nasOrigin: 'https://nas.example.test', deviceId: randomUUID(), runtimeId: '22222222-2222-4222-8222-222222222222', instanceId: 'synthetic-instance', session: 'default' })
   const configFile = path.join(root, 'config/endpoint.json')
   if (configured) { await fs.mkdir(path.dirname(configFile)); await fs.writeFile(configFile, JSON.stringify(config)) }
   return { root, config, configFile, stateDirectory: path.join(root, 'data/endpoint'), statusFile: path.join(root, 'data/endpoint/host-status.json') }
@@ -262,6 +264,23 @@ test('device lease scope rejects a Windows owner in another root without stealin
     await syntheticRunning(next)
     assert.equal((await stop(next)).code, 0)
   } finally { if (release) await release() }
+})
+
+test('independent host and deployment fixtures own distinct device leases concurrently', async t => {
+  const first = await fixture(t, true), second = await fixture(t, true)
+  const deployment = await deploymentFixture(t)
+  assert.equal(new Set([first.config.deviceId, second.config.deviceId, deployment.config.deviceId]).size, 3)
+  const keys = leaseKeys(deployment.config)
+  const release = await acquireLeases(keys, deployment.lifecycleDirectory)
+  try {
+    const a = launch(t, first, 'normal'), b = launch(t, second, 'normal')
+    await Promise.all([syntheticRunning(a), syntheticRunning(b)])
+    assert.equal(a.events.filter(e => e.event === 'component_started').length, 2)
+    assert.equal(b.events.filter(e => e.event === 'component_started').length, 2)
+    const results = await Promise.all([stop(a), stop(b)])
+    assert.deepEqual(results.map(r => r.code), [0, 0])
+    await assert.rejects(acquireLeases(keys, deployment.lifecycleDirectory), /endpoint_already_owned/)
+  } finally { await release() }
 })
 
 test('stop during synthetic component startup prevents the next component from launching', async t => {

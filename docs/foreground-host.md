@@ -156,6 +156,25 @@ while ownership and the failed lifecycle journal remain held. The fix separates
 the first terminating error from config observations and reports stdin closure;
 it does not add a new recovery control protocol.
 
+Windows CI at `2024533` ([run 39892964425](https://github.com/particleflow/windows-endpoint/actions/runs/39892964425))
+failed two host cases although Linux passed. The diagnostic checkpoint `2dc1a53`
+([run 39893646453](https://github.com/particleflow/windows-endpoint/actions/runs/39893646453))
+keeps the original fixture identities and strengthens startup assertions: both
+original failures explicitly report `endpoint_already_owned`. Its controlled
+Windows experiment holds the same device lease in another directory, verifies
+rejection before component launch, checks that stopping the rejected host preserves
+the owner, then verifies startup after that owner releases its own lease.
+
+The host and deployment fixtures had shared one constant device UUID across
+concurrent test files. Windows device leases use a machine-wide named pipe;
+Unix development sockets include the state directory and did not expose that
+collision. Independent fixtures now use distinct synthetic device identities,
+retained across each fixture's restarts. A regression holds a deployment lease
+while two independent hosts run concurrently. It failed with one distinct identity
+instead of three before the fixture fix. Production lease keys/paths and host code
+are unchanged; no lock deletion, serial test mode, skipped cases or weaker ownership
+assertions are used. Synthetic identity generation is not production registration.
+
 The existing official Windows dependency/lifecycle job remains separate. Its
 coverage does not make this new host a qualified real-component launcher. Needed
 before activation: complete supported artifact handoff and qualification, approved
