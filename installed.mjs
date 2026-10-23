@@ -5,6 +5,7 @@ import { statSync, lstatSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { EndpointError, catalog, validateConfig, validateDirectory, programPaths, managedEnvironment, digest, transferLocations, validateTransferConfiguration } from './endpoint.mjs'
+import { readSessionHistory, observeExistingSession } from './session-diagnostics.mjs'
 
 const demand = (ok, code) => { if (!ok) throw new EndpointError(code) }
 const same = (a, b) => typeof a === 'string' && typeof b === 'string' && (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b)
@@ -95,7 +96,7 @@ async function capture(config, binding) {
   return { hashes, assertUnchanged }
 }
 
-export async function validateInstalledConfiguration(config) {
+export async function validateInstalledConfiguration(config, { inspectHistoryOnly = false } = {}) {
   validateConfig(config)
   demand(config.schema === 2, 'existing_installation_config_required')
   for (const key of ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir']) await validateDirectory(config[key])
@@ -119,12 +120,9 @@ export async function validateInstalledConfiguration(config) {
   catch (error) { if (error.code === 'ENOENT') throw new EndpointError('connector_authentication_required'); throw error }
   // Existing historical panes may contain live/unknown work. Do not import or
   // resume them merely because this config names their official state root.
-  const session = path.join(config.herdrConfigRoot, 'sessions', config.session, 'session.json')
-  try {
-    const state = await json(session)
-    demand(state.version === 3 && Array.isArray(state.workspaces) && state.workspaces.length === 0, 'existing_herdr_session_requires_handoff')
-  } catch (error) { if (error.code !== 'ENOENT') throw error }
-  return { config: resolved, binding: { file, stamp: fingerprint(before) }, herdrSource: config.programs.herdr === undefined ? 'agenvo_instance' : 'legacy_explicit_match' }
+  const history = await readSessionHistory(config)
+  if (!inspectHistoryOnly) demand(['no_saved_history', 'no_saved_workspaces'].includes(history.startup), 'existing_herdr_session_requires_handoff')
+  return { config: resolved, binding: { file, stamp: fingerprint(before) }, herdrSource: config.programs.herdr === undefined ? 'agenvo_instance' : 'legacy_explicit_match', history }
 }
 
 export function compareProducerTarget(config, target) {
@@ -136,8 +134,8 @@ export function compareProducerTarget(config, target) {
   return { state: 'configuration_matches', invocation: 'not_executed' }
 }
 
-export async function inspectInstalled(config, run = probe) {
-  const resolved = await validateInstalledConfiguration(config)
+export async function inspectInstalled(config, run = probe, { inspectHistoryOnly = false } = {}) {
+  const resolved = await validateInstalledConfiguration(config, { inspectHistoryOnly })
   config = resolved.config
   const p = programPaths(config)
   const pi = await json(path.join(config.programs.piPackage, 'package.json'))
@@ -171,17 +169,21 @@ export async function inspectInstalled(config, run = probe) {
   demand(lines.length === 2 && same(lines[0], path.join(p.piBin, 'pi')) && lines[1] === versions.pi, 'installation_pi_resolution_mismatch')
   versions.git = call(path.join(p.gitRoot, 'cmd/git.exe'), ['--version'])
   demand(/^git version \d+\.\d+\.\d+\.windows\.\d+$/.test(versions.git), 'installation_git_protocol_missing')
-  return { ...observed, versions, config, herdrSource: resolved.herdrSource }
+  return { ...observed, versions, config, herdrSource: resolved.herdrSource, history: resolved.history }
 }
 
 export async function installedDoctor(config, target = null) {
   const checks = [], result = { schema: 1, ready: false, mode: 'existing-installations', versions: null, checks,
     producer: 'not_checked', transfer: 'not_included_pending_qualification', update: 'official_owner; stop_and_recheck; task_handoff_unimplemented', credentialsRead: false,
     herdrReference: { source: config.programs.herdr === undefined ? 'agenvo_instance' : 'legacy_explicit_match', migration: config.programs.herdr === undefined ? null : 'omit_programs_herdr_once_to_follow_existing_instance' } }
+  result.history = await readSessionHistory(config)
+  result.sessionObservation = { state: 'not_queried', ownership: 'not_acquired', stopAuthority: false }
   try {
-    const inspected = await inspectInstalled(config)
+    const inspected = await inspectInstalled(config, probe, { inspectHistoryOnly: true })
     result.versions = inspected.versions
+    result.history = inspected.history
     checks.push({ check: 'installation_paths_versions_protocol', state: 'passed' })
+    result.sessionObservation = await observeExistingSession(inspected)
     if (config.transfer) {
       await inspectInstalledTransfer(config)
       checks.push({ check: 'existing_transfer_reference', state: 'passed' })

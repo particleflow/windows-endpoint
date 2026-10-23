@@ -148,8 +148,40 @@ try {
   assert.equal(await outsider.stop(), 2)
   assert.equal(peer.alive('herdr'), true)
   assert.equal((await peer.ownedHostRequest('ping')).type, 'pong')
-  await peer.stop('herdr'); peer = null
   checked('existing_external_server_refused_and_original_peer_preserved')
+
+  // The diagnostic process has no lifecycle ownership over this server.
+  // Only this fixture owns it. One ordinary shell side effect detects replay;
+  // no real Agent session or model is fabricated by this scenario.
+  await fs.writeFile(path.join(config.sourceRoot, 'read-only-marker.cjs'), "require('node:fs').appendFileSync('diagnostic-executions.txt','once\\n')\n")
+  const created = JSON.parse(peer.command(peer.herdr, ['--session', config.session, 'workspace', 'create', '--cwd', config.sourceRoot]))
+  const paneId = created.result.root_pane.pane_id
+  peer.command(peer.herdr, ['--session', config.session, 'pane', 'run', paneId, 'node read-only-marker.cjs'])
+  const savedSession = path.join(config.herdrConfigRoot, 'sessions', config.session, 'session.json')
+  let persisted = false
+  const deadline = Date.now() + 20000
+  while (Date.now() < deadline) {
+    try {
+      const state = JSON.parse(await fs.readFile(savedSession, 'utf8'))
+      if (state.workspaces.some(w => w.id === created.result.workspace.workspace_id) && await fs.readFile(path.join(config.sourceRoot, 'diagnostic-executions.txt'), 'utf8') === 'once\n') { persisted = true; break }
+    } catch (error) { if (error.code !== 'ENOENT') throw error }
+    await delay(100)
+  }
+  assert.equal(persisted, true, 'Official historical workspace must be saved before diagnostic')
+  const beforeQuery = await fs.readFile(peer.marker, 'utf8')
+  const diagnostic = spawnSync(p.node, [fileURLToPath(new URL('../endpoint.mjs', import.meta.url)), 'doctor', '--config', path.join(root, 'config/endpoint.json')], { encoding: 'utf8', timeout: 60000, maxBuffer: 65536 })
+  assert.equal(diagnostic.status, 2, 'Doctor must retain ready:false')
+  const report = JSON.parse(diagnostic.stdout)
+  assert.equal(report.history.state, 'history_present'); assert.equal(report.history.workspaceCount, 1)
+  assert.equal(report.sessionObservation.state, 'observed_unowned'); assert.equal(report.sessionObservation.stopAuthority, false)
+  assert.equal(report.sessionObservation.workspaceCount, 1); assert.equal(report.sessionObservation.paneCount, 1)
+  assert.equal(peer.alive('herdr'), true); assert.equal(await fs.readFile(peer.marker, 'utf8'), beforeQuery)
+  assert.equal((await peer.ownedHostRequest('ping')).type, 'pong')
+  const afterQuery = JSON.parse(peer.command(peer.herdr, ['--session', config.session, 'api', 'snapshot'])).result.snapshot
+  assert.ok(afterQuery.panes.some(pane => pane.pane_id === paneId))
+  assert.equal(await fs.readFile(path.join(config.sourceRoot, 'diagnostic-executions.txt'), 'utf8'), 'once\n')
+  checked('read_only_doctor_observes_existing_history_without_ownership_or_shell_replay')
+  await peer.stop('herdr'); peer = null
 
   const snapshot = path.join(config.herdrConfigRoot, 'sessions', config.session, 'session.json')
   await fs.mkdir(path.dirname(snapshot), { recursive: true })

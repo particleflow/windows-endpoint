@@ -57,8 +57,10 @@ credential copy or business-history migration occurs. Schema 1 is unchanged.
 
 Run `doctor --config FILE` to detect actual versions, package names, required CLI
 flags and the Pi launcher resolved under the controlled Git Bash environment.
-All executable probes are finite local version/help checks; no model request is
-made. `plan --config FILE` shows the local launch plan. `configure --from FILE
+Executable probes are finite local version/help checks. After they pass, the
+diagnostic also queries the selected Herdr session through native read commands;
+it never starts a missing server. No model request is made.
+`plan --config FILE` shows the local launch plan. `configure --from FILE
 --config FILE` still creates references exclusively, without copying official
 configuration, packages or credentials.
 
@@ -82,10 +84,14 @@ content is read by preflight; presence is not authentication success. The curren
 producer uses a distinct `--session-dir` and exact `--session-id` for batch tasks.
 Keep those separate from a user's interactive TUI.
 
-Reference mode requires a named, non-default Herdr session. A running server is
-refused, even if its binary is selected. A persisted session with workspaces or
-an unknown schema is refused before startup; this batch does not adopt or resume
-historical Agent tasks. Other sessions/configuration are not migrated or deleted.
+Reference mode requires a named, non-default Herdr session. Host startup refuses
+a running server, even if its binary is selected. A persisted session with
+workspaces or an unverified schema is refused before startup; this batch does not
+adopt or resume historical Agent tasks. This is a startup ownership/restore gate,
+not a corruption diagnosis. `doctor` separately reports saved-history structure
+and may query an existing server without obtaining stop authority; see
+[historical-session observation](session-observation.md). Other
+sessions/configuration are not migrated or deleted.
 Empty-session restart and observed owned-process recovery use the existing
 PID/generation/pipe checks and device/config leases.
 

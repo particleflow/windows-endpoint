@@ -19,6 +19,9 @@ instance, avoiding a second path to maintain in endpoint configuration. It does
 not install another Pi/Herdr copy or enable
 business-task upgrade handoff. It can explicitly reference the existing transfer
 plugin and queue; positive production TLS and file return remain unverified.
+The [historical-session diagnostic](docs/session-observation.md) can inspect saved
+layout counts and query an already running server without acquiring stop rights.
+Historical task restoration and external-process adoption remain unimplemented.
 
 ## Layout
 
@@ -26,6 +29,7 @@ plugin and queue; positive production TLS and file return remain unverified.
 - `host.mjs`: local foreground entry, status snapshots and bounded per-run logs.
 - `runtime.mjs`: explicit local inventory/configuration checks and native adapter wiring.
 - `installed.mjs`: existing official installation references, probes and profile comparison.
+- `session-diagnostics.mjs`: bounded saved-history and native session observations.
 - `lifecycle.mjs`, `owned-herdr.ps1`: foreground coordination and owned-peer API client.
 - `transfer-lifecycle.mjs`, `transfer-contract.mjs`: internal finite command consumer
   and strict producer decisions; no Agent task replay or second queue.
@@ -43,7 +47,7 @@ Use Node 24. No npm install is needed for the unit suite:
 
 ```sh
 node endpoint.mjs help
-node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs installed.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs
+node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs installed.test.mjs session-diagnostics.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs
 ```
 
 The `Windows endpoint delivery checks` workflow runs on every pull request and
