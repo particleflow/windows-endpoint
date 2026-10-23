@@ -110,6 +110,31 @@ test('unknown host observation stops recovery without guessing from unavailable'
   assert.equal(calls.filter(c => c.startsWith('start:')).length, 2)
 })
 
+for (const reason of ['herdr_observation_unknown', 'herdr_owner_exited']) {
+  test(`confirmed owned exit racing ${reason} recovers once through the existing budget`, async t => {
+    const { lifecycle, driver, alive, calls, store } = await fixture(t)
+    await lifecycle.start()
+    // Reproduce PR5's sequence: one earlier connector restart, then Herdr dies
+    // AFTER tick's alive check and BEFORE its owned status observation settles.
+    alive.delete('connector'); await lifecycle.tick()
+    let observedExit = false, observations = 0
+    driver.confirmedExit = c => c === 'herdr' && observedExit && !alive.has(c)
+    driver.ownedHostStatus = async () => {
+      observations++; alive.delete('herdr'); observedExit = true
+      throw new LifecycleError(reason)
+    }
+    await Promise.all([lifecycle.tick(), lifecycle.tick()])
+    assert.equal(lifecycle.state.attention, null)
+    assert.equal(lifecycle.state.phase, 'running')
+    assert.equal(lifecycle.state.restarts.length, 2)
+    assert.equal((await store.load()).restarts.length, 2)
+    assert.equal(calls.filter(c => c === 'start:herdr').length, 2)
+    assert.equal(calls.filter(c => c === 'start:connector').length, 3)
+    assert.equal(observations, 1)
+    assert.equal(lifecycle.snapshot().ready, false)
+  })
+}
+
 test('preexisting host is never adopted or started over', async t => {
   const { lifecycle, driver, calls } = await fixture(t)
   driver.hostStatus = () => ({ running: true })
