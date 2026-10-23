@@ -37,6 +37,13 @@ export function completedTests(output, expected) {
   return passed
 }
 
+export function completedAPIBaseCases(output, expected) {
+  completedTests(output, ['TestAPIBaseContractVectors'])
+  const passed = [...output.matchAll(/^\s+--- PASS: TestAPIBaseContractVectors\/([A-Za-z0-9_-]+) \([\d.]+s\)\r?$/gm)].map(m => m[1])
+  requireFixture(expected.length > 0 && sameSet(passed, expected), 'producer_api_base_coverage_incomplete')
+  return passed
+}
+
 export async function verifyProducerBundle(root) {
   await validateDirectory(root)
   requireFixture(sameSet(await fs.readdir(root), [...payloads, 'SHA256SUMS.json']), 'producer_fixture_bundle_inventory_invalid')
@@ -50,9 +57,9 @@ export async function verifyProducerBundle(root) {
   return manifest.source_commit
 }
 
-async function execute(file, args, timeoutMs, stream = false) {
+async function execute(file, args, timeoutMs, stream = false, cwd) {
   requireFixture(timeoutMs > 0, 'producer_fixture_suite_deadline')
-  const child = spawn(file, args, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(file, args, { cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
   let stdout = '', bytes = 0, failure = null
   const terminate = reason => { failure ||= reason; child.kill() }
   const timer = setTimeout(() => terminate('producer_fixture_wall_timeout'), timeoutMs)
@@ -74,11 +81,27 @@ async function execute(file, args, timeoutMs, stream = false) {
   } finally { clearTimeout(timer) }
 }
 
-export async function verifyFixtures(root) {
+export async function verifyFixtures(root, sourceRoot) {
   requireFixture(process.platform === 'win32', 'producer_fixture_windows_required')
   const deadline = Date.now() + 12 * 60 * 1000
   const remaining = limit => Math.min(limit, deadline - Date.now())
   const sourceCommit = await verifyProducerBundle(root)
+  // The unchanged upstream packager does not ship testdata. Execute its actual
+  // compiled contract test from the fixed source's package directory instead;
+  // never add fixture data to the runtime bundle or patch the producer test.
+  const contractDirectory = path.join(sourceRoot, 'internal/transferclient')
+  await validateDirectory(contractDirectory)
+  const expectedRaw = await fs.readFile(new URL('../test-support/api-base-v1.json', import.meta.url))
+  const sourceRaw = await fs.readFile(path.join(contractDirectory, 'testdata/api-base-v1.json'))
+  requireFixture(sourceRaw.equals(expectedRaw), 'producer_api_base_vectors_changed')
+  const contract = JSON.parse(sourceRaw)
+  requireFixture(contract.contract === 'memoh.file-api-base.v1' && contract.cases.length === 30, 'producer_api_base_contract_invalid')
+  const binary = path.join(root, 'transferqueue.test.exe')
+  const contractTests = testNames(await execute(binary, ['-test.list=^TestAPIBase'], remaining(30000), false, contractDirectory), 'TestAPIBase')
+  requireFixture(sameSet(contractTests, ['TestAPIBaseContractVectors']), 'producer_api_base_inventory_changed')
+  const contractOutput = await execute(binary, ['-test.run=^TestAPIBaseContractVectors$', '-test.v', '-test.timeout=30s'], remaining(40000), true, contractDirectory)
+  completedAPIBaseCases(contractOutput, contract.cases.map(c => c.name))
+  process.stdout.write(JSON.stringify({ producerAPIBaseContract: 'passed', sourceCommit, contract: contract.contract, vectors: contract.cases.length, skipped: 0 }) + '\n')
   const native = testNames(await execute(path.join(root, 'transferqueue.test.exe'), ['-test.list=^TestWindowsNative'], remaining(30000)), 'TestWindowsNative')
   const cli = testNames(await execute(path.join(root, 'transferqueue-cli.test.exe'), ['-test.list=^TestCLIPath'], remaining(30000)), 'TestCLIPath')
   const groups = fixturePlan(native, cli)
@@ -98,10 +121,10 @@ export async function verifyFixtures(root) {
     process.stdout.write(JSON.stringify({ producerFixtureGroup: group.name, state: 'passed', tests, skipped: 0, durationMs: Date.now() - started }) + '\n')
   }
   requireFixture(sameSet(passed, [...native, ...cli]), 'producer_fixture_suite_incomplete')
-  process.stdout.write(JSON.stringify({ producerFixtureSuite: 'passed', sourceCommit, nativeTopLevel: native.length, cliTopLevel: cli.length, skipped: 0 }) + '\n')
+  process.stdout.write(JSON.stringify({ producerFixtureSuite: 'passed', sourceCommit, apiBaseTopLevel: contractTests.length, apiBaseVectors: contract.cases.length, nativeTopLevel: native.length, cliTopLevel: cli.length, skipped: 0 }) + '\n')
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  requireFixture(process.argv.length === 3, 'producer_fixture_bundle_required')
-  await verifyFixtures(await fs.realpath(process.argv[2]))
+  requireFixture(process.argv.length === 4, 'producer_fixture_bundle_and_source_required')
+  await verifyFixtures(await fs.realpath(process.argv[2]), await fs.realpath(process.argv[3]))
 }

@@ -205,7 +205,7 @@ the fixture's original bytes and exercises the same pending queue. This is
 admission/binding and untrusted-TLS coverage, not a positive `/api` upload proof.
 
 The producer's existing `SHA256SUMS.json` must identify reviewed source
-`4c880e07ecdff1b6caadd86348779603fce9e8aa`, amd64 and the complete build output.
+`f7479c56f9d9e67be0ddff2ef73bcc6d0b952f75`, amd64 and the complete build output.
 Preflight verifies those file hashes, then each finite invocation rechecks the
 captured executable, manifest, receipt and plugin-registration bytes. A changed
 receipt cannot silently replace the running component. This is an integrity
@@ -221,7 +221,7 @@ No new producer field or API was required for this connection.
 
 ## Existing producer profile comparison
 
-The fixed producer is `4c880e07ecdff1b6caadd86348779603fce9e8aa`.
+The original profile inspection used `4c880e07ecdff1b6caadd86348779603fce9e8aa`.
 `internal/agenvo/client.go` defines `Target.WorkDir/BashPath` and
 `AgentProfile.ExecutionMode/Provider/Model/ConfigDir/Path`. `profile.go` and
 `internal/handlers/user_runtime.go` expose the existing owner route

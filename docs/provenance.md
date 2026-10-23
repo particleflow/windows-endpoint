@@ -51,7 +51,7 @@ No full installer, real Agent pending-tool, automatic transfer, update/rollback,
 real UI, capacity or physical power-loss acceptance is established by these tests.
 
 The explicit runtime CI additionally builds the public Memoh source at
-[`4c880e07ecdff1b6caadd86348779603fce9e8aa`](https://github.com/particleflow/Memoh/commit/4c880e07ecdff1b6caadd86348779603fce9e8aa)
+[`f7479c56f9d9e67be0ddff2ef73bcc6d0b952f75`](https://github.com/particleflow/Memoh/commit/f7479c56f9d9e67be0ddff2ef73bcc6d0b952f75)
 using that commit's unchanged build script. Its plugin version is 0.7.0. No Go
 implementation is imported, no old denied artifact is fetched, and no binary is
 redistributed by this repository. See [scope and limits](explicit-runtime.md).
@@ -60,6 +60,16 @@ redistributed by this repository. See [scope and limits](explicit-runtime.md).
 from Memoh `internal/transferclient/testdata/api-base-v1.json` at
 [`91149ad7ab5c0d24a57f10e7d9ff1df4b71cf51c`](https://github.com/particleflow/Memoh/commit/91149ad7ab5c0d24a57f10e7d9ff1df4b71cf51c),
 Git blob `67cc407e6b914dd52ce7a244a82a580c72ad2ec1`, under the retained AGPL-3.0
-license. Only those 30 data vectors are imported; the producer executable pin
-and its implementation are unchanged. The existing pinned CLI already retains
-an API path prefix. Endpoint validation adopts the shared syntax independently.
+license. Only those 30 data vectors are imported; no Go implementation is copied.
+They retain the same blob at the current producer pin. The source-built test
+executable runs its original contract test against all 30 cases in that checkout.
+
+Compared with the preceding `4c880e07` component, the transfer build closure
+changes only `internal/transferclient/api_base.go`, `api_base_test.go`,
+`client.go` and that vector file. CLI JSON/actions, queue and publication code,
+`deliverymeta`, raw-byte `HostBinding`, plugin 0.7.0, module dependencies and the
+seven-payload build script are unchanged. Herdr/Pi/Agenvo pins are unchanged.
+Previously ambiguous direct-CLI API bases now fail validation; no configuration
+bytes, queue identities or stored records are normalized or migrated. A source
+pin update alone does not establish a safe live component upgrade or production
+qualification.

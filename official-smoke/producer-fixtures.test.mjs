@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { catalog, digest } from '../endpoint.mjs'
-import { testNames, fixturePlan, completedTests, verifyProducerBundle } from './producer-fixtures.mjs'
+import { testNames, fixturePlan, completedTests, completedAPIBaseCases, verifyProducerBundle } from './producer-fixtures.mjs'
 
 const native = ['TestWindowsNativeActiveJournal', 'TestWindowsNativePublicationBucketBudget', 'TestWindowsNativePublicationMigrationProcessCrash', 'TestWindowsNativePublicationNewCase', 'TestWindowsNativeNewCore']
 const cli = ['TestCLIPathChild', 'TestCLIPathTLSRestartAndLostResponses']
@@ -24,6 +24,12 @@ test('empty, duplicate, malformed or unexpected test inventory cannot authorize 
 test('coverage rejects zero tests, omissions, duplicates, unexpected passes and skipped subtests', () => {
   assert.deepEqual(completedTests(output(cli), cli), cli)
   for (const raw of ['PASS\n', output(cli.slice(0, 1)), output([...cli, cli[0]]), output([...cli, 'TestCLIPathUnexpected']), output(cli) + '    --- SKIP: TestCLIPathChild/nested (0.00s)\n', output(cli).replace('PASS\n', 'FAIL\n')]) assert.throws(() => completedTests(raw, cli))
+})
+test('packaged API base contract requires every shared case and rejects skipped or partial coverage', () => {
+  const names = ['https-root', 'https-api-prefix', 'empty-port']
+  const log = selected => selected.map(n => `    --- PASS: TestAPIBaseContractVectors/${n} (0.00s)`).join('\n') + '\n' + output(['TestAPIBaseContractVectors'])
+  assert.deepEqual(completedAPIBaseCases(log(names), names), names)
+  for (const raw of ['PASS\n', log([]), log(names.slice(1)), log([...names, names[0]]), log([...names, 'unexpected']), log(names).replace('PASS: TestAPIBaseContractVectors/empty-port', 'SKIP: TestAPIBaseContractVectors/empty-port')]) assert.throws(() => completedAPIBaseCases(raw, names))
 })
 test('source-built fixture inventory rejects wrong source and modified payload before execution', async t => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'producer-fixture-inventory-')))

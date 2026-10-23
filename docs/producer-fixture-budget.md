@@ -27,8 +27,8 @@ Unfinished tests and the subsequent CLI group were not passed.
 
 The bucket case intentionally fills 128 receipt slots in one bucket, then checks
 rejection and replay; it retains real native synchronization. There is no measured
-production performance claim or optimization here. The source and producer build
-script remain fixed at public Memoh
+production performance claim or optimization here. That failed checkpoint used
+public Memoh
 `4c880e07ecdff1b6caadd86348779603fce9e8aa`, plugin 0.7.0.
 
 ## Bounded downstream scheduling
@@ -41,6 +41,16 @@ three disjoint groups and retains the CLI group. No producer source, binary,
 manifest, assertion, synchronization or original `verify-fixtures.ps1` is edited.
 That original verifier remains hash-checked; its aggregate invocation is replaced
 only in this downstream job.
+
+The current source pin is `f7479c56f9d9e67be0ddff2ef73bcc6d0b952f75`.
+Its new `TestAPIBaseContractVectors` is outside those two historical selections,
+so the same packaged test executable runs that test separately from the fixed
+source's `internal/transferclient` directory. The original test reads its own
+`testdata/api-base-v1.json`; those bytes must match the endpoint's shared vectors.
+All 30 named subcases and the top-level pass are required, with zero skips or
+duplicates. This extra test retains a 30-second Go alarm and 40-second wrapper
+bound inside the existing 12-minute suite deadline. The original 41 tests and
+their limits remain intact; no testdata or extra file is added to the bundle.
 
 Every group retains Go's 5-minute timeout, so no individual test can run longer
 than the original 5-minute maximum. The wrapper adds a 310-second process watchdog

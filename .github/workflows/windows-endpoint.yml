@@ -83,7 +83,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: particleflow/Memoh
-          ref: 4c880e07ecdff1b6caadd86348779603fce9e8aa
+          ref: f7479c56f9d9e67be0ddff2ef73bcc6d0b952f75
           path: producer-source
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -97,13 +97,13 @@ jobs:
         shell: pwsh
         working-directory: producer-source
         run: |
-          if ((git rev-parse HEAD) -ne '4c880e07ecdff1b6caadd86348779603fce9e8aa') { throw 'Wrong producer source' }
+          if ((git rev-parse HEAD) -ne 'f7479c56f9d9e67be0ddff2ef73bcc6d0b952f75') { throw 'Wrong producer source' }
           python scripts/build-transferqueue-bundle.py --output '${{ runner.temp }}/endpoint-transfer-source-build'
           if ($LASTEXITCODE -ne 0) { throw 'Producer source build failed' }
       - name: Verify producer native fixtures (test dispatcher has fixture-only CA injection)
         shell: pwsh
         run: |
-          node ./official-smoke/producer-fixtures.mjs '${{ runner.temp }}/endpoint-transfer-source-build'
+          node ./official-smoke/producer-fixtures.mjs '${{ runner.temp }}/endpoint-transfer-source-build' ./producer-source
           if ($LASTEXITCODE -ne 0) { throw 'Producer native fixtures failed' }
       - name: Assemble fixed component inventory for explicit host review
         shell: pwsh
