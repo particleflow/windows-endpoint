@@ -24,6 +24,9 @@ async function ensureDirectory(directory) {
 const stamp = raw => raw === null ? null : createHash('sha256').update(raw).digest('hex')
 function validatedStatus(value) {
   const fields = ['schema', 'owner', 'runId', 'pid', 'updatedAt', 'phase', 'health', 'attention', 'configuration', 'components', 'connection', 'componentLifecycle', 'transfer', 'evidence', 'ready', 'desktop', 'agent', 'transferAutomaticRecovery', 'log']
+  // Earlier schema-1 observations lack control availability. Accept that exact
+  // older shape as unknown, without inferring an open channel from a live PID.
+  if (value && Object.hasOwn(value, 'control')) fields.push('control')
   const code = item => item === null || typeof item === 'string' && /^[a-z_]{1,80}$/.test(item)
   const objectFields = (item, names) => item && typeof item === 'object' && Object.keys(item).sort().join(',') === names.sort().join(',')
   const invalid = () => { throw new HostError('host_status_invalid') }
@@ -31,6 +34,7 @@ function validatedStatus(value) {
   if (!/^[a-f0-9-]{36}$/.test(value.runId) || !Number.isSafeInteger(value.pid) || value.pid < 1 || !['starting', 'running', 'stopping', 'stopped', 'failed', 'stop_failed'].includes(value.phase) || !['needs_attention', 'blocked', 'observed_fixture'].includes(value.health) || !code(value.attention)) invalid()
   if (!['unverified', 'missing', 'loaded', 'invalid', 'changed_restart_required'].includes(value.configuration) || !['unavailable_unqualified', 'unavailable_missing', 'unavailable_invalid', 'synthetic_fixture'].includes(value.components) || !['unverified', 'authorization_unverified', 'authorization_required', 'online_snapshot', 'offline', 'connecting', 'authenticating', 'stopped', 'needs_attention', 'recovering'].includes(value.connection)) invalid()
   if (!['host_process_only', 'synthetic_components'].includes(value.evidence) || value.desktop !== 'unavailable' || value.agent !== 'unavailable_unqualified' || !['unverified', 'recording', 'capacity_reached'].includes(value.log)) invalid()
+  if (Object.hasOwn(value, 'control') && !['unverified', 'stdin_open', 'stdin_closed'].includes(value.control)) invalid()
   if (value.componentLifecycle !== null) {
     const c = value.componentLifecycle
     if (!objectFields(c, ['phase', 'attention', 'cleanupAttention', 'journal', 'restartsInWindow']) || !['stopped', 'starting', 'running', 'stopping', 'needs_attention'].includes(c.phase) || !code(c.attention) || !code(c.cleanupAttention) || !['unavailable', 'observed', 'unverified'].includes(c.journal) || !Number.isSafeInteger(c.restartsInWindow) || c.restartsInWindow < 0 || c.restartsInWindow > 100) invalid()
@@ -48,6 +52,7 @@ export class ForegroundHost {
     this.configFile = path.join(this.layout.config, 'endpoint.json')
     this.emit = emit; this.createTestRuntime = createTestRuntime
     this.runId = randomUUID(); this.phase = 'starting'; this.attention = null
+    this.stopReason = null; this.control = 'unverified'
     this.configuration = 'unverified'; this.components = 'unavailable_unqualified'; this.connection = 'unverified'
     this.release = null; this.runtime = null; this.stopRequested = false
     this.active = null; this.starting = null; this.closing = null; this.publishing = null
@@ -55,10 +60,11 @@ export class ForegroundHost {
   }
   snapshot() {
     const runtime = this.runtime?.snapshot()
-    const attention = this.attention || runtime?.attention || runtime?.cleanupAttention || null
+    // A later config observation must not replace a terminating input/I/O error.
+    const attention = this.stopReason || this.attention || runtime?.attention || runtime?.cleanupAttention || null
     const connection = attention === 'connector_authentication_required' ? 'authorization_required' : runtime?.connection || this.connection
     return { schema: 1, owner: 'windows-endpoint-host', runId: this.runId, pid: process.pid, updatedAt: Date.now(),
-      phase: this.phase, health: attention ? 'needs_attention' : this.configuration !== 'loaded' || !this.runtime ? 'blocked' : 'observed_fixture',
+      phase: this.phase, control: this.control, health: attention ? 'needs_attention' : this.configuration !== 'loaded' || !this.runtime ? 'blocked' : 'observed_fixture',
       attention, configuration: this.configuration, components: this.components, connection,
       componentLifecycle: runtime ? { phase: runtime.phase, attention: runtime.attention, cleanupAttention: runtime.cleanupAttention, journal: runtime.journal, restartsInWindow: runtime.restartsInWindow } : null,
       transfer: runtime?.transfer && typeof runtime.transfer === 'object' ? { state: runtime.transfer.state, attention: runtime.transfer.attention, active: runtime.transfer.active } : 'not_included_pending_qualification',
@@ -83,7 +89,7 @@ export class ForegroundHost {
       const handle = await fs.open(temporary, 'wx')
       try { await handle.writeFile(`${JSON.stringify(snapshot)}\n`); await handle.sync() } finally { await handle.close() }
       await fs.rename(temporary, this.statusFile)
-      const event = JSON.stringify({ phase: snapshot.phase, health: snapshot.health, attention: snapshot.attention, configuration: snapshot.configuration, components: snapshot.components, connection: snapshot.connection,
+      const event = JSON.stringify({ phase: snapshot.phase, control: snapshot.control, health: snapshot.health, attention: snapshot.attention, configuration: snapshot.configuration, components: snapshot.components, connection: snapshot.connection,
         componentPhase: snapshot.componentLifecycle?.phase || null, restarts: snapshot.componentLifecycle?.restartsInWindow || 0, transferState: snapshot.transfer?.state || null })
       if (event !== this.lastEvent) {
         const line = `${JSON.stringify({ schema: 1, runId: this.runId, at: snapshot.updatedAt, ...JSON.parse(event) })}\n`
@@ -175,7 +181,7 @@ export class ForegroundHost {
   }
   async stop(reason = null) {
     this.stopRequested = true
-    if (reason) this.attention = reason
+    if (reason) this.stopReason ||= reason
     if (this.closing) return this.closing
     this.closing = this.stopOwned()
     try { return await this.closing } finally { this.closing = null }
@@ -195,8 +201,8 @@ export class ForegroundHost {
     if (this.runtime?.release) {
       this.phase = 'stop_failed'; this.attention ||= 'host_cleanup_requires_attention'
       try { await this.publish() }
-      catch { this.emit(this.snapshot()) } // An observer failure must not abandon owned processes or the local stop channel.
-      return false // Stay observable and retain host ownership for explicit retry.
+      catch { this.emit(this.snapshot()) } // Observer failure must not abandon ownership; stdin may already be closed.
+      return false // Retain ownership. Retry through stdin is possible only while it remains open.
     }
     this.phase = failure ? 'failed' : 'stopped'
     let publicationFailure
@@ -216,7 +222,7 @@ export async function readHostStatus(root) {
   const value = validatedStatus(JSON.parse(await regular(path.join(directory, 'host-status.json'), 32768)))
   const age = Date.now() - value.updatedAt
   // Cached disk data never proves a process or a PC capability is alive.
-  return { ...value, observation: age < 0 || age > 5000 ? 'stale_unknown' : 'cached', ready: false, transferAutomaticRecovery: false }
+  return { ...value, control: value.control ?? 'unverified', observation: age < 0 || age > 5000 ? 'stale_unknown' : 'cached', ready: false, transferAutomaticRecovery: false }
 }
 
 export async function runForeground({ root, input = process.stdin, output = process.stdout, createTestRuntime = null, tickMs = 1000 }) {
@@ -227,7 +233,10 @@ export async function runForeground({ root, input = process.stdin, output = proc
     if (!output.destroyed && output.writable) output.write(`${JSON.stringify(value)}\n`)
   }
   const host = new ForegroundHost({ root, emit, createTestRuntime })
+  host.control = input.readableEnded || input.destroyed ? 'stdin_closed' : 'stdin_open'
   const stop = async reason => {
+    // Capture an error even when an earlier clean stop is already draining.
+    if (reason) host.stopReason ||= reason
     if (stopping) return
     stopping = true
     try {
@@ -252,7 +261,7 @@ export async function runForeground({ root, input = process.stdin, output = proc
       else if (!commandBusy) { commandBusy = true; emit(host.snapshot()); setImmediate(() => { commandBusy = false }) }
     }
   }
-  const onEnd = () => { void stop(buffer.trim() ? 'host_control_input_invalid' : null) }
+  const onEnd = () => { host.control = 'stdin_closed'; void stop(buffer.trim() ? 'host_control_input_invalid' : null) }
   const onOutputError = () => { if (!host.stopRequested) void stop('host_observer_disconnected') }
   input.on('data', onData); input.once('end', onEnd); output.on('error', onOutputError)
   process.on('SIGINT', signal); process.on('SIGTERM', signal)

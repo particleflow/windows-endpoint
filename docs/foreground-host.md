@@ -52,6 +52,9 @@ This command does not probe a PID or prove liveness. It labels the disk snapshot
 `cached`, or `stale_unknown` after five seconds (also on a future timestamp).
 Even a fresh snapshot always has `ready:false`, `desktop:unavailable`,
 `agent:unavailable_unqualified` and `transferAutomaticRecovery:false`.
+`control` records the observed stdin state (`stdin_open` or `stdin_closed`);
+older schema-1 snapshots report `unverified`. Like the phase/PID, this cached field
+does not prove that a control channel is still reachable.
 
 ## One root and explicit unavailable states
 
@@ -108,15 +111,26 @@ attention and persist before owned cleanup. Unknown tasks are never recreated or
 replayed. An existing lifecycle journal with attention or a non-stopped phase blocks
 component startup; there is no public acknowledge/reset command in this batch.
 
-If owned cleanup is unconfirmed, the host reports `stop_failed`, retains its lease
-and local control channel, and allows an explicit stop retry. A concurrent status
-write failure must not abandon that ownership. The host never kills another PID
-to force cleanup. Windows lifetime pipe leases disappear on process death. Unix
+If owned cleanup is unconfirmed, the host reports `stop_failed` and retains its
+lease and failure journal. An explicit stdin stop retry is possible only while
+`control:stdin_open`. EOF sets `control:stdin_closed`: that stream cannot be reopened
+or used for another stop command. The host remains alive holding ownership, but
+this batch provides no replacement control connection or guaranteed Windows
+graceful recovery for EOF plus failed cleanup. The existing signal handlers remain;
+delivery and semantics depend on the platform, and forced termination is not a
+graceful retry. No automatic retry/replay, lease release or task deletion is used
+to hide this unresolved boundary.
+
+A concurrent status write failure must not abandon ownership. The host never
+kills another PID to force cleanup. Windows lifetime pipe leases disappear on process death. Unix
 development socket leases fail closed after a crash; only tests remove the known
 sockets of their already-observed-dead fixture process.
 
-Clean stop returns zero, including a host started without config. Attention or
-failed shutdown returns exit code two after confirmed cleanup. While cleanup is
+Clean stop returns zero, including a host started without config. The first
+terminating error is recorded separately from configuration observations: early
+invalid/oversized stdin still returns two even if startup later finds no config,
+and an error arriving during a clean drain cannot be silently discarded. Attention
+or failed shutdown returns exit code two after confirmed cleanup. While cleanup is
 unconfirmed, the foreground process stays alive; it does not falsely report a
 successful shutdown. External forced termination bypasses those guarantees.
 
@@ -127,8 +141,20 @@ The separate `test-support/host-runtime.mjs` injects the existing lifecycle with
 inert child processes and mock finite command results. These fixtures exercise
 single-instance ownership, startup/stop crossings, component crash/recovery,
 authorization rejection, in-flight failure drain, restart gating, unknown transfer
-outcomes, failed cleanup, corrupt observations and abrupt host death. They are not
+outcomes, failed cleanup, corrupt observations and abrupt host death. The inert
+fixture children voluntarily exit on parent IPC disconnect; `NativeDriver` has no
+equivalent guarantee. This test proves stale observation and restart gating only,
+not absence of surviving Herdr/Agenvo processes after host termination. That real
+component outcome remains unknown. These fixtures are not
 Herdr/Agenvo/transfer binary qualification or NAS/NTFS integration evidence.
+
+The regression checkpoint `49d9040` retains the `b589549` host implementation with
+four added failing tests. A fixture-only config-read barrier makes early invalid,
+oversized and invalid-after-clean-stop input reproducibly return the incorrect
+zero exit status; the EOF test also demonstrates missing closed-stream reporting
+while ownership and the failed lifecycle journal remain held. The fix separates
+the first terminating error from config observations and reports stdin closure;
+it does not add a new recovery control protocol.
 
 The existing official Windows dependency/lifecycle job remains separate. Its
 coverage does not make this new host a qualified real-component launcher. Needed

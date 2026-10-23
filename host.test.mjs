@@ -60,6 +60,7 @@ test('public foreground entry stays observable with missing config, enforces one
   assert.equal(s.configuration, 'missing'); assert.equal(s.attention, 'host_configuration_missing')
   assert.equal(s.ready, false); assert.equal(s.components, 'unavailable_unqualified')
   assert.equal(s.evidence, 'host_process_only')
+  assert.equal(s.control, 'stdin_open')
   const second = launch(t, f)
   assert.equal((await second.done).code, 2)
   assert.ok(second.statuses.some(x => x.attention === 'endpoint_already_owned'))
@@ -67,6 +68,10 @@ test('public foreground entry stays observable with missing config, enforces one
   p.command('status'); await p.waitFor(() => p.statuses.filter(x => x.runId === s.runId).length >= 3)
   assert.equal((await stop(p)).code, 0)
   assert.equal((await readHostStatus(f.root)).phase, 'stopped')
+  const legacy = JSON.parse(await fs.readFile(f.statusFile, 'utf8'))
+  delete legacy.control
+  await fs.writeFile(f.statusFile, JSON.stringify(legacy))
+  assert.equal((await readHostStatus(f.root)).control, 'unverified')
   const next = launch(t, f); assert.notEqual((await running(next)).runId, s.runId); await stop(next)
 })
 
@@ -287,6 +292,8 @@ test('EOF with failed cleanup reports a closed control stream and retains owners
   assert.equal((await readHostStatus(f.root)).control, 'stdin_closed')
   // Test teardown forcibly terminates only its own fixture. Product code keeps
   // the lease and journal; this is not a demonstrated graceful EOF recovery.
+  assert.equal(p.child.kill('SIGKILL'), true)
+  await p.done
 })
 
 test('observation failure during failed cleanup preserves control and never abandons ownership', async t => {
@@ -310,6 +317,8 @@ test('abrupt host death produces stale observation and no automatic restart of u
   const f = await fixture(t, true)
   const p = launch(t, f, 'normal'); await running(p)
   assert.equal(p.child.kill('SIGKILL'), true); await p.done
+  // Inert fixture children exit on parent IPC disconnect. This does not establish
+  // cleanup or absence of surviving real Herdr/Agenvo processes after host death.
   await sleep(5100)
   const s = await readHostStatus(f.root)
   assert.equal(s.observation, 'stale_unknown'); assert.equal(s.ready, false)
