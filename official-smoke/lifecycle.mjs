@@ -130,8 +130,21 @@ async function verify(root) {
         workspace.tabs.some(tab => Object.keys(tab.panes).length > 0))
     }, 'Official session snapshot did not persist the fixture workspace')
     process.stdout.write(`${JSON.stringify({ persistedFixtureObserved: true, elapsedMs: Date.now() - persistenceStarted })}\n`)
-    await killOwned('herdr')
+    // Deterministically exercise the PR5 race: the owned process exits AFTER
+    // tick's alive/generation checks and BEFORE its real status probe settles.
+    // Only the fixture schedules the crash; native observation, exit evidence,
+    // identity checks and recovery all remain real and unmodified.
+    const observeHostStatus = driver.observeHostStatus.bind(driver)
+    let ownedExitDuringObservation = false
+    driver.observeHostStatus = async () => {
+      driver.observeHostStatus = observeHostStatus
+      await killOwned('herdr')
+      ownedExitDuringObservation = true
+      return observeHostStatus()
+    }
     await observeUntil(() => driver.alive('herdr') && lifecycle.state.restarts.length === 2 && lifecycle.snapshot().connection === 'online_snapshot', 'Herdr dependency recovery failed')
+    assert.equal(ownedExitDuringObservation, true)
+    process.stdout.write(`${JSON.stringify({ ownedExitDuringObservation, recoveredWithRecordedExit: true })}\n`)
     await delay(2000)
     assert.equal(await fs.readFile(path.join(config.sourceRoot, 'executions.txt'), 'utf8'), 'once\n')
     const listed = JSON.parse(driver.command(driver.herdr, ['--session', config.session, 'pane', 'list']))

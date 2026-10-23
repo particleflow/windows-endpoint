@@ -115,6 +115,21 @@ export class NativeDriver {
     demand(typeof value.running === 'boolean', 'herdr_observation_unknown')
     return value
   }
+  async observeHostStatus() {
+    // A runtime observation must let the event loop record an owned child's
+    // exit while the status CLI is running. spawnSync in this path held that
+    // evidence back and converted a concurrent known crash into permanent
+    // herdr_observation_unknown attention before recovery could run.
+    let value
+    try {
+      const result = await promisify(execFile)(this.herdr, ['--session', this.config.session, 'status', 'server', '--json'], {
+        env: this.env, cwd: this.config.sourceRoot, timeout: 3000, maxBuffer: 16384, windowsHide: true, shell: false,
+      })
+      value = JSON.parse(result.stdout)
+    } catch { throw new LifecycleError('herdr_observation_unknown') }
+    demand(typeof value.running === 'boolean', 'herdr_observation_unknown')
+    return value
+  }
   async ownedGeneration(capture = false) {
     const c = this.children.get('herdr')
     demand(this.alive('herdr'), 'herdr_owner_exited')
@@ -143,11 +158,17 @@ export class NativeDriver {
   }
   async ownedHostStatus() {
     await this.ownedGeneration()
-    const status = this.hostStatus() // read-only; generation checked on both sides
+    const status = await this.observeHostStatus() // read-only; generation checked on both sides
     await this.ownedGeneration()
     return status
   }
   alive(component) { const c = this.children.get(component); return Boolean(c && !c.exited && !c.error) }
+  confirmedExit(component) {
+    const c = this.children.get(component)
+    // Only an exit event on the same retained child record after a verified
+    // generation qualifies. A kill request, spawn error or missing PID does not.
+    return Boolean(c && c.exitObserved === true && c.exited && !c.error && /^\d+:\d+$/.test(c.generation) && c.generation.split(':')[0] === String(c.process.pid))
+  }
   async start(component) {
     demand(!this.alive(component), 'component_already_owned')
     if (component === 'herdr') demand(!this.hostStatus().running, 'existing_herdr_requires_handoff')
@@ -158,9 +179,9 @@ export class NativeDriver {
     const file = component === 'herdr' ? this.herdr : this.node
     const args = component === 'herdr' ? ['--session', this.config.session, 'server'] : [this.connector, 'run']
     const processHandle = spawn(file, args, { env: this.env, cwd: this.config.sourceRoot, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], shell: false })
-    const c = { process: processHandle, startedAt: Date.now(), exited: false, error: false, lock: null }
+    const c = { process: processHandle, startedAt: Date.now(), exited: false, exitObserved: false, error: false, lock: null }
     c.done = new Promise(resolve => {
-      processHandle.once('exit', () => { c.exited = true; resolve() })
+      processHandle.once('exit', () => { c.exitObserved = true; c.exited = true; resolve() })
       processHandle.once('error', () => { c.error = true; c.exited = true; resolve() })
     })
     processHandle.stdout.resume()
@@ -363,8 +384,17 @@ export class EndpointLifecycle {
         if (!this.driver.alive('herdr')) await this.recover('herdr')
         else if (!this.driver.alive('connector')) await this.recover('connector')
         else {
-          const host = await this.driver.ownedHostStatus()
-          demand(host.running && host.version === '0.9.5' && host.endpoint_compatible === true, 'herdr_observation_unknown')
+          try {
+            const host = await this.driver.ownedHostStatus()
+            demand(host.running && host.version === '0.9.5' && host.endpoint_compatible === true, 'herdr_observation_unknown')
+          } catch (error) {
+            // The owner may exit AFTER the alive check. Classify only that
+            // proven transition; identity/generation/ownership errors remain
+            // terminal even if the original child has since exited.
+            const exited = error instanceof LifecycleError && ['herdr_observation_unknown', 'herdr_owner_exited'].includes(error.code) && this.driver.confirmedExit?.('herdr') === true
+            if (!exited) throw error
+            if (!this.stopping) await this.recover('herdr')
+          }
         }
         if (!this.stopping && this.state.phase === 'running' && this.transfer) {
           const transfer = await this.transfer.tick()
