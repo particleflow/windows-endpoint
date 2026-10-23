@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
+import { spawnSync } from 'node:child_process'
 import { catalog, digest } from '../endpoint.mjs'
 import { testNames, fixturePlan, completedTests, completedAPIBaseCases, verifyProducerBundle } from './producer-fixtures.mjs'
 
@@ -30,6 +31,21 @@ test('packaged API base contract requires every shared case and rejects skipped 
   const log = selected => selected.map(n => `    --- PASS: TestAPIBaseContractVectors/${n} (0.00s)`).join('\n') + '\n' + output(['TestAPIBaseContractVectors'])
   assert.deepEqual(completedAPIBaseCases(log(names), names), names)
   for (const raw of ['PASS\n', log([]), log(names.slice(1)), log([...names, names[0]]), log([...names, 'unexpected']), log(names).replace('PASS: TestAPIBaseContractVectors/empty-port', 'SKIP: TestAPIBaseContractVectors/empty-port')]) assert.throws(() => completedAPIBaseCases(raw, names))
+})
+test('shared vector checkout stays byte-identical under a Windows CRLF Git profile', async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'producer-vector-checkout-')))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  // Command-local settings and a disposable index only; never change the real
+  // index, user Git settings, producer fixture, or any bound runtime config.
+  const options = { cwd: new URL('../', import.meta.url), env: { ...process.env, GIT_INDEX_FILE: path.join(root, 'index') }, encoding: 'utf8', timeout: 10000 }
+  const indexed = spawnSync('git', ['read-tree', 'HEAD'], options)
+  assert.equal(indexed.status, 0, 'temporary fixture index')
+  const prefix = `${path.join(root, 'checkout').replaceAll('\\', '/')}/`
+  const checked = spawnSync('git', ['-c', 'core.autocrlf=true', 'checkout-index', `--prefix=${prefix}`, '--', 'test-support/api-base-v1.json'], options)
+  assert.equal(checked.status, 0, 'isolated Windows-profile checkout')
+  const actual = await fs.readFile(path.join(root, 'checkout/test-support/api-base-v1.json'))
+  assert.equal(actual.includes(13), false, 'vector checkout must retain upstream LF bytes')
+  assert.deepEqual(actual, await fs.readFile(new URL('../test-support/api-base-v1.json', import.meta.url)))
 })
 test('source-built fixture inventory rejects wrong source and modified payload before execution', async t => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'producer-fixture-inventory-')))
