@@ -2,13 +2,14 @@ import assert from 'node:assert/strict'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import https from 'node:https'
-import { spawn, spawnSync } from 'node:child_process'
-import { createHash, randomUUID } from 'node:crypto'
+import { spawn, spawnSync, execFile } from 'node:child_process'
+import { createHash, randomUUID, X509Certificate } from 'node:crypto'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { catalog, digest, transferEnvironment } from '../endpoint.mjs'
 import { deploymentReferences } from '../deployment.mjs'
 import { readHostStatus } from '../host.mjs'
+import { transferFixture } from './nas-fixture.mjs'
 
 assert.equal(process.platform, 'win32')
 const bundle = await fs.realpath(process.argv[2])
@@ -22,15 +23,26 @@ const result = [], children = new Set()
 const checked = check => { result.push(check); process.stdout.write(JSON.stringify({ explicitHostCheck: check, state: 'passed' }) + '\n') }
 const hash = raw => createHash('sha256').update(raw).digest('hex')
 for (const dir of [path.join(root, 'config'), path.join(root, 'data'), config.herdrConfigRoot, config.herdrStateRoot, config.agenvoConfigDir, config.piConfigDir, path.dirname(config.transferConfigDir), path.dirname(config.transferStateDir)]) await fs.mkdir(dir, { recursive: true })
-const cert = path.join(root, 'fixture-cert.pem'), key = path.join(root, 'fixture-key.pem'), opensslConfig = path.join(root, 'fixture-openssl.cnf')
-await fs.writeFile(opensslConfig, '')
-let openssl
-for (const name of ['git/usr/bin/openssl.exe', 'git/mingw64/bin/openssl.exe']) { try { await fs.access(path.join(bundle, name)); openssl = path.join(bundle, name); break } catch {} }
-const generated = spawnSync(openssl, ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1'], { encoding: 'utf8', timeout: 15000, env: { ...process.env, OPENSSL_CONF: opensslConfig } })
-assert.equal(generated.status, 0, 'ephemeral fixture certificate')
+const trusted = process.argv[4] ? await fs.realpath(process.argv[4]) : null
+const cert = trusted ? path.join(trusted, 'server.pem') : path.join(root, 'fixture-cert.pem')
+const key = trusted ? path.join(trusted, 'server.key') : path.join(root, 'fixture-key.pem')
+const ca = trusted ? path.join(trusted, 'root.pem') : cert
+if (!trusted) {
+  const opensslConfig = path.join(root, 'fixture-openssl.cnf')
+  await fs.writeFile(opensslConfig, '')
+  let openssl
+  for (const name of ['git/usr/bin/openssl.exe', 'git/mingw64/bin/openssl.exe']) { try { await fs.access(path.join(bundle, name)); openssl = path.join(bundle, name); break } catch {} }
+  const generated = spawnSync(openssl, ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1'], { encoding: 'utf8', timeout: 15000, env: { ...process.env, OPENSSL_CONF: opensslConfig } })
+  assert.equal(generated.status, 0, 'ephemeral fixture certificate')
+}
 let rejectAuth = false, welcomes = 0, nasRequests = 0, tlsFailures = 0
+let nas
 const relay = https.createServer({ cert: await fs.readFile(cert), key: await fs.readFile(key) }, (req, res) => {
-  if (req.url.startsWith('/internal/')) { nasRequests++; res.writeHead(500); res.end(); return }
+  if (req.url.startsWith('/internal/')) {
+    nasRequests++
+    if (nas) { void nas.handler(req, res); return }
+    res.writeHead(500); res.end(); return
+  }
   res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ protocol: 1, ownerConfigured: true }))
 })
 relay.on('tlsClientError', () => { tlsFailures++ })
@@ -72,14 +84,21 @@ const official = new Map([
 for (const [file, content] of official) await fs.writeFile(file, content)
 await fs.writeFile(path.join(root, 'config/endpoint.json'), JSON.stringify(config))
 await fs.writeFile(path.join(root, 'config/runtime.json'), JSON.stringify({ schema: 1, mode: 'explicit-review', manifestSha256: config.manifestSha256, transfer: 'existing-queue' }))
-function cli(action, input, id) {
-  const call = spawnSync(path.join(bundle, catalog.components.transfer.entry), ['-action', action, ...(id ? ['-delivery', id] : [])], { input: input && JSON.stringify(input), env: transferEnvironment(config), cwd: config.sourceRoot, encoding: 'utf8', timeout: 125000, maxBuffer: 16384, windowsHide: true })
-  assert.equal(call.error, undefined, 'production CLI subprocess outcome')
-  assert.equal(call.status, 0, `production CLI ${action}: ${call.stdout.slice(0, 500)}`)
-  return JSON.parse(call.stdout)
+async function cli(action, input, id, expectedExit = 0) {
+  // Keep the loopback server responsive while the real CLI performs TLS/I/O.
+  return new Promise((resolve, reject) => {
+    const child = execFile(path.join(bundle, catalog.components.transfer.entry), ['-action', action, ...(id ? ['-delivery', id] : [])], { env: transferEnvironment(config), cwd: config.sourceRoot, encoding: 'utf8', timeout: 125000, maxBuffer: 16384, windowsHide: true }, (error, stdout) => {
+      try {
+        assert.equal(error?.killed ?? false, false, 'CLI timeout is not a TLS rejection')
+        assert.equal(error?.code ?? 0, expectedExit, `production CLI ${action}: ${stdout.slice(0, 500)}`)
+        resolve(JSON.parse(stdout))
+      } catch (failure) { reject(failure) }
+    })
+    child.stdin.end(input ? JSON.stringify(input) : '')
+  })
 }
 function launch() {
-  const child = spawn(node, [endpoint, 'host', 'run', '--root', root], { env: { ...process.env, NODE_EXTRA_CA_CERTS: cert }, stdio: ['pipe', 'pipe', 'pipe'] })
+  const child = spawn(node, [endpoint, 'host', 'run', '--root', root], { env: { ...process.env, NODE_EXTRA_CA_CERTS: ca }, stdio: ['pipe', 'pipe', 'pipe'] })
   children.add(child)
   const states = []; let buffer = '', ended = false
   child.stdout.on('data', chunk => { buffer += chunk; const lines = buffer.split('\n'); buffer = lines.pop(); for (const line of lines) states.push(JSON.parse(line)) })
@@ -105,11 +124,59 @@ function launch() {
   return { child, states, done, until, stop: () => { child.stdin.write('{"action":"stop"}\n'); return done } }
 }
 try {
-  const admitted = cli('enqueue-result', closed)
+  const admitted = await cli('enqueue-result', closed)
   assert.equal(admitted.admitted, true); assert.equal(admitted.feedback_status, 'recorded')
-  assert.equal(cli('lifecycle-summary').state, 'due')
+  assert.equal((await cli('lifecycle-summary')).state, 'due')
   const deliveryId = admitted.delivery_id
   checked('production_cli_admits_seven_bytes_and_records_original_attempt_feedback')
+  if (trusted) {
+    nas = transferFixture(plan, deliveryId, payload)
+    const rootCert = new X509Certificate(await fs.readFile(ca))
+    const mismatch = await fs.readFile(path.join(trusted, 'mismatch.pem'))
+    const wrongCert = new X509Certificate(mismatch), rightCert = new X509Certificate(await fs.readFile(cert))
+    for (const leaf of [wrongCert, rightCert]) assert.equal(leaf.verify(rootCert.publicKey), true)
+    assert.equal(wrongCert.checkIP('127.0.0.1'), undefined); assert.equal(rightCert.checkIP('127.0.0.1'), '127.0.0.1')
+    relay.setSecureContext({ cert: mismatch, key: await fs.readFile(path.join(trusted, 'mismatch.key')) })
+    const refused = await cli('advance-results', null, null, 1)
+    assert.equal(refused.state, 'waiting'); assert.equal(refused.error_class, 'transient')
+    assert.equal(refused.associated, false); assert.equal(refused.offset, 0)
+    assert.equal(nasRequests, 0); assert.ok(tlsFailures > 0)
+    checked('production_cli_rejects_trusted_chain_with_wrong_hostname')
+    relay.setSecureContext({ cert: await fs.readFile(cert), key: await fs.readFile(key) })
+    const host = launch()
+    await host.until(s => nas.stats.commits === 1 && s.connection === 'online_snapshot' && s.transfer?.state === 'waiting' && s.transfer.decision?.next_due_at !== refused.next_due_at)
+    assert.equal(await host.stop(), 0)
+    const unknown = await cli('inspect', null, deliveryId)
+    assert.equal(unknown.associated, false); assert.equal(unknown.association_state, 'unknown')
+    assert.equal(unknown.offset, Buffer.byteLength(payload)); assert.deepEqual(unknown.reference, nas.reference)
+    assert.deepEqual(nas.snapshot().uploaded, Buffer.from(payload)); assert.equal(nas.snapshot().receipt.id, 'receipt-one')
+    assert.equal(nas.snapshot().committed, true); assert.equal(nas.stats.resolves, 0)
+    checked('production_cli_uploads_exact_bytes_and_preserves_lost_commit_uncertainty')
+    const restarted = launch()
+    await restarted.until(s => s.connection === 'online_snapshot' && s.transfer?.state === 'idle')
+    assert.equal(await restarted.stop(), 0)
+    const recovered = await cli('inspect', null, deliveryId)
+    assert.equal(recovered.associated, true); assert.equal(recovered.delivery_id, deliveryId)
+    assert.deepEqual(recovered.reference, nas.reference)
+    assert.equal(nas.stats.creates, 1); assert.equal(nas.stats.patches, 2); assert.equal(nas.stats.completes, 1)
+    assert.equal(nas.stats.commits, 1); assert.equal(nas.stats.resolves, 1); assert.equal(nas.stats.failures, 0)
+    checked('fresh_host_resolves_original_commit_and_reads_same_result_reference')
+    const counts = { ...nas.stats }, reopened = launch()
+    const ready = await reopened.until(s => s.connection === 'online_snapshot' && s.transfer?.state === 'idle')
+    assert.equal(ready.ready, false); assert.equal(ready.transferAutomaticRecovery, false)
+    assert.equal(await reopened.stop(), 0)
+    assert.deepEqual(nas.stats, counts)
+    assert.deepEqual((await cli('inspect', null, deliveryId)).reference, nas.reference)
+    checked('completed_queue_reopen_does_not_reupload_or_replay_task')
+    const feedback = JSON.parse(await fs.readFile(path.join(attempt, 'delivery-feedback.json'), 'utf8'))
+    assert.equal(feedback.task.attempt, plan.task.attempt)
+    assert.equal(feedback.files.length, 1); assert.equal(feedback.files[0].delivery_id, deliveryId)
+    assert.equal(feedback.files[0].state, 'unknown'); assert.equal(feedback.files[0].code, 'awaiting_nas_ledger')
+    assert.equal(await fs.readFile(path.join(config.sourceRoot, 'result-one'), 'utf8'), payload)
+    for (const [file, content] of official) assert.equal(await fs.readFile(file, 'utf8'), content)
+    checked('producer_feedback_remains_advisory_and_original_source_configuration_survive')
+    process.stdout.write(JSON.stringify({ explicitHostChecks: result, producer: catalog.components.transfer.revision, ready: false, positiveProductionTLS: 'passed_isolated_fixture', realPCandNAS: 'not_run', modelRequests: 0, fixture: nas.stats }) + '\n')
+  } else {
   const host = launch()
   const running = await host.until(s => s.components === 'verified_local' && s.connection === 'online_snapshot' && s.transfer?.state === 'waiting')
   assert.equal(running.evidence, 'native_components'); assert.equal(running.ready, false)
@@ -117,13 +184,13 @@ try {
   assert.ok(welcomes > 0); assert.ok(tlsFailures > 0); assert.equal(nasRequests, 0)
   checked('public_host_runs_owned_official_components_and_production_finite_consumer')
   checked('production_cli_rejects_untrusted_tls_without_auth_or_tls_bypass')
-  const before = cli('inspect', null, deliveryId)
+  const before = await cli('inspect', null, deliveryId)
   assert.equal(before.associated, false); assert.equal(before.delivery_id, deliveryId)
   assert.equal((await host.stop()), 0)
   assert.equal((await readHostStatus(root)).phase, 'stopped')
   const next = launch()
   await next.until(s => s.connection === 'online_snapshot' && s.transfer?.state === 'waiting')
-  const after = cli('inspect', null, deliveryId)
+  const after = await cli('inspect', null, deliveryId)
   assert.equal(after.delivery_id, deliveryId); assert.equal(after.offset, before.offset); assert.equal(after.associated, false)
   assert.equal(await fs.readFile(path.join(config.sourceRoot, 'result-one'), 'utf8'), payload)
   checked('fresh_host_reopens_same_pending_queue_without_recreating_task_or_delivery')
@@ -143,6 +210,7 @@ try {
   assert.equal(feedback.files[0].state, 'pending')
   checked('existing_config_source_and_pending_producer_feedback_are_preserved')
   process.stdout.write(JSON.stringify({ explicitHostChecks: result, producer: catalog.components.transfer.revision, ready: false, positiveProductionTLS: 'unverified', realPCandNAS: 'not_run', modelRequests: 0 }) + '\n')
+  }
 } finally {
   for (const child of children) { child.stdin.write('{"action":"stop"}\n') }
   // Do not kill official grandchildren if cleanup is unknown. A failing job

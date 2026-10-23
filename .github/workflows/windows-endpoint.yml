@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: '24.14.0'
       - name: Verify delivery boundary and recovery fixtures
-        run: node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs official-smoke/producer-fixtures.test.mjs
+        run: node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs
       - name: Validate transfer fixture JavaScript syntax
         run: node --check official-smoke/transfer.mjs
       - name: Validate transfer fixture PowerShell syntax
@@ -32,6 +32,8 @@ jobs:
           $errors = $null
           $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./official-smoke/prepare-transfer.ps1), [ref]$tokens, [ref]$errors)
           if ($errors.Count -ne 0) { throw 'Transfer fixture PowerShell parse failed' }
+          $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./official-smoke/host-tls.ps1), [ref]$tokens, [ref]$errors)
+          if ($errors.Count -ne 0) { throw 'TLS fixture PowerShell parse failed' }
       - name: Verify native PowerShell bootstrap and hash rejection
         if: runner.os == 'Windows'
         shell: powershell
@@ -111,3 +113,6 @@ jobs:
         run: |
           & '${{ runner.temp }}/endpoint explicit components/node/node.exe' ./official-smoke/host.mjs '${{ runner.temp }}/endpoint explicit components' '${{ runner.temp }}/endpoint explicit data'
           if ($LASTEXITCODE -ne 0) { throw 'Explicit host integration failed' }
+      - name: Verify production CLI trusted TLS with disposable CurrentUser test root
+        shell: pwsh
+        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint trusted TLS'

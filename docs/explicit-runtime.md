@@ -71,7 +71,9 @@ production `transferqueue.exe` with fresh isolated data. It admits one seven-byt
 synthetic result through the producer, observes finite queue progress, stops and
 reopens the same queue/identity, and checks authorization failure persistence.
 It creates private fixture objects at creation time; it never repairs existing
-ACLs, changes system trust, or uses a real credential/model/NAS.
+ACLs or uses a real credential/model/NAS. The original untrusted scenario changes
+no trust settings. The separately authorized positive TLS scenario below changes
+only the disposable CI account's CurrentUser root store, with exact cleanup.
 
 The production Go CLI uses system TLS roots and has no custom-CA option. Therefore
 the host fixture's self-signed NAS endpoint must be rejected: no transfer HTTP
@@ -81,11 +83,14 @@ trust. The upstream `transferqueue-cli.test.exe` positive TLS test injects a CA
 only into a test dispatcher. Its successful small-file/lost-response chain, if
 passed, is separate evidence, not production-CLI TLS or real PC-to-NAS acceptance.
 
-A positive production-CLI synthetic TLS acceptance needs an approved trusted
-endpoint or an upstream supported explicit CA configuration. This repository
-does not invent a TLS compatibility shim or change official/producer code.
-Normal authorized system-trusted NAS configuration can be supplied by a user
-later; it is not assumed or tested here.
+The [positive TLS scenario](positive-tls.md) uses the same production CLI and an
+explicitly authorized short-lived root in the disposable Windows CI account.
+It retains the original untrusted rejection, adds hostname rejection and a
+seven-byte upload/reference recovery against the existing loopback protocol
+fixture, then removes only the recorded root fingerprint. This is not a new CA
+configuration option, a TLS shim or a change to official/producer code. Actual
+NAS certificate trust, authorization, durable Server/PG association and mobile
+result delivery remain separate, unperformed acceptance work.
 
 Unknown tasks, a non-stopped previous lifecycle or persisted attention still
 block automatic startup. Owned cleanup failures retain the lease/evidence;
