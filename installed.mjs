@@ -177,7 +177,7 @@ export async function installedDoctor(config, target = null) {
     producer: 'not_checked', transfer: 'not_included_pending_qualification', update: 'official_owner; stop_and_recheck; task_handoff_unimplemented', credentialsRead: false,
     herdrReference: { source: config.programs.herdr === undefined ? 'agenvo_instance' : 'legacy_explicit_match', migration: config.programs.herdr === undefined ? null : 'omit_programs_herdr_once_to_follow_existing_instance' } }
   result.history = await readSessionHistory(config)
-  result.sessionObservation = { state: 'not_queried', ownership: 'not_acquired', stopAuthority: false }
+  result.sessionObservation = { state: 'not_queried', ownership: 'not_acquired', stopAuthority: false, serverIdentity: 'not_verified' }
   try {
     const inspected = await inspectInstalled(config, probe, { inspectHistoryOnly: true })
     result.versions = inspected.versions

@@ -174,6 +174,7 @@ try {
   const report = JSON.parse(diagnostic.stdout)
   assert.equal(report.history.state, 'history_present'); assert.equal(report.history.workspaceCount, 1)
   assert.equal(report.sessionObservation.state, 'observed_unowned'); assert.equal(report.sessionObservation.stopAuthority, false)
+  assert.equal(report.sessionObservation.serverIdentity, 'not_verified')
   assert.equal(report.sessionObservation.workspaceCount, 1); assert.equal(report.sessionObservation.paneCount, 1)
   assert.equal(peer.alive('herdr'), true); assert.equal(await fs.readFile(peer.marker, 'utf8'), beforeQuery)
   assert.equal((await peer.ownedHostRequest('ping')).type, 'pong')

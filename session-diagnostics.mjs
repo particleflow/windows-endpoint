@@ -79,7 +79,7 @@ async function nativeQuery(file, args, env) {
 
 export async function observeExistingSession(inspected, run = nativeQuery) {
   const { config } = inspected, p = programPaths(config), env = managedEnvironment(config)
-  const result = { state: 'unverified', ownership: 'not_acquired', stopAuthority: false, workspaceCount: null,
+  const result = { state: 'unverified', ownership: 'not_acquired', stopAuthority: false, serverIdentity: 'not_verified', workspaceCount: null,
     tabCount: null, paneCount: null, agentCount: null, piSessionReferences: null, businessTasks: 'not_inferred' }
   async function query(args) {
     inspected.assertUnchanged()
@@ -90,23 +90,26 @@ export async function observeExistingSession(inspected, run = nativeQuery) {
   }
   try {
     const status = await query(['status', 'server', '--json'])
+    // Official status.session echoes the CLI selection; it is not server identity.
     if (!object(status) || status.session !== config.session) fail('query_protocol_unverified')
     if (status?.running === false) { result.state = 'not_running'; return result }
     if (status.running !== true || typeof status.version !== 'string' || !status.version || !Number.isSafeInteger(status.protocol) || status.protocol < 0 || status.compatible !== true || status.endpoint_compatible !== true) fail('query_protocol_unverified')
-    // Marker consistency is only a read observation, never a stop capability.
+    // Windows CLI IPC derives the pipe name from the path, not these file bytes.
+    // An unchanged marker cannot bind separate status/snapshot connections to
+    // one server process or generation, and never grants a stop capability.
     const marker = path.join(config.herdrConfigRoot, 'sessions', config.session, 'herdr.sock')
-    const generation = await boundedRead(marker, 80)
-    if (!/^\d+:\d+$/.test(generation)) fail('query_generation_unverified')
+    const markerBefore = await boundedRead(marker, 80)
+    if (!/^\d+:\d+$/.test(markerBefore)) fail('query_marker_invalid')
     const response = await query(['api', 'snapshot']), snapshot = response?.result?.snapshot
     if (response?.id !== 'cli:api:snapshot' || response?.result?.type !== 'session_snapshot' || snapshot?.version !== status.version || snapshot?.protocol !== status.protocol || !['workspaces', 'tabs', 'panes', 'agents'].every(k => Array.isArray(snapshot[k]) && snapshot[k].length <= 10000 && snapshot[k].every(object))) fail('query_response_invalid')
-    if (await boundedRead(marker, 80) !== generation) fail('query_generation_changed')
+    if (await boundedRead(marker, 80) !== markerBefore) fail('query_marker_changed')
     result.state = 'observed_unowned'
     result.workspaceCount = snapshot.workspaces.length; result.tabCount = snapshot.tabs.length
     result.paneCount = snapshot.panes.length; result.agentCount = snapshot.agents.length
     result.piSessionReferences = snapshot.panes.filter(pane => piReference(pane.agent_session)).length
   } catch (error) {
     result.state = error.code === 'permission_denied' || ['EACCES', 'EPERM'].includes(error.code) ? 'permission_denied' : 'query_unavailable'
-    result.reason = ['query_unavailable', 'query_response_invalid', 'query_protocol_unverified', 'query_generation_unverified', 'query_generation_changed', 'query_outcome_unknown', 'installation_changed_restart_required'].includes(error.code) ? error.code : reason(error)
+    result.reason = ['query_unavailable', 'query_response_invalid', 'query_protocol_unverified', 'query_marker_invalid', 'query_marker_changed', 'query_outcome_unknown', 'installation_changed_restart_required'].includes(error.code) ? error.code : reason(error)
   }
   return result
 }

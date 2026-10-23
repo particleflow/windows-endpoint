@@ -61,26 +61,29 @@ async function observationFixture(t) {
   }
   return { ...f, inspected, marker, status, snapshot, run, queries: calls }
 }
-test('native observation permits only status and snapshot and grants no stop or task authority', async t => {
+test('matching CLI selector, versions and stable marker do not verify server identity or grant stop authority', async t => {
   const f = await observationFixture(t), result = await observeExistingSession(f.inspected, f.run)
   assert.equal(result.state, 'observed_unowned'); assert.equal(result.stopAuthority, false); assert.equal(result.ownership, 'not_acquired')
+  assert.equal(result.serverIdentity, 'not_verified')
   assert.equal(result.workspaceCount, 1); assert.equal(result.piSessionReferences, 1); assert.equal(result.businessTasks, 'not_inferred')
   assert.deepEqual(f.queries.map(q => q.args), [['--session', f.config.session, 'status', 'server', '--json'], ['--session', f.config.session, 'api', 'snapshot']])
   assert.ok(f.queries.every(q => q.file === f.p.herdr)); assert.ok(!JSON.stringify(result).includes('PRIVATE_SYNTHETIC'))
 })
 test('not running is reported only from a successful native observation without starting a server', async t => {
   const f = await observationFixture(t); f.status.running = false
-  assert.equal((await observeExistingSession(f.inspected, f.run)).state, 'not_running')
+  const absent = await observeExistingSession(f.inspected, f.run)
+  assert.equal(absent.state, 'not_running'); assert.equal(absent.serverIdentity, 'not_verified')
   assert.equal(f.queries.length, 1)
   assert.equal((await observeExistingSession(f.inspected, async () => ({ status: 0, stdout: '{"running":false}' }))).state, 'query_unavailable')
   for (const run of [async () => ({ status: 1, stdout: 'PRIVATE_SYNTHETIC_ERROR' }), async () => ({ status: 0, stdout: '{' }), async () => { throw Object.assign(new Error('PRIVATE_SYNTHETIC_ERROR'), { code: 'query_outcome_unknown' }) }]) {
     const result = await observeExistingSession(f.inspected, run)
     assert.equal(result.state, 'query_unavailable'); assert.equal(result.stopAuthority, false)
+    assert.equal(result.serverIdentity, 'not_verified')
     assert.ok(!JSON.stringify(result).includes('PRIVATE_SYNTHETIC'))
   }
   assert.equal((await observeExistingSession(f.inspected, async () => { throw Object.assign(new Error(), { code: 'EACCES' }) })).state, 'permission_denied')
 })
-test('protocol uncertainty and generation replacement do not produce a valid external-session observation', async t => {
+test('protocol uncertainty and changed marker prevent observation without inferring server generation', async t => {
   const f = await observationFixture(t)
   f.status.endpoint_compatible = false
   assert.equal((await observeExistingSession(f.inspected, f.run)).state, 'query_unavailable'); assert.equal(f.queries.length, 1)
@@ -93,5 +96,8 @@ test('protocol uncertainty and generation replacement do not produce a valid ext
     if (args[1].includes('snapshot')) await fs.writeFile(f.marker, '123:789')
     return response
   })
-  assert.equal(result.reason, 'query_generation_changed'); assert.equal(result.workspaceCount, null)
+  assert.equal(result.reason, 'query_marker_changed'); assert.equal(result.workspaceCount, null)
+  assert.equal(result.serverIdentity, 'not_verified'); assert.equal(result.stopAuthority, false)
+  await fs.writeFile(f.marker, 'invalid')
+  assert.equal((await observeExistingSession(f.inspected, f.run)).reason, 'query_marker_invalid')
 })
