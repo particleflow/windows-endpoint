@@ -349,12 +349,17 @@ export async function verifyToolchain(config, gitVersion, run = probe) {
 
 export async function main(args) {
   const [command, ...rest] = args
+  if (command === 'host') {
+    const { hostMain, HostError } = await import('./host.mjs')
+    try { return { hostExitCode: await hostMain(rest) } }
+    catch (error) { if (error instanceof HostError) throw new EndpointError(error.code); throw error }
+  }
   const options = {}
   for (let i = 0; i < rest.length; i += 2) {
     requireThat(/^--[a-z-]+$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'invalid_arguments')
     options[rest[i]] = rest[i + 1]
   }
-  if (command === 'help' || !command) return { commands: ['configure --from FILE --config FILE', 'doctor --config FILE', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256'], status: 'review-only; start/activate/update/rollback/uninstall blocked pending qualification' }
+  if (command === 'help' || !command) return { commands: ['configure --from FILE --config FILE', 'doctor --config FILE', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR'], status: 'host control available; component start/activate/update/rollback/uninstall blocked pending qualification' }
   if (['start', 'activate', 'update', 'rollback', 'uninstall'].includes(command)) throw new EndpointError('qualification_required_no_runtime_or_data_changed')
   if (command === 'configure') { keys(options, ['--from', '--config']); return configure(options['--from'], options['--config']) }
   if (command === 'stage') { keys(options, ['--source', '--destination', '--manifest-sha256']); return stageBundle(options['--source'], options['--destination'], options['--manifest-sha256']) }
@@ -367,13 +372,15 @@ export async function main(args) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try {
-    const result = await main(process.argv.slice(2))
+  // Let module evaluation finish before the optional host imports this shared
+  // module. Keeping a top-level await here would form an ESM import deadlock.
+  main(process.argv.slice(2)).then(result => {
+    if (Object.hasOwn(result, 'hostExitCode')) { process.exitCode = result.hostExitCode; return }
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
     if (result.ready === false) process.exitCode = 2
-  } catch (e) {
+  }).catch(e => {
     // Do not echo input, paths, native stdout/stderr, config or credentials.
     process.stderr.write(`${JSON.stringify({ error: e instanceof EndpointError ? e.code : 'operation_failed' })}\n`)
     process.exitCode = 2
-  }
+  })
 }
