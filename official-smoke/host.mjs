@@ -6,7 +6,7 @@ import { spawn, spawnSync, execFile } from 'node:child_process'
 import { createHash, randomUUID, X509Certificate } from 'node:crypto'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
-import { catalog, digest, transferEnvironment } from '../endpoint.mjs'
+import { catalog, digest, transferEnvironment, transferLocations } from '../endpoint.mjs'
 import { deploymentReferences } from '../deployment.mjs'
 import { readHostStatus } from '../host.mjs'
 import { transferFixture } from './nas-fixture.mjs'
@@ -15,7 +15,8 @@ assert.equal(process.platform, 'win32')
 const bundle = await fs.realpath(process.argv[2])
 await fs.mkdir(process.argv[3]) // fail if this isolated root already exists
 const root = await fs.realpath(process.argv[3])
-const config = deploymentReferences(root, { manifestSha256: await digest(path.join(bundle, 'bundle.json')), nasOrigin: 'https://127.0.0.1', deviceId: randomUUID(), runtimeId: randomUUID(), instanceId: 'ci-explicit', session: 'ci-explicit' })
+const references = process.argv[4] === '--existing-installations', hostRoot = references ? path.join(root, 'host') : root
+const config = deploymentReferences(references ? path.join(root, 'existing-component-data') : root, { manifestSha256: await digest(path.join(bundle, 'bundle.json')), nasOrigin: 'https://127.0.0.1', deviceId: randomUUID(), runtimeId: randomUUID(), instanceId: 'ci-explicit', session: 'ci-explicit' })
 config.bundleRoot = bundle
 const node = path.join(bundle, 'node/node.exe'), herdr = path.join(bundle, 'herdr/herdr.exe')
 const endpoint = fileURLToPath(new URL('../endpoint.mjs', import.meta.url))
@@ -27,8 +28,8 @@ async function bounded(promise, milliseconds, message) {
   finally { clearTimeout(timer) }
 }
 const hash = raw => createHash('sha256').update(raw).digest('hex')
-for (const dir of [path.join(root, 'config'), path.join(root, 'data'), config.herdrConfigRoot, config.herdrStateRoot, config.agenvoConfigDir, config.piConfigDir, path.dirname(config.transferConfigDir), path.dirname(config.transferStateDir)]) await fs.mkdir(dir, { recursive: true })
-const trusted = process.argv[4] ? await fs.realpath(process.argv[4]) : null
+for (const dir of [path.join(hostRoot, 'config'), path.join(hostRoot, 'data'), config.herdrConfigRoot, config.herdrStateRoot, config.agenvoConfigDir, config.piConfigDir, path.dirname(config.transferConfigDir), path.dirname(config.transferStateDir)]) await fs.mkdir(dir, { recursive: true })
+const trusted = process.argv[4] && !references ? await fs.realpath(process.argv[4]) : null
 const cert = trusted ? path.join(trusted, 'server.pem') : path.join(root, 'fixture-cert.pem')
 const key = trusted ? path.join(trusted, 'server.key') : path.join(root, 'fixture-key.pem')
 const ca = trusted ? path.join(trusted, 'root.pem') : cert
@@ -87,8 +88,15 @@ const official = new Map([
   [path.join(config.herdrConfigRoot, 'plugins.json'), JSON.stringify([{ plugin_id: 'memoh.delivery', enabled: true, version: catalog.components.transfer.version, plugin_root: path.join(bundle, 'transfer'), manifest_path: path.join(bundle, 'transfer/herdr-plugin.toml') }])],
 ])
 for (const [file, content] of official) await fs.writeFile(file, content)
-await fs.writeFile(path.join(root, 'config/endpoint.json'), JSON.stringify(config))
-await fs.writeFile(path.join(root, 'config/runtime.json'), JSON.stringify({ schema: 1, mode: 'explicit-review', manifestSha256: config.manifestSha256, transfer: 'existing-queue' }))
+const hostConfig = references ? {
+  schema: 2,
+  programs: { node, herdr, piPackage: path.join(bundle, 'node_modules/@earendil-works/pi-coding-agent'), piBin: path.join(bundle, 'node_modules/.bin'), gitRoot: path.join(bundle, 'git'), connectorPackage: path.join(bundle, 'node_modules/@agenvo/herdr') },
+  ...Object.fromEntries(['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir', 'deviceId', 'runtimeId', 'instanceId', 'session'].map(k => [k, config[k]])),
+  transfer: { pluginRoot: path.join(bundle, 'transfer'), nasOrigin: config.nasOrigin },
+} : config
+assert.deepEqual(transferLocations(hostConfig), transferLocations(config), 'Public host and producer must use identical existing roots')
+await fs.writeFile(path.join(hostRoot, 'config/endpoint.json'), JSON.stringify(hostConfig))
+await fs.writeFile(path.join(hostRoot, 'config/runtime.json'), JSON.stringify(references ? { schema: 2, mode: 'existing-installations', transfer: 'existing-queue' } : { schema: 1, mode: 'explicit-review', manifestSha256: config.manifestSha256, transfer: 'existing-queue' }))
 async function cli(action, input, id, expectedExit = 0) {
   // Keep the loopback server responsive while the real CLI performs TLS/I/O.
   return new Promise((resolve, reject) => {
@@ -103,7 +111,7 @@ async function cli(action, input, id, expectedExit = 0) {
   })
 }
 function launch() {
-  const child = spawn(node, [endpoint, 'host', 'run', '--root', root], { env: { ...process.env, NODE_EXTRA_CA_CERTS: ca }, stdio: ['pipe', 'pipe', 'pipe'] })
+  const child = spawn(node, [endpoint, 'host', 'run', '--root', hostRoot], { env: { ...process.env, NODE_EXTRA_CA_CERTS: ca }, stdio: ['pipe', 'pipe', 'pipe'] })
   const states = []; let buffer = '', ended = false, stopRequested = false
   child.stdout.on('data', chunk => { buffer += chunk; const lines = buffer.split('\n'); buffer = lines.pop(); for (const line of lines) states.push(JSON.parse(line)) })
   child.stderr.resume()
@@ -206,7 +214,7 @@ try {
   const before = await cli('inspect', null, deliveryId)
   assert.equal(before.associated, false); assert.equal(before.delivery_id, deliveryId)
   assert.equal((await host.stop()), 0)
-  assert.equal((await readHostStatus(root)).phase, 'stopped')
+  assert.equal((await readHostStatus(hostRoot)).phase, 'stopped')
   const next = launch()
   await next.until(s => s.connection === 'online_snapshot' && s.transfer?.state === 'waiting')
   const after = await cli('inspect', null, deliveryId)
@@ -228,7 +236,7 @@ try {
   assert.equal(feedback.files.length, 1); assert.equal(feedback.files[0].delivery_id, deliveryId)
   assert.equal(feedback.files[0].state, 'pending')
   checked('existing_config_source_and_pending_producer_feedback_are_preserved')
-  process.stdout.write(JSON.stringify({ explicitHostChecks: result, producer: catalog.components.transfer.revision, ready: false, positiveProductionTLS: 'unverified', realPCandNAS: 'not_run', modelRequests: 0 }) + '\n')
+  process.stdout.write(JSON.stringify({ explicitHostChecks: result, mode: references ? 'existing-installations' : 'explicit-review', producer: catalog.components.transfer.revision, ready: false, positiveProductionTLS: 'unverified', realPCandNAS: 'not_run', modelRequests: 0 }) + '\n')
   }
 } finally {
   const cleanup = await Promise.allSettled([...children.values()].map(child => child.stop()))

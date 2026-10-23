@@ -2,10 +2,11 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
-import { inspectInstalled, compareProducerTarget } from './installed.mjs'
-import { validateConfig, managedEnvironment, programPaths, configure } from './endpoint.mjs'
+import { inspectInstalled, inspectInstalledTransfer, compareProducerTarget } from './installed.mjs'
+import { catalog, digest, validateConfig, managedEnvironment, programPaths, configure, transferLocations, transferEnvironment } from './endpoint.mjs'
 import { validateRuntimeRequest, createExplicitRuntime } from './runtime.mjs'
-import { NativeDriver, LifecycleError } from './lifecycle.mjs'
+import { NativeDriver, LifecycleError, leaseKeys } from './lifecycle.mjs'
+import { transferCommand } from './transfer-lifecycle.mjs'
 import { installedFixture } from './test-support/installed-fixture.mjs'
 
 test('references inspect existing programs without a bundle, credential copy or user version manifest', async t => {
@@ -39,6 +40,28 @@ test('same-version replacement and package closure changes suspend a running ins
   const next = await inspectInstalled(f.config, f.run)
   await f.write(f.p.pi, 'REPLACED SAME VERSION')
   assert.throws(next.assertUnchanged, { code: 'installation_changed_restart_required' })
+})
+test('official Herdr current rotation is detected even when the old release bytes are unchanged', async t => {
+  const f = await installedFixture(t), standalone = path.join(f.base, 'official-herdr/packages/standalone')
+  const release = path.join(standalone, 'releases/0.9.5-windows-x86_64')
+  f.config.programs.herdr = path.join(release, 'herdr.exe'); f.p.herdr = f.config.programs.herdr
+  await f.write(f.p.herdr, 'INERT OLD RELEASE')
+  f.connector.instances[0].binary = f.p.herdr
+  await f.write(path.join(f.config.agenvoConfigDir, 'config.json'), JSON.stringify(f.connector))
+  const current = path.join(standalone, 'current')
+  await fs.symlink(release, current, 'junction')
+  const first = await inspectInstalled(f.config, f.run), calls = f.calls.length
+  const next = path.join(standalone, 'releases/0.9.6-windows-x86_64')
+  await f.write(path.join(next, 'herdr.exe'), 'INERT NEW RELEASE')
+  await fs.unlink(current); await fs.symlink(next, current, 'junction')
+  assert.throws(first.assertUnchanged, { code: 'installation_changed_restart_required' })
+  first.assertUnchanged('connector')
+  await assert.rejects(inspectInstalled(f.config, f.run), { code: 'herdr_active_installation_changed' })
+  assert.equal(f.calls.length, calls)
+  assert.equal(await fs.readFile(f.p.herdr, 'utf8'), 'INERT OLD RELEASE')
+  assert.equal(JSON.parse(await fs.readFile(path.join(f.config.agenvoConfigDir, 'config.json'))).instances[0].binary, f.p.herdr)
+  await fs.unlink(current); await fs.symlink(f.config.sourceRoot, current, 'junction')
+  await assert.rejects(inspectInstalled(f.config, f.run), { code: 'herdr_active_installation_invalid' })
 })
 test('unsafe or missing references fail before any program is invoked', async t => {
   const f = await installedFixture(t)
@@ -99,4 +122,78 @@ test('reference activation is explicit and transfer cannot be enabled through an
   for (const changed of [{ ...request, transfer: 'existing-queue' }, { ...request, command: 'anything' }, { ...request, mode: 'automatic' }]) assert.throws(() => validateRuntimeRequest(changed, f.config))
   const runtime = createExplicitRuntime({ config: f.config, stateDirectory: path.join(f.base, 'endpoint'), request })
   assert.equal(runtime.transfer, null); assert.equal(runtime.driver.children.size, 0)
+})
+
+async function installedTransferFixture(t) {
+  const f = await installedFixture(t)
+  f.config.transfer = { pluginRoot: path.join(f.base, 'existing-delivery-plugin'), nasOrigin: 'https://nas.example.test' }
+  const locations = transferLocations(f.config)
+  for (const directory of [locations.root, locations.config, locations.state]) await fs.mkdir(directory, { recursive: true })
+  const files = []
+  for (const name of ['README.md', 'herdr-plugin.toml', 'transfer.example.json', 'transferqueue-cli.test.exe', 'transferqueue.exe', 'transferqueue.test.exe', 'verify-fixtures.ps1']) {
+    const file = path.join(locations.root, name)
+    await fs.writeFile(file, `INERT SYNTHETIC PRODUCER: ${name}`)
+    files.push({ name, sha256: await digest(file) })
+  }
+  const proof = { source_commit: catalog.components.transfer.revision, arch: 'amd64', files }
+  const proofFile = path.join(locations.root, 'SHA256SUMS.json')
+  await fs.writeFile(proofFile, JSON.stringify(proof))
+  await f.write(path.join(locations.config, 'transfer.json'), JSON.stringify({ version: 1, origin: locations.origin, source_root: f.config.sourceRoot }))
+  await f.write(path.join(locations.config, 'device.credential'), 'SYNTHETIC UNREAD')
+  const registryFile = path.join(f.config.herdrConfigRoot, 'plugins.json')
+  const registry = [{ plugin_id: 'memoh.delivery', enabled: true, version: catalog.components.transfer.version, plugin_root: locations.root, manifest_path: path.join(locations.root, 'herdr-plugin.toml') }]
+  await f.write(registryFile, JSON.stringify(registry))
+  return { ...f, locations, proof, proofFile, registry, registryFile }
+}
+test('reference mode shares the registered producer paths and lease without another bundle or queue', async t => {
+  const f = await installedTransferFixture(t), request = { schema: 2, mode: 'existing-installations', transfer: 'existing-queue' }
+  const journal = path.join(f.locations.state, 'untouched-user-journal')
+  await fs.writeFile(journal, 'KEEP EXISTING QUEUE EVIDENCE')
+  const checked = await inspectInstalledTransfer(f.config)
+  assert.equal(checked.source, catalog.components.transfer.revision)
+  assert.deepEqual(transferCommand(f.config, 'advance-results'), { file: path.join(f.locations.root, 'transferqueue.exe'), args: ['-action', 'advance-results'] })
+  const env = transferEnvironment(f.config)
+  assert.equal(env.HERDR_PLUGIN_CONFIG_DIR, f.locations.config); assert.equal(env.HERDR_PLUGIN_STATE_DIR, f.locations.state)
+  assert.ok(leaseKeys(f.config).includes(`transfer:${f.locations.state}`))
+  const runtime = createExplicitRuntime({ config: f.config, stateDirectory: path.join(f.base, 'endpoint'), request })
+  assert.equal(runtime.transfer.state, 'stopped'); assert.equal(runtime.driver.children.size, 0)
+  assert.equal(await fs.readFile(journal, 'utf8'), 'KEEP EXISTING QUEUE EVIDENCE')
+  assert.equal(f.calls.length, 0)
+})
+test('external producer reference rejects source, architecture, duplicate receipt and payload mismatch', async t => {
+  const f = await installedTransferFixture(t)
+  for (const proof of [{ ...f.proof, source_commit: '0'.repeat(40) }, { ...f.proof, arch: 'arm64' }, { ...f.proof, files: f.proof.files.map(() => f.proof.files[0]) }]) {
+    await fs.writeFile(f.proofFile, JSON.stringify(proof))
+    await assert.rejects(inspectInstalledTransfer(f.config), { code: 'transfer_provenance_mismatch' })
+  }
+  await fs.writeFile(f.proofFile, JSON.stringify(f.proof))
+  await fs.appendFile(path.join(f.locations.root, 'transferqueue.exe'), 'CHANGED')
+  await assert.rejects(inspectInstalledTransfer(f.config), { code: 'transfer_payload_changed' })
+})
+test('missing producer input and changed plugin registration fail before any work', async t => {
+  const f = await installedTransferFixture(t), credential = path.join(f.locations.config, 'device.credential')
+  await fs.rm(credential)
+  await assert.rejects(inspectInstalledTransfer(f.config), { code: 'transfer_credential_missing' })
+  await fs.writeFile(credential, 'SYNTHETIC')
+  const checked = await inspectInstalledTransfer(f.config)
+  await fs.writeFile(f.registryFile, JSON.stringify([{ ...f.registry[0], plugin_root: f.base }]))
+  await assert.rejects(checked.assertUnchanged(), { code: 'runtime_transfer_mapping_changed' })
+  await assert.rejects(inspectInstalledTransfer(f.config), { code: 'runtime_transfer_mapping_invalid' })
+  assert.equal(f.calls.length, 0)
+})
+test('a running consumer cannot silently accept a replaced package or new self-consistent receipt', async t => {
+  const f = await installedTransferFixture(t), checked = await inspectInstalledTransfer(f.config)
+  const file = path.join(f.locations.root, 'transferqueue.exe')
+  await fs.writeFile(file, 'OTHER INERT BINARY')
+  await assert.rejects(checked.assertUnchanged(), { code: 'transfer_payload_changed' })
+  f.proof.files.find(f => f.name === 'transferqueue.exe').sha256 = await digest(file)
+  await fs.writeFile(f.proofFile, JSON.stringify(f.proof))
+  await assert.rejects(checked.assertUnchanged(), { code: 'transfer_payload_changed' })
+})
+test('external transfer roots preserve data boundaries and existing configuration agreement', async t => {
+  const f = await installedTransferFixture(t)
+  assert.throws(() => validateConfig({ ...f.config, transfer: { ...f.config.transfer, pluginRoot: f.config.sourceRoot } }), { code: 'data_program_overlap' })
+  assert.throws(() => validateConfig({ ...f.config, transfer: { ...f.config.transfer, nasOrigin: 'http://nas.example.test' } }), { code: 'https_origin_required' })
+  await fs.writeFile(path.join(f.locations.config, 'transfer.json'), JSON.stringify({ version: 1, origin: f.locations.origin, source_root: f.base }))
+  await assert.rejects(inspectInstalledTransfer(f.config), { code: 'transfer_configuration_mismatch' })
 })

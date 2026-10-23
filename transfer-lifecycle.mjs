@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { catalog, transferEnvironment, validateTransferConfiguration } from './endpoint.mjs'
+import { transferLocations, transferEnvironment, validateTransferConfiguration } from './endpoint.mjs'
 import { TransferContractError, parseLifecycleSummary, parseAdvanceDecision, deadlineMilliseconds } from './transfer-contract.mjs'
 
 export class TransferError extends Error {
@@ -10,7 +10,7 @@ export class TransferError extends Error {
 
 export function transferCommand(config, action) {
   if (!['lifecycle-summary', 'advance-results'].includes(action)) throw new TransferError('transfer_action_rejected')
-  return { file: path.join(config.bundleRoot, catalog.components.transfer.entry), args: ['-action', action] }
+  return { file: path.join(transferLocations(config).root, 'transferqueue.exe'), args: ['-action', action] }
 }
 
 // Activated only through the explicit runtime request and verified inventory.

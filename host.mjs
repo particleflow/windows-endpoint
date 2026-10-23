@@ -133,7 +133,7 @@ export class ForegroundHost {
           }
         } else {
           const overlaps = (a, b) => [path.relative(a, b), path.relative(b, a)].some(r => r === '' || !path.isAbsolute(r) && r !== '..' && !r.startsWith(`..${path.sep}`))
-          for (const external of [...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir'].map(k => config[k]), ...Object.values(config.programs)]) {
+          for (const external of [...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir'].map(k => config[k]), ...Object.values(config.programs), ...(config.transfer ? [config.transfer.pluginRoot] : [])]) {
             if ([this.layout.config, this.layout.data, this.layout.logs].some(owned => overlaps(owned, external))) throw new HostError('host_reference_overlap')
           }
         }

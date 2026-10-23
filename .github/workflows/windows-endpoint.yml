@@ -117,6 +117,9 @@ jobs:
       - name: Exercise public host and production CLI with isolated configuration
         shell: pwsh
         run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint untrusted TLS' -UntrustedOnly
+      - name: Exercise existing installation references with the same finite transfer CLI
+        shell: pwsh
+        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint referenced transfer' -UntrustedOnly -ReferencedTransfer
       - name: Verify production CLI trusted TLS with disposable CurrentUser test root
         shell: pwsh
         # Keep a real failing prerequisite; never repeat the rejected import

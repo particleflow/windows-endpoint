@@ -15,7 +15,8 @@ for its separate component, authorization and business-readiness boundaries.
 The [existing-installation mode](docs/existing-installations-plan.md) references
 official programs/configuration directly, rechecks actual versions and starts
 the same owned lifecycle. It does not install another Pi/Herdr copy or enable
-business-task upgrade handoff; transfer stays disabled in that mode.
+business-task upgrade handoff. It can explicitly reference the existing transfer
+plugin and queue; positive production TLS and file return remain unverified.
 
 ## Layout
 

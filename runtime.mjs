@@ -3,7 +3,7 @@ import path from 'node:path'
 import { catalog, digest, validateConfig, validateDirectory, verifyBundle, verifyToolchain, validateTransferConfiguration, EndpointError } from './endpoint.mjs'
 import { NativeDriver, EndpointLifecycle, StateStore, acquireLeases, leaseKeys, LifecycleError } from './lifecycle.mjs'
 import { NativeTransferDriver, TransferLifecycle } from './transfer-lifecycle.mjs'
-import { inspectInstalled, validateInstalledConfiguration } from './installed.mjs'
+import { inspectInstalled, inspectInstalledTransfer, validateInstalledConfiguration } from './installed.mjs'
 
 export class RuntimeError extends LifecycleError {
   constructor(code) { super(code); this.code = code }
@@ -26,7 +26,8 @@ async function json(file) {
 // arguments, shell commands, credentials, or a test driver.
 export function validateRuntimeRequest(value, config) {
   if (config.schema === 2) {
-    requireRuntime(value && typeof value === 'object' && Object.keys(value).sort().join(',') === 'mode,schema,transfer' && value.schema === 2 && value.mode === 'existing-installations' && value.transfer === 'disabled', 'runtime_request_invalid')
+    requireRuntime(value && typeof value === 'object' && Object.keys(value).sort().join(',') === 'mode,schema,transfer' && value.schema === 2 && value.mode === 'existing-installations' && ['disabled', 'existing-queue'].includes(value.transfer), 'runtime_request_invalid')
+    requireRuntime(value.transfer !== 'existing-queue' || config.transfer, 'transfer_reference_required')
     return Object.freeze({ ...value })
   }
   requireRuntime(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).sort().join(',') === 'manifestSha256,mode,schema,transfer', 'runtime_request_invalid')
@@ -37,7 +38,11 @@ export function validateRuntimeRequest(value, config) {
 
 export async function validateRuntimeConfiguration(config, request) {
   validateConfig(config); validateRuntimeRequest(request, config)
-  if (config.schema === 2) return validateInstalledConfiguration(config)
+  if (config.schema === 2) {
+    await validateInstalledConfiguration(config)
+    if (request.transfer === 'existing-queue') await inspectInstalledTransfer(config)
+    return
+  }
   for (const key of ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir']) await validateDirectory(config[key])
   await regular(path.join(config.herdrConfigRoot, 'config.toml'))
   const connector = await json(path.join(config.agenvoConfigDir, 'config.json'))
@@ -61,7 +66,7 @@ export async function validateRuntimeConfiguration(config, request) {
 
 export function createExplicitRuntime({ config, stateDirectory, request }) {
   validateRuntimeRequest(request, config)
-  let verified, installation, driver
+  let verified, installation, installedTransfer, driver
   const qualify = async () => {
     try {
       requireRuntime(process.platform === 'win32' && process.arch === 'x64', 'runtime_windows_x64_required')
@@ -69,7 +74,9 @@ export function createExplicitRuntime({ config, stateDirectory, request }) {
         // A running owner's recovery cannot silently accept an official update.
         // A new explicit run re-detects versions without a new approval manifest.
         installation?.assertUnchanged()
+        await installedTransfer?.assertUnchanged()
         installation = await inspectInstalled(config)
+        if (request.transfer === 'existing-queue') installedTransfer = await inspectInstalledTransfer(config)
         driver.herdrVersion = installation.versions.herdr
         return true
       }
@@ -87,6 +94,12 @@ export function createExplicitRuntime({ config, stateDirectory, request }) {
   // Recheck executable/proof bytes before each finite command. Full inventory
   // and version checks also run before every component start or recovery.
   const qualifyTransfer = async () => {
+    if (config.schema === 2) {
+      requireRuntime(installation && installedTransfer, 'runtime_inventory_unverified')
+      installation.assertUnchanged()
+      await installedTransfer.assertUnchanged()
+      return true
+    }
     requireRuntime(verified, 'runtime_inventory_unverified')
     for (const name of ['bundle.json', catalog.components.transfer.entry, 'transfer/herdr-plugin.toml', 'transfer/SHA256SUMS.json']) {
       const file = path.join(config.bundleRoot, name)

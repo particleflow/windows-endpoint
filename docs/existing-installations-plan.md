@@ -13,6 +13,8 @@ schema 2. This example is a path template, not an installer command or real
 machine configuration. Official installers/package managers own these programs.
 The referenced Node, Git and Agenvo installation must already exist.
 Use physical paths, not version-manager junctions or ambient PATH discovery.
+In particular, the official Windows Herdr `current` junction cannot currently
+be used as Agenvo 0.2's binary path; see the update limitation below.
 
 ```json
 {
@@ -103,6 +105,66 @@ never runs an official updater, rolls state back or kills tasks to upgrade.
 Coordinating upgrades while business tasks run is still unimplemented: no new
 producer drain API is invented by this batch.
 
+### Windows Herdr version-directory limitation
+
+The official [Windows installer at the reviewed source](https://github.com/herdrdev/herdr/blob/5bd900d88c80d95f5b145397e45bbeea398b8165/distribution/install.ps1)
+installs `packages/standalone/releases/<version-target>` and switches `current`
+and its visible bin junction. It does not overwrite the previous physical
+binary. For this exact layout the endpoint now checks the current target lies
+directly inside that physical releases directory and matches the selected
+release. Retargeting suspends recovery even when old bytes are unchanged; a
+fresh preflight reports `herdr_active_installation_changed` before invoking the
+old release. Other mutable links are still rejected. This is detection, not
+automatic adoption of the new release.
+
+[Agenvo's canonical-path validation](https://github.com/Xuanwo/agenvo/blob/a89415e557c415faf5626354f8e87233eb69d877/packages/connector/src/config.ts)
+requires the configured binary to equal `realpath` and includes it in the
+instance scope fingerprint. Its [official CLI](https://github.com/Xuanwo/agenvo/blob/a89415e557c415faf5626354f8e87233eb69d877/packages/connector/src/cli/main.ts)
+states that changing an instance requires restart and approval of the changed
+scope. Consequently this version cannot provide zero-reconfiguration Herdr
+update following under the existing approved mapping. Merely accepting a
+junction in the endpoint would leave the official adapter unavailable. The
+remaining upstream contract is a stable official installation reference whose
+active target can change without silently changing the authorized instance
+scope. No such API is invented, no core patched and no approval automated here.
+Pi updates at the selected package path can be rechecked after a clean stop;
+this does not establish safe upgrades during Agent work or session migration.
+
+## Existing transfer plugin reference
+
+The optional schema-2 endpoint field is:
+
+```json
+"transfer": {
+  "pluginRoot": "C:\\ExistingPlugins\\memoh.delivery",
+  "nasOrigin": "https://nas.example.test"
+}
+```
+
+The runtime opt-in is then
+`{"schema":2,"mode":"existing-installations","transfer":"existing-queue"}`.
+Without that opt-in the finite consumer remains absent. No package or credential
+is copied. The plugin must already be registered and enabled in the referenced
+Herdr `plugins.json`, with the exact same root and manifest. Its existing
+configuration is derived from `herdrConfigRoot/plugins/config/memoh.delivery`
+and its queue from `herdrStateRoot/plugins/memoh.delivery`; these are the same
+producer locations and acquire the same transfer lease as bundle mode.
+
+The producer's existing `SHA256SUMS.json` must identify reviewed source
+`4c880e07ecdff1b6caadd86348779603fce9e8aa`, amd64 and the complete build output.
+Preflight verifies those file hashes, then each finite invocation rechecks the
+captured executable, manifest, receipt and plugin-registration bytes. A changed
+receipt cannot silently replace the running component. This is an integrity
+check on a deliberately selected local source build, not signed provenance or
+production qualification; the user supplies no second manual hash/version list.
+
+The same `NativeTransferDriver` and `TransferLifecycle` handle bounded summary,
+advance, deadline wake, draining and persistent attention. They never collect a
+new task, create a second queue, infer task completion from idle, or replay Pi.
+Unknown and in-flight stop failures retain the existing gates. Native permissions,
+credentials, journal compatibility and TLS remain the producer's responsibility.
+No new producer field or API was required for this connection.
+
 ## Existing producer profile comparison
 
 The fixed producer is `4c880e07ecdff1b6caadd86348779603fce9e8aa`.
@@ -136,8 +198,13 @@ public host, owned stop/recheck, same-device contention, external-peer refusal
 and synthetic history preservation without model calls or OS trust changes.
 Read results at the exact CI head; writing a fixture is not a pass.
 
-Reference mode currently leaves transfer disabled; schema 1 retains the finite
-consumer. Neither mode is a qualified production installation. Overall
+Reference mode can explicitly attach that existing finite consumer; the initial
+`7ff45204538d7f2baecaf3dde3f843daedeff45f` checkpoint left it disabled. The new
+Windows scenario reuses the original production CLI seven-byte admission,
+untrusted-TLS rejection and same-queue reopen assertions against schema 2,
+in addition to the preserved schema-1 scenario. A synthetic network refusal
+does not prove successful file return, associated references or production TLS.
+Neither mode is a qualified production installation. Overall
 `ready:false`, Agent/desktop unavailable and `transferAutomaticRecovery:false`
 remain. No real PC/NAS, model task, installation/update or physical-power-loss
 acceptance has been performed.

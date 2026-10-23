@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { spawn, spawnSync, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { catalog, managedEnvironment, programPaths } from './endpoint.mjs'
+import { catalog, managedEnvironment, programPaths, transferLocations } from './endpoint.mjs'
 
 // Internal foreground lifecycle. No business dispatch, transfer implementation,
 // network service, OS startup registration, credential editing or second watchdog.
@@ -474,5 +474,5 @@ export class EndpointLifecycle {
 
 export function leaseKeys(config) {
   return [`device:${config.deviceId}`, `herdr:${config.herdrConfigRoot}:${config.session}`, `connector:${config.agenvoConfigDir}`,
-    ...(config.transferStateDir ? [`transfer:${config.transferStateDir}`] : [])]
+    ...(config.transferStateDir || config.schema === 2 && config.transfer ? [`transfer:${config.schema === 2 ? transferLocations(config).state : config.transferStateDir}`] : [])]
 }

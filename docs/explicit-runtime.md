@@ -3,7 +3,8 @@
 This document describes schema 1, the inventory-bound bundle review mode.
 [Schema 2 existing-installation references](existing-installations-plan.md)
 reuse selected official programs/configuration without a second package copy or
-user-maintained version manifest; that initial mode has transfer disabled.
+user-maintained version manifest; it can explicitly attach the existing registered
+transfer plugin and queue with the same finite consumer.
 
 This batch connects the public `host run` entry to the existing native lifecycle
 and finite CLI consumer. It does not install a service, pair a device, authorize

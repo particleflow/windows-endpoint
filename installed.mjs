@@ -1,10 +1,10 @@
 // References to user-selected official installations. No installer, updater,
 // credential reader, registration database or user-maintained version manifest.
 import * as fs from 'node:fs/promises'
-import { statSync, lstatSync } from 'node:fs'
+import { statSync, lstatSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { EndpointError, validateConfig, validateDirectory, programPaths, managedEnvironment, digest } from './endpoint.mjs'
+import { EndpointError, catalog, validateConfig, validateDirectory, programPaths, managedEnvironment, digest, transferLocations, validateTransferConfiguration } from './endpoint.mjs'
 
 const demand = (ok, code) => { if (!ok) throw new EndpointError(code) }
 const same = (a, b) => typeof a === 'string' && typeof b === 'string' && (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b)
@@ -33,8 +33,27 @@ function minimum(value, floor) {
   demand(a[0] > b[0] || a[0] === b[0] && (a[1] > b[1] || a[1] === b[1] && a[2] >= b[2]), 'installation_version_too_old')
 }
 const fingerprint = s => [s.dev, s.ino, s.size, s.mtimeMs, s.ctimeMs, s.nlink, s.mode].join(':')
+async function officialHerdrSelection(config) {
+  const release = path.dirname(config.programs.herdr), releases = path.dirname(release), standalone = path.dirname(releases)
+  // Recognize only the official Windows standalone layout. This reads its
+  // current selection; it never permits a link as a command path or rewrites
+  // Agenvo's separately approved canonical binary scope.
+  if (path.basename(releases) !== 'releases' || path.basename(standalone) !== 'standalone' || path.basename(path.dirname(standalone)) !== 'packages') return () => {}
+  await validateDirectory(releases)
+  const current = path.join(standalone, 'current'), stat = await fs.lstat(current)
+  demand(stat.isSymbolicLink(), 'herdr_active_installation_invalid')
+  const selected = await fs.realpath(current)
+  await validateDirectory(selected)
+  demand(same(path.dirname(selected), releases), 'herdr_active_installation_invalid')
+  demand(same(selected, release), 'herdr_active_installation_changed')
+  const expected = fingerprint(stat)
+  return () => {
+    demand(lstatSync(current).isSymbolicLink() && fingerprint(lstatSync(current)) === expected && same(realpathSync(current), release), 'installation_changed_restart_required')
+  }
+}
 async function capture(config) {
   const p = programPaths(config), files = new Map(), directories = new Map()
+  const checkSelection = await officialHerdrSelection(config)
   const add = async file => files.set(file, fingerprint(await regular(file)))
   async function walk(root) {
     await validateDirectory(root)
@@ -57,6 +76,7 @@ async function capture(config) {
   const inside = (file, root) => { const r = path.relative(root, file); return r === '' || !path.isAbsolute(r) && r !== '..' && !r.startsWith(`..${path.sep}`) }
   const assertUnchanged = scope => {
     try {
+      if (scope !== 'connector') checkSelection()
       for (const [file, expected] of files) {
         if (scope === 'connector' && file !== p.node && !inside(file, config.programs.connectorPackage)) continue
         const s = lstatSync(file)
@@ -148,7 +168,48 @@ export async function installedDoctor(config, target = null) {
     const inspected = await inspectInstalled(config)
     result.versions = inspected.versions
     checks.push({ check: 'installation_paths_versions_protocol', state: 'passed' })
+    if (config.transfer) {
+      await inspectInstalledTransfer(config)
+      checks.push({ check: 'existing_transfer_reference', state: 'passed' })
+      result.transfer = 'reference_checked; native_tls_and_authorization_unverified'
+    }
     if (target) { result.producer = compareProducerTarget(config, target).state; checks.push({ check: 'producer_configuration', state: 'passed' }) }
   } catch (error) { checks.push({ check: 'installation_preflight', state: 'blocked', code: error instanceof EndpointError ? error.code : error.code === 'ENOENT' ? 'installation_input_missing' : 'installation_input_unavailable' }) }
   return result
+}
+
+// The existing producer owns the package, credentials and queue. Its build
+// receipt checks selected local bytes; it is not a signed release certificate.
+export async function inspectInstalledTransfer(config) {
+  validateConfig(config)
+  demand(config.schema === 2 && config.transfer, 'transfer_reference_required')
+  const locations = transferLocations(config)
+  await validateDirectory(locations.root)
+  await validateTransferConfiguration(config)
+  const registryFile = path.join(config.herdrConfigRoot, 'plugins.json'), registry = await json(registryFile)
+  const registryHash = await digest(registryFile)
+  const plugins = Array.isArray(registry) ? registry.filter(p => p.plugin_id === 'memoh.delivery') : []
+  const plugin = plugins[0]
+  demand(plugins.length === 1 && plugin.enabled === true && plugin.version === catalog.components.transfer.version && same(plugin.plugin_root, locations.root) && same(plugin.manifest_path, path.join(locations.root, 'herdr-plugin.toml')), 'runtime_transfer_mapping_invalid')
+  const proofFile = path.join(locations.root, 'SHA256SUMS.json'), proof = await json(proofFile), proofHash = await digest(proofFile)
+  const names = ['README.md', 'herdr-plugin.toml', 'transfer.example.json', 'transferqueue-cli.test.exe', 'transferqueue.exe', 'transferqueue.test.exe', 'verify-fixtures.ps1']
+  demand(proof.source_commit === catalog.components.transfer.revision && proof.arch === 'amd64' && Array.isArray(proof.files) && proof.files.length === names.length && proof.files.every(f => f && Object.keys(f).sort().join(',') === 'name,sha256' && names.includes(f.name) && /^[a-f0-9]{64}$/.test(f.sha256)) && new Set(proof.files.map(f => f.name)).size === names.length, 'transfer_provenance_mismatch')
+  demand(JSON.stringify((await fs.readdir(locations.root)).sort()) === JSON.stringify([...names, 'SHA256SUMS.json'].sort()), 'transfer_inventory_mismatch')
+  for (const f of proof.files) {
+    const file = path.join(locations.root, f.name)
+    await regular(file)
+    demand(await digest(file) === f.sha256, 'transfer_payload_changed')
+  }
+  const tracked = new Map([['SHA256SUMS.json', proofHash], ...proof.files.filter(f => ['transferqueue.exe', 'herdr-plugin.toml'].includes(f.name)).map(f => [f.name, f.sha256])])
+  const assertUnchanged = async () => {
+    await regular(registryFile)
+    demand(await digest(registryFile) === registryHash, 'runtime_transfer_mapping_changed')
+    for (const [name, expected] of tracked) {
+      const file = path.join(locations.root, name)
+      await regular(file)
+      demand(await digest(file) === expected, 'transfer_payload_changed')
+    }
+  }
+  await assertUnchanged()
+  return { source: proof.source_commit, assertUnchanged }
 }

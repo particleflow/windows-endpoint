@@ -71,7 +71,7 @@ export async function digest(file) {
 export function validateConfig(config) {
   if (config?.schema === 2) {
     const roots = ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir']
-    keys(config, ['schema', 'programs', ...roots, 'deviceId', 'runtimeId', 'instanceId', 'session'])
+    keys(config, ['schema', 'programs', ...roots, 'deviceId', 'runtimeId', 'instanceId', 'session'], ['transfer'])
     keys(config.programs, ['node', 'herdr', 'piPackage', 'piBin', 'gitRoot', 'connectorPackage'])
     for (const value of [...roots.map(k => config[k]), ...Object.values(config.programs)]) absolute(value)
     requireThat(uuidPattern.test(config.deviceId) && uuidPattern.test(config.runtimeId) && idPattern.test(config.instanceId) && idPattern.test(config.session) && config.session !== 'default', 'dedicated_session_required')
@@ -81,6 +81,14 @@ export function validateConfig(config) {
       for (const location of [path.dirname(programs.node), path.dirname(programs.herdr), config.programs.piPackage, config.programs.piBin, config.programs.gitRoot, config.programs.connectorPackage]) requireThat(!overlaps(root, location), 'data_program_overlap')
     }
     for (let i = 0; i < roots.length; i++) for (let j = i + 1; j < roots.length; j++) requireThat(!overlaps(config[roots[i]], config[roots[j]]), 'component_data_overlap')
+    if (config.transfer !== undefined) {
+      keys(config.transfer, ['pluginRoot', 'nasOrigin'])
+      absolute(config.transfer.pluginRoot)
+      let origin
+      try { origin = new URL(config.transfer.nasOrigin) } catch { throw new EndpointError('https_origin_required') }
+      requireThat(origin.protocol === 'https:' && origin.origin === config.transfer.nasOrigin && !origin.hostname.endsWith('.invalid'), 'https_origin_required')
+      for (const root of roots.map(k => config[k])) requireThat(!overlaps(root, config.transfer.pluginRoot), 'data_program_overlap')
+    }
     return config
   }
   keys(config, configFields)
@@ -207,7 +215,7 @@ export async function configure(from, to) {
   absolute(to)
   const config = validateConfig(await readJSON(from))
   await canonical(path.dirname(to))
-  const locations = config.schema === 2 ? [...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir'].map(k => config[k]), ...Object.values(config.programs)] : pathFields.map(k => config[k])
+  const locations = config.schema === 2 ? [...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir'].map(k => config[k]), ...Object.values(config.programs), ...(config.transfer ? [config.transfer.pluginRoot] : [])] : pathFields.map(k => config[k])
   requireThat(!locations.some(location => overlaps(location, to)), 'configuration_location_rejected')
   // Exclusive creation; upgrading never overwrites the references or credentials.
   const handle = await fs.open(to, 'wx')
@@ -244,24 +252,33 @@ export function managedEnvironment(config, inherited = process.env) {
 
 // Shared reference checks only. The producer remains responsible for native
 // storage permissions, authorization and queue integrity; never repair ACLs here.
+export function transferLocations(config) {
+  if (config.schema === 2) {
+    requireThat(config.transfer, 'transfer_reference_required')
+    return { root: config.transfer.pluginRoot, config: path.join(config.herdrConfigRoot, 'plugins/config/memoh.delivery'), state: path.join(config.herdrStateRoot, 'plugins/memoh.delivery'), origin: config.transfer.nasOrigin }
+  }
+  return { root: path.join(config.bundleRoot, 'transfer'), config: config.transferConfigDir, state: config.transferStateDir, origin: config.nasOrigin }
+}
 export async function validateTransferConfiguration(config) {
   validateConfig(config)
-  for (const field of ['sourceRoot', 'transferConfigDir', 'transferStateDir']) {
-    await canonical(config[field])
-    requireThat((await fs.stat(config[field])).isDirectory(), 'directory_required')
+  const locations = transferLocations(config)
+  for (const directory of [config.sourceRoot, locations.config, locations.state]) {
+    await canonical(directory)
+    requireThat((await fs.stat(directory)).isDirectory(), 'directory_required')
   }
-  const file = path.join(config.transferConfigDir, 'transfer.json')
+  const file = path.join(locations.config, 'transfer.json')
   const cfg = await readJSON(file, 8192)
   keys(cfg, ['version', 'origin', 'source_root'])
-  requireThat(cfg.version === 1 && cfg.origin === config.nasOrigin && samePath(cfg.source_root, config.sourceRoot), 'transfer_configuration_mismatch')
-  try { requireThat((await regular(path.join(config.transferConfigDir, 'device.credential'))).size > 0, 'transfer_credential_missing') }
+  requireThat(cfg.version === 1 && cfg.origin === locations.origin && samePath(cfg.source_root, config.sourceRoot), 'transfer_configuration_mismatch')
+  try { requireThat((await regular(path.join(locations.config, 'device.credential'))).size > 0, 'transfer_credential_missing') }
   catch (error) { if (error.code === 'ENOENT') throw new EndpointError('transfer_credential_missing'); throw error }
 }
 
 export function transferEnvironment(config, inherited = process.env) {
+  const locations = transferLocations(config)
   return { ...managedEnvironment(config, inherited),
-    HERDR_PLUGIN_CONFIG_DIR: config.transferConfigDir,
-    HERDR_PLUGIN_STATE_DIR: config.transferStateDir }
+    HERDR_PLUGIN_CONFIG_DIR: locations.config,
+    HERDR_PLUGIN_STATE_DIR: locations.state }
 }
 export function launchPlan(config) {
   const entry = id => programPaths(config)[id]
