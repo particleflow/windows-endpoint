@@ -75,6 +75,21 @@ test('public observer accepts explicit external installation/config roots withou
   assert.equal(await fs.readFile(path.join(f.config.piConfigDir, 'auth.json'), 'utf8'), 'SYNTHETIC UNREAD PI CONFIG')
   assert.equal((await stop(p)).code, 0)
 })
+test('resolved official Herdr path cannot overlap host-owned data even when the endpoint omits its path', async t => {
+  const f = await installedFixture(t), root = path.join(f.base, 'host-root')
+  await fs.mkdir(path.join(root, 'config'), { recursive: true })
+  const binary = path.join(root, 'data/program/herdr.exe')
+  await f.write(binary, 'INERT MUST NEVER RUN')
+  delete f.config.programs.herdr; f.connector.instances[0].binary = binary
+  await fs.writeFile(path.join(f.config.agenvoConfigDir, 'config.json'), JSON.stringify(f.connector))
+  await fs.writeFile(path.join(root, 'config/endpoint.json'), JSON.stringify(f.config))
+  await fs.writeFile(path.join(root, 'config/runtime.json'), JSON.stringify({ schema: 2, mode: 'existing-installations', transfer: 'disabled' }))
+  const p = launch(t, { root })
+  await attention(p, 'host_reference_overlap')
+  assert.equal(p.statuses.some(s => s.components === 'verified_local'), false)
+  assert.equal((await stop(p)).code, 2)
+  assert.equal(await fs.readFile(binary, 'utf8'), 'INERT MUST NEVER RUN')
+})
 
 test('public foreground entry stays observable with missing config, enforces one host, and stops cleanly', async t => {
   const f = await fixture(t)

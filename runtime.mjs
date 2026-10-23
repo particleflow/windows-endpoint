@@ -64,8 +64,11 @@ export async function validateRuntimeConfiguration(config, request) {
   }
 }
 
-export function createExplicitRuntime({ config, stateDirectory, request }) {
+export async function createExplicitRuntime({ config, stateDirectory, request }) {
   validateRuntimeRequest(request, config)
+  // Resolve only local configuration here, without probing or starting a child.
+  // Freeze the effective path for this runtime; official changes need a new run.
+  if (config.schema === 2) config = (await validateInstalledConfiguration(config)).config
   let verified, installation, installedTransfer, driver
   const qualify = async () => {
     try {

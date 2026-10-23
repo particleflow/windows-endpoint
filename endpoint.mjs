@@ -72,13 +72,15 @@ export function validateConfig(config) {
   if (config?.schema === 2) {
     const roots = ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir']
     keys(config, ['schema', 'programs', ...roots, 'deviceId', 'runtimeId', 'instanceId', 'session'], ['transfer'])
-    keys(config.programs, ['node', 'herdr', 'piPackage', 'piBin', 'gitRoot', 'connectorPackage'])
+    // Omitted Herdr is resolved from the selected official Agenvo instance.
+    // The optional legacy value remains an explicit equality constraint.
+    keys(config.programs, ['node', 'piPackage', 'piBin', 'gitRoot', 'connectorPackage'], ['herdr'])
     for (const value of [...roots.map(k => config[k]), ...Object.values(config.programs)]) absolute(value)
     requireThat(uuidPattern.test(config.deviceId) && uuidPattern.test(config.runtimeId) && idPattern.test(config.instanceId) && idPattern.test(config.session) && config.session !== 'default', 'dedicated_session_required')
     requireThat(path.basename(config.herdrConfigRoot) === 'herdr' && path.basename(config.herdrStateRoot) === 'herdr', 'herdr_root_name_required')
     const programs = programPaths(config)
     for (const root of roots.map(k => config[k])) {
-      for (const location of [path.dirname(programs.node), path.dirname(programs.herdr), config.programs.piPackage, config.programs.piBin, config.programs.gitRoot, config.programs.connectorPackage]) requireThat(!overlaps(root, location), 'data_program_overlap')
+      for (const location of [path.dirname(programs.node), ...(programs.herdr ? [path.dirname(programs.herdr)] : []), config.programs.piPackage, config.programs.piBin, config.programs.gitRoot, config.programs.connectorPackage]) requireThat(!overlaps(root, location), 'data_program_overlap')
     }
     for (let i = 0; i < roots.length; i++) for (let j = i + 1; j < roots.length; j++) requireThat(!overlaps(config[roots[i]], config[roots[j]]), 'component_data_overlap')
     if (config.transfer !== undefined) {
@@ -241,6 +243,7 @@ export function managedEnvironment(config, inherited = process.env) {
   }
   const system = path.join(inherited.SystemRoot || 'C:\\Windows', 'System32')
   const p = programPaths(config)
+  requireThat(p.herdr, 'herdr_reference_unresolved')
   env.PATH = [path.dirname(p.node), path.dirname(p.herdr), p.piBin, path.join(p.gitRoot, 'bin'), path.join(p.gitRoot, 'usr/bin'), path.join(p.gitRoot, 'mingw64/bin'), path.join(p.gitRoot, 'cmd'), system, path.join(system, 'WindowsPowerShell/v1.0')].join(path.delimiter)
   env.HERDR_CONFIG_PATH = path.join(config.herdrConfigRoot, 'config.toml')
   env.XDG_CONFIG_HOME = path.dirname(config.herdrConfigRoot)
@@ -419,7 +422,7 @@ export async function main(args) {
   if (command === 'doctor') return doctor(config)
   if (config.schema === 2) {
     const { inspectInstalled } = await import('./installed.mjs')
-    await inspectInstalled(config)
+    return launchPlan((await inspectInstalled(config)).config)
   } else await verifyBundle(config.bundleRoot, config.manifestSha256)
   return launchPlan(config)
 }

@@ -22,6 +22,62 @@ test('references inspect existing programs without a bundle, credential copy or 
   await configure(path.join(f.base, 'input.json'), destination)
   assert.deepEqual(JSON.parse(await fs.readFile(destination)), f.config)
 })
+test('omitted Herdr path resolves only from the selected official instance without saving a second path', async t => {
+  const f = await installedFixture(t), file = path.join(f.config.agenvoConfigDir, 'config.json')
+  delete f.config.programs.herdr
+  const before = await fs.readFile(file), input = JSON.stringify(f.config)
+  const inspected = await inspectInstalled(f.config, f.run)
+  assert.equal(inspected.herdrSource, 'agenvo_instance'); assert.equal(inspected.config.programs.herdr, f.p.herdr)
+  assert.equal(JSON.stringify(f.config), input); assert.deepEqual(await fs.readFile(file), before)
+  assert.throws(() => managedEnvironment(f.config), { code: 'herdr_reference_unresolved' })
+  const runtime = await createExplicitRuntime({ config: f.config, stateDirectory: path.join(f.base, 'endpoint'), request: { schema: 2, mode: 'existing-installations', transfer: 'disabled' } })
+  assert.equal(runtime.driver.herdr, f.p.herdr); assert.equal(runtime.driver.children.size, 0)
+  const destination = path.join(f.base, 'endpoint.json')
+  await f.write(path.join(f.base, 'input.json'), input)
+  await configure(path.join(f.base, 'input.json'), destination)
+  assert.equal(JSON.parse(await fs.readFile(destination)).programs.herdr, undefined)
+})
+test('official instance binary changes are frozen during a run and followed by a fresh check without editing endpoint config', async t => {
+  const f = await installedFixture(t), file = path.join(f.config.agenvoConfigDir, 'config.json')
+  delete f.config.programs.herdr
+  const endpointBefore = JSON.stringify(f.config), inspected = await inspectInstalled(f.config, f.run)
+  const previous = f.p.herdr, next = path.join(f.base, 'next-official-release/herdr.exe')
+  await f.write(next, 'INERT NEXT OFFICIAL RELEASE')
+  f.connector.instances[0].binary = next
+  await fs.writeFile(file, JSON.stringify(f.connector))
+  assert.throws(inspected.assertUnchanged, { code: 'installation_changed_restart_required' })
+  inspected.assertUnchanged('connector') // unchanged connector cleanup is retained
+  assert.equal(inspected.config.programs.herdr, previous)
+  f.p.herdr = next; f.versions.herdr = '0.9.6'
+  const rechecked = await inspectInstalled(f.config, f.run)
+  assert.equal(rechecked.config.programs.herdr, next); assert.equal(rechecked.versions.herdr, '0.9.6')
+  assert.equal(JSON.stringify(f.config), endpointBefore)
+  assert.equal(JSON.parse(await fs.readFile(file)).instances[0].id, f.config.instanceId)
+  assert.equal(await fs.readFile(previous, 'utf8'), 'INERT SYNTHETIC PROGRAM; NEVER EXECUTE')
+})
+test('legacy explicit Herdr references keep equality semantics and can migrate by removing only the duplicate path', async t => {
+  const f = await installedFixture(t), file = path.join(f.config.agenvoConfigDir, 'config.json')
+  assert.equal((await inspectInstalled(f.config, f.run)).herdrSource, 'legacy_explicit_match')
+  const next = path.join(f.base, 'new-location/herdr.exe')
+  await f.write(next, 'INERT NEW LOCATION'); f.connector.instances[0].binary = next
+  await fs.writeFile(file, JSON.stringify(f.connector))
+  await assert.rejects(inspectInstalled(f.config, f.run), { code: 'runtime_approved_path_mismatch' })
+  delete f.config.programs.herdr; f.p.herdr = next
+  assert.equal((await inspectInstalled(f.config, f.run)).config.programs.herdr, next)
+})
+test('single-instance resolution rejects ambiguous, mismatched and unsafe official mappings before probes', async t => {
+  const f = await installedFixture(t), file = path.join(f.config.agenvoConfigDir, 'config.json')
+  delete f.config.programs.herdr
+  const i = f.connector.instances[0]
+  for (const connector of [
+    { ...f.connector, instances: [] }, { ...f.connector, instances: [i, { ...i, id: 'other' }] },
+    { ...f.connector, deviceId: '33333333-3333-4333-8333-333333333333' },
+    ...[{ ...i, id: 'other' }, { ...i, kind: 'other' }, { ...i, cwd: f.base }, { ...i, binary: 'herdr.exe' }, { ...i, binary: path.join(f.config.sourceRoot, 'herdr.exe') }].map(instance => ({ ...f.connector, instances: [instance] })),
+  ]) {
+    await fs.writeFile(file, JSON.stringify(connector)); await assert.rejects(inspectInstalled(f.config, f.run))
+  }
+  assert.equal(f.calls.length, 0)
+})
 test('official compatible version changes are redetected on a fresh check without editing an approval list', async t => {
   const f = await installedFixture(t), first = await inspectInstalled(f.config, f.run)
   f.versions.herdr = '0.9.6'; f.versions.pi = '1.3.0'
@@ -120,7 +176,7 @@ test('reference activation is explicit and transfer cannot be enabled through an
   const f = await installedFixture(t), request = { schema: 2, mode: 'existing-installations', transfer: 'disabled' }
   assert.deepEqual(validateRuntimeRequest(request, f.config), request)
   for (const changed of [{ ...request, transfer: 'existing-queue' }, { ...request, command: 'anything' }, { ...request, mode: 'automatic' }]) assert.throws(() => validateRuntimeRequest(changed, f.config))
-  const runtime = createExplicitRuntime({ config: f.config, stateDirectory: path.join(f.base, 'endpoint'), request })
+  const runtime = await createExplicitRuntime({ config: f.config, stateDirectory: path.join(f.base, 'endpoint'), request })
   assert.equal(runtime.transfer, null); assert.equal(runtime.driver.children.size, 0)
 })
 
@@ -155,7 +211,7 @@ test('reference mode shares the registered producer paths and lease without anot
   const env = transferEnvironment(f.config)
   assert.equal(env.HERDR_PLUGIN_CONFIG_DIR, f.locations.config); assert.equal(env.HERDR_PLUGIN_STATE_DIR, f.locations.state)
   assert.ok(leaseKeys(f.config).includes(`transfer:${f.locations.state}`))
-  const runtime = createExplicitRuntime({ config: f.config, stateDirectory: path.join(f.base, 'endpoint'), request })
+  const runtime = await createExplicitRuntime({ config: f.config, stateDirectory: path.join(f.base, 'endpoint'), request })
   assert.equal(runtime.transfer.state, 'stopped'); assert.equal(runtime.driver.children.size, 0)
   assert.equal(await fs.readFile(journal, 'utf8'), 'KEEP EXISTING QUEUE EVIDENCE')
   assert.equal(f.calls.length, 0)

@@ -21,7 +21,6 @@ be used as Agenvo 0.2's binary path; see the update limitation below.
   "schema": 2,
   "programs": {
     "node": "C:\\Tools\\node\\node.exe",
-    "herdr": "C:\\Tools\\herdr\\herdr.exe",
     "piPackage": "C:\\Tools\\npm\\node_modules\\@earendil-works\\pi-coding-agent",
     "piBin": "C:\\Tools\\npm",
     "gitRoot": "C:\\Tools\\Git",
@@ -40,10 +39,21 @@ be used as Agenvo 0.2's binary path; see the update limitation below.
 ```
 
 Replace example identifiers with the existing authorized mapping; this command
-creates no identity or credential. Agenvo's existing config must name the same
-Herdr binary, configRoot and cwd. No registration is rewritten. The host retains
+creates no identity or credential. Herdr's only program-path source is
+`agenvoConfigDir/config.json`: the existing Herdr instance matching `instanceId`
+must belong to `deviceId` and name the selected configRoot and cwd. The current
+host still requires exactly one configured instance; a multi-instance connector
+is rejected rather than implicitly managing unrelated instances. No registration
+is rewritten. The host retains
 only its own config/data/logs below its root. Component roots must not overlap
 those owned directories or each other's data/program paths.
+
+Older schema-2 files containing `programs.herdr` remain readable: that field is
+an explicit equality constraint against the official instance. `doctor` reports
+`herdrReference.source: legacy_explicit_match` and a one-time migration hint.
+To follow that instance without maintaining two paths, remove only the optional
+`programs.herdr` field from the endpoint configuration. No automatic file rewrite,
+credential copy or business-history migration occurs. Schema 1 is unchanged.
 
 Run `doctor --config FILE` to detect actual versions, package names, required CLI
 flags and the Pi launcher resolved under the controlled Git Bash environment.
@@ -90,8 +100,8 @@ future release's semantics; unknown state/protocol behavior still fails clearly.
 Herdr readiness/ping must report this run's observed version and
 `endpoint_compatible:true`.
 
-File hashes are observed evidence, not a provenance approval system. Program and
-package-tree metadata are captured automatically for this run; changes stop
+File hashes are observed evidence, not a provenance approval system. Program,
+official instance configuration and package-tree metadata are captured for this run; changes stop
 automatic recovery and persist `installation_changed_restart_required`.
 Existing processes remain running until explicit stop. Owned pipe stop does not
 invoke the replaced Herdr binary; unchanged connector cleanup remains available.
@@ -114,21 +124,35 @@ binary. For this exact layout the endpoint now checks the current target lies
 directly inside that physical releases directory and matches the selected
 release. Retargeting suspends recovery even when old bytes are unchanged; a
 fresh preflight reports `herdr_active_installation_changed` before invoking the
-old release. Other mutable links are still rejected. This is detection, not
-automatic adoption of the new release.
+old release. This check is the endpoint's policy: Agenvo itself can still accept
+the old canonical binary while that file exists. Other mutable links are still
+rejected. Detection alone is not automatic adoption of the new release.
 
 [Agenvo's canonical-path validation](https://github.com/Xuanwo/agenvo/blob/a89415e557c415faf5626354f8e87233eb69d877/packages/connector/src/config.ts)
 requires the configured binary to equal `realpath` and includes it in the
-instance scope fingerprint. Its [official CLI](https://github.com/Xuanwo/agenvo/blob/a89415e557c415faf5626354f8e87233eb69d877/packages/connector/src/cli/main.ts)
-states that changing an instance requires restart and approval of the changed
-scope. Consequently this version cannot provide zero-reconfiguration Herdr
-update following under the existing approved mapping. Merely accepting a
-junction in the endpoint would leave the official adapter unavailable. The
-remaining upstream contract is a stable official installation reference whose
-active target can change without silently changing the authorized instance
-scope. No such API is invented, no core patched and no approval automated here.
-Pi updates at the selected package path can be rechecked after a clean stop;
-this does not establish safe upgrades during Agent work or session migration.
+instance scope fingerprint. A new canonical physical path is valid, but its
+changed fingerprint no longer matches the previously approved scope. The
+[official usage guide](https://github.com/Xuanwo/agenvo/blob/a89415e557c415faf5626354f8e87233eb69d877/docs/usage.md)
+requires restarting the connector and approving the changed scope through its
+native administration flow. Existing deviceId/instanceId and pairing are kept.
+
+For a version-directory update: cleanly stop the endpoint, update Herdr through
+its official owner, maintain the existing Agenvo instance's `binary` in its
+existing config to the new canonical physical executable, then explicitly run
+the endpoint again. It re-reads that single official path, validates the actual
+program/protocol and starts the connector. Complete any changed-scope approval
+through the native owner; `online` alone does not prove instance authorization.
+The endpoint file needs no second path edit after the one-time migration above.
+There is no official `instance update/upsert` command in the examined version;
+`instance add` with the same ID is not an update. This endpoint neither edits
+official configuration nor approves scope, re-pairs or invents that command.
+
+A version change at the same path does not by itself change this fingerprint:
+the version number is not in it. Pi updates at the selected package path can
+be rechecked after a clean stop. Herdr's Windows managed installer (including
+`-InstallDir`) rotates version directories/junctions; it provides no general
+flat-path in-place-update guarantee. Neither case establishes safe upgrades
+during Agent work or session migration.
 
 ## Existing transfer plugin reference
 
@@ -196,6 +220,11 @@ The added Windows CI scenario uses unchanged official programs in external
 temporary installation directories and a synthetic relay. It exercises the
 public host, owned stop/recheck, same-device contention, external-peer refusal
 and synthetic history preservation without model calls or OS trust changes.
+Its path-change scenario copies the same unchanged official release only within
+the temporary fixture, maintains the synthetic Agenvo config, and reads the
+actual running process image path. It verifies a new explicit host uses that
+new path while endpoint.json is byte-identical. It does not execute Herdr's
+updater or prove real native scope approval against a production relay.
 Read results at the exact CI head; writing a fixture is not a pass.
 
 Reference mode can explicitly attach that existing finite consumer; the initial

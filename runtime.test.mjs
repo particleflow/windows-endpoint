@@ -40,7 +40,7 @@ test('runtime rejects an extra instance, changed binary, insecure relay and mism
 })
 test('constructing native runtime does not execute or create work; disabled transfer stays absent', async t => {
   const f = await configured(t)
-  const runtime = createExplicitRuntime({ config: f.config, stateDirectory: f.lifecycleDirectory, request: { ...request(f.config), transfer: 'disabled' } })
+  const runtime = await createExplicitRuntime({ config: f.config, stateDirectory: f.lifecycleDirectory, request: { ...request(f.config), transfer: 'disabled' } })
   assert.equal(runtime.transfer, null); assert.equal(runtime.release, null)
   assert.equal(runtime.driver.children.size, 0)
   if (process.platform !== 'win32') {

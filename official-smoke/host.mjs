@@ -90,7 +90,7 @@ const official = new Map([
 for (const [file, content] of official) await fs.writeFile(file, content)
 const hostConfig = references ? {
   schema: 2,
-  programs: { node, herdr, piPackage: path.join(bundle, 'node_modules/@earendil-works/pi-coding-agent'), piBin: path.join(bundle, 'node_modules/.bin'), gitRoot: path.join(bundle, 'git'), connectorPackage: path.join(bundle, 'node_modules/@agenvo/herdr') },
+  programs: { node, piPackage: path.join(bundle, 'node_modules/@earendil-works/pi-coding-agent'), piBin: path.join(bundle, 'node_modules/.bin'), gitRoot: path.join(bundle, 'git'), connectorPackage: path.join(bundle, 'node_modules/@agenvo/herdr') },
   ...Object.fromEntries(['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir', 'deviceId', 'runtimeId', 'instanceId', 'session'].map(k => [k, config[k]])),
   transfer: { pluginRoot: path.join(bundle, 'transfer'), nasOrigin: config.nasOrigin },
 } : config

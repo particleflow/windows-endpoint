@@ -42,6 +42,9 @@ await fs.writeFile(officialFiles[1], JSON.stringify({ schema: 1, relay: `https:/
 await fs.writeFile(officialFiles[2], JSON.stringify({ secret: 'synthetic-no-real-credential-'.repeat(4) }))
 await fs.writeFile(officialFiles[3], '{}') // No model authorization or request.
 const originals = await Promise.all(officialFiles.map(f => fs.readFile(f)))
+// Public endpoint configuration points only to the official config/instance.
+// Keep the fixture's initial physical path locally to prepare its inputs.
+delete config.programs.herdr
 const results = [], checked = check => { results.push(check); process.stdout.write(`${JSON.stringify({ existingInstallationCheck: check, state: 'passed' })}\n`) }
 async function hostRoot(name) {
   const root = path.join(base, name)
@@ -85,6 +88,7 @@ let peer
 try {
   const inspected = await inspectInstalled(config)
   assert.equal(inspected.versions.pi, '1.2.0'); assert.equal(inspected.versions.herdr, '0.9.5')
+  assert.equal(inspected.herdrSource, 'agenvo_instance')
   const target = { device_id: config.deviceId, instance_id: config.instanceId, session: config.session, work_dir: config.sourceRoot, bash_path: p.git, agent: { execution_mode: 'pi-json-v1', provider: 'synthetic', model: 'synthetic', config_dir: config.piConfigDir } }
   assert.equal(compareProducerTarget(config, target).state, 'configuration_matches')
   checked('actual_official_installation_preflight_and_existing_profile_shape')
@@ -114,7 +118,30 @@ try {
   assert.equal(await again.stop(), 0)
   checked('explicit_restart_redetects_installation_without_new_manifest')
 
-  peer = new NativeDriver(config, { inheritedEnvironment: { ...process.env, NODE_EXTRA_CA_CERTS: cert }, qualify: async () => { await inspectInstalled(config); return true } })
+  // Simulate an owner-maintained official instance mapping, not an updater or
+  // native scope approval. The unchanged real release is copied only in CI.
+  const endpointBytes = await fs.readFile(path.join(root, 'config/endpoint.json'))
+  const nextDirectory = path.join(base, 'next official Herdr location'), nextBinary = path.join(nextDirectory, 'herdr.exe')
+  await fs.cp(path.dirname(p.herdr), nextDirectory, { recursive: true, errorOnExist: true, force: false })
+  assert.deepEqual(await fs.readFile(officialFiles[1]), originals[1])
+  const mapping = JSON.parse(originals[1]); mapping.instances[0].binary = nextBinary
+  originals[1] = Buffer.from(JSON.stringify(mapping)); await fs.writeFile(officialFiles[1], originals[1])
+  const followed = launch(root)
+  await followed.until(s => s.connection === 'online_snapshot' && s.components === 'verified_local')
+  const marker = path.join(config.herdrConfigRoot, 'sessions', config.session, 'herdr.sock'), generation = await fs.readFile(marker, 'utf8')
+  assert.match(generation, /^\d+:\d+$/)
+  const pid = Number(generation.split(':')[0])
+  assert.ok(Number.isSafeInteger(pid) && pid > 0)
+  const powershell = path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe')
+  const imagePath = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', `[Diagnostics.Process]::GetProcessById(${pid}).MainModule.FileName`], { encoding: 'utf8', timeout: 10000, maxBuffer: 16384 })
+  assert.equal(imagePath.status, 0, 'Read owned fixture process image path')
+  assert.equal(imagePath.stdout.trim().toLowerCase(), nextBinary.toLowerCase())
+  assert.equal(await fs.readFile(marker, 'utf8'), generation)
+  assert.deepEqual(await fs.readFile(path.join(root, 'config/endpoint.json')), endpointBytes)
+  assert.equal(await followed.stop(), 0)
+  checked('fresh_host_uses_official_instance_binary_change_without_endpoint_edit')
+
+  peer = new NativeDriver((await inspectInstalled(config)).config, { inheritedEnvironment: { ...process.env, NODE_EXTRA_CA_CERTS: cert }, qualify: async () => { await inspectInstalled(config); return true } })
   await peer.validate(); await peer.start('herdr'); await peer.waitReady('herdr')
   const outsider = launch(await hostRoot('host-external-peer'))
   await outsider.until(s => s.attention === 'existing_herdr_requires_handoff')
@@ -135,7 +162,7 @@ try {
   checked('synthetic_historical_state_refused_without_import_or_replay')
   for (let i = 0; i < officialFiles.length; i++) assert.deepEqual(await fs.readFile(officialFiles[i]), originals[i])
   checked('original_configuration_and_credential_bytes_preserved')
-  process.stdout.write(`${JSON.stringify({ existingInstallationChecks: results.length, realPcInstallation: false, realAgentTask: false, automaticUpdate: false, trustedTransferTLS: false })}\n`)
+  process.stdout.write(`${JSON.stringify({ existingInstallationChecks: results.length, realPcInstallation: false, realAgentTask: false, automaticUpdate: false, nativeScopeApproval: false, trustedTransferTLS: false })}\n`)
 } finally {
   const cleanup = await Promise.allSettled([...hosts].map(h => h.stop()))
   await peer?.stop('herdr')

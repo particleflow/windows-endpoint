@@ -13,6 +13,7 @@ export class HostError extends Error {
 const safeCode = error => error instanceof HostError || error instanceof LifecycleError || error instanceof EndpointError || error instanceof RuntimeError ? error.code :
   ['EACCES', 'EPERM', 'EROFS'].includes(error?.code) ? 'host_storage_permission_denied' : error?.code === 'ENOSPC' ? 'host_storage_full' : 'host_operation_failed'
 const samePath = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
+const overlaps = (a, b) => [path.relative(a, b), path.relative(b, a)].some(r => r === '' || !path.isAbsolute(r) && r !== '..' && !r.startsWith(`..${path.sep}`))
 async function regular(file, limit) {
   const st = await fs.lstat(file)
   if (!st.isFile() || st.isSymbolicLink() || st.nlink !== 1 || st.size > limit) throw new HostError('host_input_unsafe')
@@ -132,7 +133,6 @@ export class ForegroundHost {
             if (!samePath(config[key], expected[key])) throw new HostError('host_configuration_root_mismatch')
           }
         } else {
-          const overlaps = (a, b) => [path.relative(a, b), path.relative(b, a)].some(r => r === '' || !path.isAbsolute(r) && r !== '..' && !r.startsWith(`..${path.sep}`))
           for (const external of [...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir'].map(k => config[k]), ...Object.values(config.programs), ...(config.transfer ? [config.transfer.pluginRoot] : [])]) {
             if ([this.layout.config, this.layout.data, this.layout.logs].some(owned => overlaps(owned, external))) throw new HostError('host_reference_overlap')
           }
@@ -159,9 +159,12 @@ export class ForegroundHost {
           this.runtime = await this.createTestRuntime({ config, stateDirectory: this.stateDirectory })
           if (!this.stopRequested) { await this.runtime.start(); this.components = 'synthetic_fixture' }
         } else if (request && !this.stopRequested && !this.attention) {
-          this.runtime = createExplicitRuntime({ config, stateDirectory: this.stateDirectory, request })
-          await this.runtime.start({ acknowledgeAttention: recheckInstallation })
-          if (!this.stopRequested) this.components = 'verified_local'
+          this.runtime = await createExplicitRuntime({ config, stateDirectory: this.stateDirectory, request })
+          if (config.schema === 2 && [this.layout.config, this.layout.data, this.layout.logs].some(owned => overlaps(owned, this.runtime.driver.herdr))) throw new HostError('host_reference_overlap')
+          if (!this.stopRequested) {
+            await this.runtime.start({ acknowledgeAttention: recheckInstallation })
+            if (!this.stopRequested) this.components = 'verified_local'
+          }
         }
       }
     } catch (error) {

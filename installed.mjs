@@ -51,9 +51,12 @@ async function officialHerdrSelection(config) {
     demand(lstatSync(current).isSymbolicLink() && fingerprint(lstatSync(current)) === expected && same(realpathSync(current), release), 'installation_changed_restart_required')
   }
 }
-async function capture(config) {
+async function capture(config, binding) {
   const p = programPaths(config), files = new Map(), directories = new Map()
   const checkSelection = await officialHerdrSelection(config)
+  // Keep the selected official instance immutable for this running owner.
+  // A fresh explicit run can read a new official mapping after a clean stop.
+  files.set(binding.file, binding.stamp)
   const add = async file => files.set(file, fingerprint(await regular(file)))
   async function walk(root) {
     await validateDirectory(root)
@@ -97,10 +100,18 @@ export async function validateInstalledConfiguration(config) {
   demand(config.schema === 2, 'existing_installation_config_required')
   for (const key of ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir']) await validateDirectory(config[key])
   await regular(path.join(config.herdrConfigRoot, 'config.toml'))
-  const connector = await json(path.join(config.agenvoConfigDir, 'config.json'))
+  const file = path.join(config.agenvoConfigDir, 'config.json'), before = await regular(file)
+  demand(before.size <= 65536, 'installation_metadata_oversized')
+  let connector
+  try { connector = JSON.parse(await fs.readFile(file, 'utf8')) } catch { throw new EndpointError('installation_metadata_invalid') }
+  demand(fingerprint(before) === fingerprint(await regular(file)), 'installation_changed_restart_required')
   demand(connector.schema === 1 && connector.deviceId === config.deviceId && Array.isArray(connector.instances) && connector.instances.length === 1, 'runtime_device_mapping_invalid')
-  const i = connector.instances[0]
-  demand(i.id === config.instanceId && i.kind === 'herdr' && same(i.binary, config.programs.herdr) && same(i.cwd, config.sourceRoot) && same(i.configRoot, config.herdrConfigRoot), 'runtime_approved_path_mismatch')
+  const i = connector.instances.find(instance => instance?.id === config.instanceId)
+  demand(i?.kind === 'herdr' && same(i.cwd, config.sourceRoot) && same(i.configRoot, config.herdrConfigRoot), 'runtime_approved_path_mismatch')
+  demand(config.programs.herdr === undefined || same(i.binary, config.programs.herdr), 'runtime_approved_path_mismatch')
+  const resolved = { ...config, programs: { ...config.programs, herdr: i.binary } }
+  validateConfig(resolved)
+  await regular(resolved.programs.herdr)
   let relay
   try { relay = new URL(connector.relay) } catch { throw new EndpointError('runtime_relay_invalid') }
   demand(relay.protocol === 'https:' && !relay.username && !relay.password && !relay.search && !relay.hash && relay.pathname === '/', 'runtime_relay_invalid')
@@ -113,6 +124,7 @@ export async function validateInstalledConfiguration(config) {
     const state = await json(session)
     demand(state.version === 3 && Array.isArray(state.workspaces) && state.workspaces.length === 0, 'existing_herdr_session_requires_handoff')
   } catch (error) { if (error.code !== 'ENOENT') throw error }
+  return { config: resolved, binding: { file, stamp: fingerprint(before) }, herdrSource: config.programs.herdr === undefined ? 'agenvo_instance' : 'legacy_explicit_match' }
 }
 
 export function compareProducerTarget(config, target) {
@@ -125,7 +137,8 @@ export function compareProducerTarget(config, target) {
 }
 
 export async function inspectInstalled(config, run = probe) {
-  await validateInstalledConfiguration(config)
+  const resolved = await validateInstalledConfiguration(config)
+  config = resolved.config
   const p = programPaths(config)
   const pi = await json(path.join(config.programs.piPackage, 'package.json'))
   const connector = await json(path.join(config.programs.connectorPackage, 'package.json'))
@@ -139,7 +152,7 @@ export async function inspectInstalled(config, run = probe) {
     try { await fs.lstat(sibling); demand(same(sibling, p.node), 'installation_node_resolution_mismatch') }
     catch (error) { if (error.code !== 'ENOENT') throw error }
   }
-  const observed = await capture(config), env = managedEnvironment(config)
+  const observed = await capture(config, resolved.binding), env = managedEnvironment(config)
   const call = (file, args) => { observed.assertUnchanged(); const output = run(file, args, env); observed.assertUnchanged(); return output }
   const versions = { node: call(p.node, ['--version']).replace(/^v/, ''), herdr: call(p.herdr, ['--version']).replace(/^herdr /, ''), pi: call(p.node, [p.pi, '--version']) }
   let connectorVersion
@@ -158,12 +171,13 @@ export async function inspectInstalled(config, run = probe) {
   demand(lines.length === 2 && same(lines[0], path.join(p.piBin, 'pi')) && lines[1] === versions.pi, 'installation_pi_resolution_mismatch')
   versions.git = call(path.join(p.gitRoot, 'cmd/git.exe'), ['--version'])
   demand(/^git version \d+\.\d+\.\d+\.windows\.\d+$/.test(versions.git), 'installation_git_protocol_missing')
-  return { ...observed, versions }
+  return { ...observed, versions, config, herdrSource: resolved.herdrSource }
 }
 
 export async function installedDoctor(config, target = null) {
   const checks = [], result = { schema: 1, ready: false, mode: 'existing-installations', versions: null, checks,
-    producer: 'not_checked', transfer: 'not_included_pending_qualification', update: 'official_owner; stop_and_recheck; task_handoff_unimplemented', credentialsRead: false }
+    producer: 'not_checked', transfer: 'not_included_pending_qualification', update: 'official_owner; stop_and_recheck; task_handoff_unimplemented', credentialsRead: false,
+    herdrReference: { source: config.programs.herdr === undefined ? 'agenvo_instance' : 'legacy_explicit_match', migration: config.programs.herdr === undefined ? null : 'omit_programs_herdr_once_to_follow_existing_instance' } }
   try {
     const inspected = await inspectInstalled(config)
     result.versions = inspected.versions
@@ -173,7 +187,7 @@ export async function installedDoctor(config, target = null) {
       checks.push({ check: 'existing_transfer_reference', state: 'passed' })
       result.transfer = 'reference_checked; native_tls_and_authorization_unverified'
     }
-    if (target) { result.producer = compareProducerTarget(config, target).state; checks.push({ check: 'producer_configuration', state: 'passed' }) }
+    if (target) { result.producer = compareProducerTarget(inspected.config, target).state; checks.push({ check: 'producer_configuration', state: 'passed' }) }
   } catch (error) { checks.push({ check: 'installation_preflight', state: 'blocked', code: error instanceof EndpointError ? error.code : error.code === 'ENOENT' ? 'installation_input_missing' : 'installation_input_unavailable' }) }
   return result
 }
