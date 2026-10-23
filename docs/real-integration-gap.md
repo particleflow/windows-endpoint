@@ -63,9 +63,9 @@ Build log SHA-256:
 The earlier Windows CurrentUser Root import UI rejection remains separately
 blocked; this inspection neither retries it nor changes that CI gate.
 
-## Default Web gateway API prefix is incompatible today
+## Default Web gateway API prefix mismatch at the inspected checkpoint
 
-Endpoint `endpoint.mjs:89-102` accepts a bare HTTPS `nasOrigin` only. Memoh's
+At endpoint `e2f61151`, `endpoint.mjs:89-102` accepts a bare HTTPS `nasOrigin` only. Memoh's
 `internal/transferclient/client.go:50-89` accepts an HTTPS base path and appends
 `/internal/computer-transfers/<operation>/<delivery>`, retaining an existing
 `/api` prefix. The endpoint fixture in `official-smoke/nas-fixture.mjs:10` serves
@@ -101,3 +101,10 @@ binding. `host_config_test.go:106-111` already asserts that an origin change
 fails before networking. Routing changes must preserve existing queue, attempt,
 receipt and delivery identities. This endpoint batch adds no competing field,
 origin alias, queue reset or new transfer service.
+
+The subsequent endpoint fix adopts the shared syntax contract at Memoh
+`91149ad7` for both configuration schemas; see
+[API base configuration and existing-binding limits](existing-installations-plan.md#existing-transfer-plugin-reference).
+The original routing probe and build failure above remain historical evidence.
+Accepting the correct prefix does not complete positive TLS, real task recovery
+or production PC/NAS acceptance, and does not implement dynamic route selection.

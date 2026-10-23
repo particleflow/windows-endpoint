@@ -162,12 +162,13 @@ during Agent work or session migration.
 
 ## Existing transfer plugin reference
 
-The optional schema-2 endpoint field is:
+For a new configuration using the default Web gateway, the optional schema-2
+endpoint field is:
 
 ```json
 "transfer": {
   "pluginRoot": "C:\\ExistingPlugins\\memoh.delivery",
-  "nasOrigin": "https://nas.example.test"
+  "nasOrigin": "https://nas.example.test/api"
 }
 ```
 
@@ -179,6 +180,29 @@ Herdr `plugins.json`, with the exact same root and manifest. Its existing
 configuration is derived from `herdrConfigRoot/plugins/config/memoh.delivery`
 and its queue from `herdrStateRoot/plugins/memoh.delivery`; these are the same
 producer locations and acquire the same transfer lease as bundle mode.
+
+Both schema-1 `nasOrigin` and schema-2 `transfer.nasOrigin` now mean HTTPS API
+base under the shared
+[`memoh.file-api-base.v1` contract](https://github.com/particleflow/Memoh/blob/91149ad7ab5c0d24a57f10e7d9ff1df4b71cf51c/docs/file-service-endpoint-contract.md).
+Direct Server roots, `/api`, nested prefixes and a single trailing slash are
+accepted, including explicit LAN/IPv6 addresses. Ambiguous separators, dot
+segments, escaping, query/fragment delimiters and invalid ports are rejected.
+The endpoint's existing `.invalid` destination rejection remains. Validation
+does not resolve DNS, choose routes, prove authorization or alter TLS checks.
+
+The selected value must match existing `transfer.json.origin` **exactly**.
+Case, port spelling and trailing-slash differences are not silently normalized.
+The producer binds queued work to the original configuration bytes: this change
+is not permission to edit a populated queue's address, migrate its binding or
+create replacement deliveries. Existing-queue migration remains separate;
+automatic LAN preference/IPv6 fallback is not implemented.
+
+The 30 shared vectors run against both endpoint schemas. The existing native
+Windows reference-mode fixture uses a fresh `/api/` configuration and checks
+that changing its spelling makes the production CLI return
+`configuration_changed` without altering the admitted delivery; it then restores
+the fixture's original bytes and exercises the same pending queue. This is
+admission/binding and untrusted-TLS coverage, not a positive `/api` upload proof.
 
 The producer's existing `SHA256SUMS.json` must identify reviewed source
 `4c880e07ecdff1b6caadd86348779603fce9e8aa`, amd64 and the complete build output.

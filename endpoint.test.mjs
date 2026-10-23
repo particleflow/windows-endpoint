@@ -5,7 +5,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { catalog, configure, digest, doctor, launchPlan, main, stageBundle, validateConfig, validateTransferConfiguration, verifyBundle } from './endpoint.mjs'
+import { catalog, configure, digest, doctor, launchPlan, main, stageBundle, transferLocations, validateConfig, validateTransferConfiguration, verifyBundle } from './endpoint.mjs'
+import { installedFixture } from './test-support/installed-fixture.mjs'
+
+const apiBaseVectors = JSON.parse(await fs.readFile(new URL('./test-support/api-base-v1.json', import.meta.url)))
+assert.equal(apiBaseVectors.contract, 'memoh.file-api-base.v1')
+assert.equal(apiBaseVectors.cases.length, 30)
 
 async function json(file, value) {
   await fs.mkdir(path.dirname(file), { recursive: true })
@@ -130,7 +135,7 @@ test('transfer binary provenance remains tied to the exact component commit', as
 
 test('configuration has no secret fields, rejects unsafe origin and overlapping roots', async t => {
   const { config } = await fixture(t)
-  for (const nasOrigin of ['http://example.test', 'https://user:secret@example.test', 'https://example.test/path', 'https://example.test?token=secret', 'https://host.invalid']) assert.throws(() => validateConfig({ ...config, nasOrigin }), /https_origin_required/)
+  for (const nasOrigin of ['http://example.test', 'https://user:secret@example.test', 'https://example.test/api/../other', 'https://example.test?token=secret', 'https://host.invalid']) assert.throws(() => validateConfig({ ...config, nasOrigin }), /https_origin_required/)
   assert.throws(() => validateConfig({ ...config, oauthToken: 'secret' }), /unknown_or_missing_field/)
   assert.throws(() => validateConfig({ ...config, sourceRoot: config.agenvoConfigDir }), /data_package_overlap/)
   assert.throws(() => validateConfig({ ...config, transferStateDir: config.piConfigDir }), /herdr_plugin_state_mismatch/)
@@ -269,3 +274,58 @@ test('transfer preflight binds existing roots and config without reading or repa
   await assert.rejects(validateTransferConfiguration(f.config), /transfer_credential_missing/)
   await assert.rejects(fs.stat(credential), { code: 'ENOENT' })
 })
+
+async function apiBaseFixture(t, schema) {
+  const f = schema === 1 ? await fixture(t) : await installedFixture(t)
+  if (schema === 2) f.config.transfer = { pluginRoot: path.join(f.base, 'existing-plugin'), nasOrigin: 'https://nas.example.test' }
+  return { ...f, setBase(value) { (schema === 1 ? f.config : f.config.transfer).nasOrigin = value } }
+}
+for (const schema of [1, 2]) {
+  test(`schema ${schema} adopts all shared API base vectors without normalization`, async t => {
+    const f = await apiBaseFixture(t, schema)
+    for (const vector of apiBaseVectors.cases) await t.test(vector.name, () => {
+      f.setBase(vector.input)
+      const before = JSON.stringify(f.config)
+      if (vector.accepted) {
+        assert.equal(validateConfig(f.config), f.config)
+        assert.equal(transferLocations(f.config).origin, vector.input)
+      } else assert.throws(() => validateConfig(f.config), { code: 'https_origin_required' })
+      assert.equal(JSON.stringify(f.config), before)
+    })
+  })
+  test(`schema ${schema} API base retains destination restriction and bounded unambiguous parsing`, async t => {
+    const f = await apiBaseFixture(t, schema)
+    for (const base of ['https://host.invalid/api', 'https://HOST.INVALID:8443/api', 'https://@nas.example.test/api', 'https://nas.example.test/\tapi', 'https://nas.example.test/☃', `https://nas.example.test/${'x'.repeat(2048)}`]) {
+      f.setBase(base)
+      assert.throws(() => validateConfig(f.config), { code: 'https_origin_required' })
+    }
+  })
+  test(`schema ${schema} API base preflight preserves exact producer config binding and existing journal bytes`, async t => {
+    const f = await apiBaseFixture(t, schema), base = 'https://NAS.example.test:443/memoh/api/'
+    f.setBase(base)
+    const locations = transferLocations(f.config)
+    for (const dir of [locations.config, locations.state]) await fs.mkdir(dir, { recursive: true })
+    const file = path.join(locations.config, 'transfer.json'), journal = path.join(locations.state, 'existing-journal')
+    const raw = Buffer.from(`${JSON.stringify({ source_root: f.config.sourceRoot, origin: base, version: 1 }, null, 2)}\r\n`)
+    const evidence = Buffer.from('OPAQUE EXISTING JOURNAL; PREFLIGHT MUST NOT REWRITE')
+    await fs.writeFile(file, raw); await fs.writeFile(journal, evidence)
+    await fs.writeFile(path.join(locations.config, 'device.credential'), 'SYNTHETIC UNREAD')
+    const binding = await digest(file)
+    await validateTransferConfiguration(f.config)
+    const input = path.join(f.base, 'api-input.json'), output = path.join(f.base, 'api-configured.json')
+    await json(input, f.config); await configure(input, output)
+    assert.equal(transferLocations(JSON.parse(await fs.readFile(output))).origin, base)
+    // Equivalent URL spellings are still different persisted bindings. A new
+    // endpoint reference must not silently rewrite an existing producer queue.
+    for (const changed of [base.slice(0, -1), 'https://nas.example.test/memoh/api/', 'https://nas.example.test']) {
+      f.setBase(changed)
+      await assert.rejects(validateTransferConfiguration(f.config), { code: 'transfer_configuration_mismatch' })
+      assert.equal(await digest(file), binding)
+      assert.deepEqual(await fs.readFile(file), raw)
+      assert.deepEqual(await fs.readFile(journal), evidence)
+    }
+    f.setBase(base)
+    await validateTransferConfiguration(f.config)
+    assert.equal(await digest(file), binding)
+  })
+}

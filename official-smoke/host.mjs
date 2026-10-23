@@ -44,7 +44,7 @@ if (!trusted) {
 let rejectAuth = false, welcomes = 0, nasRequests = 0, tlsFailures = 0
 let nas
 const relay = https.createServer({ cert: await fs.readFile(cert), key: await fs.readFile(key) }, (req, res) => {
-  if (req.url.startsWith('/internal/')) {
+  if (req.url.startsWith('/internal/') || req.url.startsWith('/api/internal/')) {
     nasRequests++
     if (nas) { void nas.handler(req, res); return }
     res.writeHead(500); res.end(); return
@@ -65,7 +65,8 @@ relay.on('upgrade', (req, socket, head) => {
   })
 })
 await new Promise(resolve => relay.listen(0, '127.0.0.1', resolve))
-config.nasOrigin = `https://127.0.0.1:${relay.address().port}`
+const relayOrigin = `https://127.0.0.1:${relay.address().port}`
+config.nasOrigin = references ? `${relayOrigin}/api/` : relayOrigin
 const plan = { version: 1, task: { operation_id: randomUUID(), bot_id: randomUUID(), user_id: randomUUID(), session_id: randomUUID(), target_id: randomUUID(), run_id: 'synthetic-no-agent', attempt: 'a'.repeat(32), generation: 'b'.repeat(32), root_hash: hash(config.sourceRoot.replaceAll('/', '\\').replace(/\\+$/, '').toLowerCase()) }, artifact: { source_ref: 'result-one', mime: 'text/plain' } }
 const payload = 'fixture', closed = { ...plan, closed: true, sha256: hash(payload), size_bytes: Buffer.byteLength(payload) }
 const attempt = path.join(config.sourceRoot, '.memoh-computer/attempts', plan.task.attempt)
@@ -83,7 +84,7 @@ const created = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-File',
 assert.equal(created.status, 0, `fresh private fixture objects: ${created.stderr.slice(0, 200)}`)
 const official = new Map([
   [path.join(config.herdrConfigRoot, 'config.toml'), '[update]\nversion_check = false\nmanifest_check = false\n'],
-  [path.join(config.agenvoConfigDir, 'config.json'), JSON.stringify({ schema: 1, relay: config.nasOrigin, deviceId: config.deviceId, name: 'isolated-ci-explicit', instances: [{ id: config.instanceId, label: 'fixture', kind: 'herdr', binary: herdr, cwd: config.sourceRoot, configRoot: config.herdrConfigRoot }] })],
+  [path.join(config.agenvoConfigDir, 'config.json'), JSON.stringify({ schema: 1, relay: relayOrigin, deviceId: config.deviceId, name: 'isolated-ci-explicit', instances: [{ id: config.instanceId, label: 'fixture', kind: 'herdr', binary: herdr, cwd: config.sourceRoot, configRoot: config.herdrConfigRoot }] })],
   [path.join(config.agenvoConfigDir, 'credentials.json'), JSON.stringify({ secret: 'synthetic-test-only-'.repeat(4) })],
   [path.join(config.herdrConfigRoot, 'plugins.json'), JSON.stringify([{ plugin_id: 'memoh.delivery', enabled: true, version: catalog.components.transfer.version, plugin_root: path.join(bundle, 'transfer'), manifest_path: path.join(bundle, 'transfer/herdr-plugin.toml') }])],
 ])
@@ -149,6 +150,20 @@ try {
   assert.equal((await cli('lifecycle-summary')).state, 'due')
   const deliveryId = admitted.delivery_id
   checked('production_cli_admits_seven_bytes_and_records_original_attempt_feedback')
+  if (references) {
+    const file = path.join(config.transferConfigDir, 'transfer.json'), original = await fs.readFile(file)
+    const before = await cli('inspect', null, deliveryId), configValue = JSON.parse(original)
+    try {
+      // Deliberately change only this fresh fixture's API-base spelling. Even
+      // an equivalent trailing slash change must not rebind an admitted job.
+      await fs.writeFile(file, JSON.stringify({ ...configValue, origin: config.nasOrigin.slice(0, -1) }))
+      assert.equal((await cli('advance', null, deliveryId, 1)).state, 'configuration_changed')
+      assert.deepEqual(await cli('inspect', null, deliveryId), before)
+    } finally { await fs.writeFile(file, original) }
+    assert.deepEqual(await fs.readFile(file), original)
+    assert.deepEqual(await cli('inspect', null, deliveryId), before)
+    checked('production_cli_rejects_changed_api_base_without_rebinding_existing_delivery')
+  }
   if (trusted) {
     nas = transferFixture(plan, deliveryId, payload)
     const rootCert = new X509Certificate(await fs.readFile(ca))
@@ -236,7 +251,7 @@ try {
   assert.equal(feedback.files.length, 1); assert.equal(feedback.files[0].delivery_id, deliveryId)
   assert.equal(feedback.files[0].state, 'pending')
   checked('existing_config_source_and_pending_producer_feedback_are_preserved')
-  process.stdout.write(JSON.stringify({ explicitHostChecks: result, mode: references ? 'existing-installations' : 'explicit-review', producer: catalog.components.transfer.revision, ready: false, positiveProductionTLS: 'unverified', realPCandNAS: 'not_run', modelRequests: 0 }) + '\n')
+  process.stdout.write(JSON.stringify({ explicitHostChecks: result, mode: references ? 'existing-installations' : 'explicit-review', producer: catalog.components.transfer.revision, apiBasePrefix: references ? '/api/' : '/', ready: false, positiveProductionTLS: 'unverified', realPCandNAS: 'not_run', modelRequests: 0 }) + '\n')
   }
 } finally {
   const cleanup = await Promise.allSettled([...children.values()].map(child => child.stop()))

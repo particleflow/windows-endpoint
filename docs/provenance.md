@@ -55,3 +55,11 @@ The explicit runtime CI additionally builds the public Memoh source at
 using that commit's unchanged build script. Its plugin version is 0.7.0. No Go
 implementation is imported, no old denied artifact is fetched, and no binary is
 redistributed by this repository. See [scope and limits](explicit-runtime.md).
+
+`test-support/api-base-v1.json` is the byte-identical shared syntax-vector file
+from Memoh `internal/transferclient/testdata/api-base-v1.json` at
+[`91149ad7ab5c0d24a57f10e7d9ff1df4b71cf51c`](https://github.com/particleflow/Memoh/commit/91149ad7ab5c0d24a57f10e7d9ff1df4b71cf51c),
+Git blob `67cc407e6b914dd52ce7a244a82a580c72ad2ec1`, under the retained AGPL-3.0
+license. Only those 30 data vectors are imported; the producer executable pin
+and its implementation are unchanged. The existing pinned CLI already retains
+an API path prefix. Endpoint validation adopts the shared syntax independently.

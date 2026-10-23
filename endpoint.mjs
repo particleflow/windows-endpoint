@@ -68,6 +68,23 @@ export async function digest(file) {
   return hash.digest('hex')
 }
 
+function validateAPIBase(value) {
+  // memoh.file-api-base.v1: inspect raw syntax before WHATWG URL can normalize
+  // dot segments, an empty authority or a default port. Never rewrite the value
+  // used by transfer.json's raw-byte HostBinding. Keep the existing error code.
+  const code = 'https_origin_required'
+  requireThat(typeof value === 'string' && Buffer.byteLength(value) <= 2048 && !/[\x00-\x20\x7f?#%\\]/.test(value), code)
+  const parts = value.match(/^https:\/\/([^/]+)(\/.*)?$/)
+  requireThat(parts && !parts[1].includes('@') && !parts[1].endsWith(':'), code)
+  const port = parts[1].match(/:(\d+)$/)
+  requireThat(!port || (Number(port[1]) >= 1 && Number(port[1]) <= 65535), code)
+  const prefix = parts[2] || ''
+  requireThat(!prefix.includes('//') && prefix.split('/').every(segment => /^[A-Za-z0-9._~-]*$/.test(segment) && segment !== '.' && segment !== '..'), code)
+  let url
+  try { url = new URL(value) } catch { throw new EndpointError(code) }
+  requireThat(url.protocol === 'https:' && url.hostname && !url.username && !url.password && !url.hostname.endsWith('.invalid'), code)
+}
+
 export function validateConfig(config) {
   if (config?.schema === 2) {
     const roots = ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir']
@@ -86,9 +103,7 @@ export function validateConfig(config) {
     if (config.transfer !== undefined) {
       keys(config.transfer, ['pluginRoot', 'nasOrigin'])
       absolute(config.transfer.pluginRoot)
-      let origin
-      try { origin = new URL(config.transfer.nasOrigin) } catch { throw new EndpointError('https_origin_required') }
-      requireThat(origin.protocol === 'https:' && origin.origin === config.transfer.nasOrigin && !origin.hostname.endsWith('.invalid'), 'https_origin_required')
+      validateAPIBase(config.transfer.nasOrigin)
       for (const root of roots.map(k => config[k])) requireThat(!overlaps(root, config.transfer.pluginRoot), 'data_program_overlap')
     }
     return config
@@ -97,9 +112,7 @@ export function validateConfig(config) {
   requireThat(config.schema === 1, 'config_version_unsupported')
   for (const field of pathFields) absolute(config[field])
   requireThat(hashPattern.test(config.manifestSha256), 'trusted_manifest_hash_required')
-  let origin
-  try { origin = new URL(config.nasOrigin) } catch { throw new EndpointError('https_origin_required') }
-  requireThat(origin.protocol === 'https:' && origin.origin === config.nasOrigin && !origin.hostname.endsWith('.invalid'), 'https_origin_required')
+  validateAPIBase(config.nasOrigin)
   requireThat(uuidPattern.test(config.deviceId) && uuidPattern.test(config.runtimeId) && idPattern.test(config.instanceId) && idPattern.test(config.session), 'existing_identity_required')
   requireThat(path.basename(config.herdrConfigRoot) === 'herdr' && path.basename(config.herdrStateRoot) === 'herdr', 'herdr_root_name_required')
   requireThat(samePath(config.transferConfigDir, path.join(config.herdrConfigRoot, 'plugins/config/memoh.delivery')), 'herdr_plugin_config_mismatch')
@@ -272,6 +285,8 @@ export async function validateTransferConfiguration(config) {
   const file = path.join(locations.config, 'transfer.json')
   const cfg = await readJSON(file, 8192)
   keys(cfg, ['version', 'origin', 'source_root'])
+  // Exact configured spelling is intentional: even equivalent URLs must not
+  // silently change the producer's existing raw-byte binding or queue owner.
   requireThat(cfg.version === 1 && cfg.origin === locations.origin && samePath(cfg.source_root, config.sourceRoot), 'transfer_configuration_mismatch')
   try { requireThat((await regular(path.join(locations.config, 'device.credential'))).size > 0, 'transfer_credential_missing') }
   catch (error) { if (error.code === 'ENOENT') throw new EndpointError('transfer_credential_missing'); throw error }
