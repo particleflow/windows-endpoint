@@ -5,10 +5,10 @@ import path from 'node:path'
 import os from 'node:os'
 import { fork, spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { deploymentReferences } from './deployment.mjs'
-import { leaseKeys } from './lifecycle.mjs'
+import { acquireLeases, leaseKeys } from './lifecycle.mjs'
 import { readHostStatus } from './host.mjs'
 import { syntheticBundle } from './test-support/deployment-fixture.mjs'
 
@@ -52,6 +52,14 @@ function launch(t, f, scenario = null) {
 const running = p => p.waitFor(() => p.statuses.find(s => s.phase === 'running'))
 const attention = (p, code) => p.waitFor(() => p.statuses.find(s => s.attention === code))
 async function stop(p) { p.command('stop'); return p.done }
+async function syntheticRunning(p) {
+  const s = await running(p)
+  // Host liveness alone is not evidence that the fixture acquired its leases.
+  assert.equal(s.attention, null, 'synthetic component startup attention')
+  assert.equal(s.components, 'synthetic_fixture')
+  assert.equal(s.componentLifecycle?.phase, 'running')
+  return s
+}
 
 test('public foreground entry stays observable with missing config, enforces one host, and stops cleanly', async t => {
   const f = await fixture(t)
@@ -202,7 +210,7 @@ test('unknown or linked status files are preserved instead of overwritten or exp
 test('actual host drives synthetic child startup, bounded connector recovery and owned shutdown', async t => {
   const f = await fixture(t, true)
   const p = launch(t, f, 'normal')
-  const s = await running(p)
+  const s = await syntheticRunning(p)
   assert.equal(s.evidence, 'synthetic_components'); assert.equal(s.ready, false)
   assert.equal(p.events.filter(e => e.event === 'component_started').length, 2)
   p.fixture('crash_connector')
@@ -215,13 +223,45 @@ test('actual host drives synthetic child startup, bounded connector recovery and
 
 test('synthetic authorization refusal is attention, not machine offline or a restart trigger', async t => {
   const f = await fixture(t, true)
-  const p = launch(t, f, 'normal'); await running(p)
+  const p = launch(t, f, 'normal'); await syntheticRunning(p)
   p.fixture('authentication_failure')
   const s = await attention(p, 'connector_authentication_required')
   assert.equal(s.connection, 'authorization_required')
   assert.equal(s.componentLifecycle.restartsInWindow, 0)
   assert.equal(p.events.filter(e => e.event === 'component_started').length, 2)
   assert.equal((await stop(p)).code, 2)
+})
+
+test('device lease scope rejects a Windows owner in another root without stealing it', async t => {
+  const f = await fixture(t, true)
+  // Unique to this intentional collision test; it must not collide with other
+  // suites while demonstrating the production Windows device-wide lease.
+  f.config.deviceId = randomUUID()
+  await fs.writeFile(f.configFile, JSON.stringify(f.config))
+  const holderDirectory = path.join(f.root, 'independent-owner')
+  await fs.mkdir(holderDirectory)
+  const key = `device:${f.config.deviceId}`
+  let release = await acquireLeases([key], holderDirectory)
+  try {
+    const p = launch(t, f, 'normal')
+    const s = await running(p)
+    if (process.platform === 'win32') {
+      assert.equal(s.attention, 'endpoint_already_owned')
+      assert.equal(s.componentLifecycle.phase, 'stopped')
+      assert.equal(p.events.some(e => e.event === 'component_started'), false)
+      assert.equal((await stop(p)).code, 2)
+      t.diagnostic('Windows: same device in distinct roots is rejected before component start')
+    } else {
+      await syntheticRunning(p)
+      assert.equal((await stop(p)).code, 0)
+      t.diagnostic('Unix development sockets: distinct directories have distinct lease namespaces')
+    }
+    await assert.rejects(acquireLeases([key], holderDirectory), /endpoint_already_owned/)
+    await release(); release = null
+    const next = launch(t, f, 'normal')
+    await syntheticRunning(next)
+    assert.equal((await stop(next)).code, 0)
+  } finally { if (release) await release() }
 })
 
 test('stop during synthetic component startup prevents the next component from launching', async t => {
