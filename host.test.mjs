@@ -150,6 +150,25 @@ test('stdin accepts only local status/stop, rejects arbitrary commands and overs
   }
 })
 
+for (const [name, input] of [
+  ['invalid', '{"action":"execute","command":"PRIVATE-EARLY"}\n'],
+  ['oversized', 'PRIVATE-EARLY'.repeat(100)],
+  ['invalid after clean stop request', '{"action":"stop"}\n{"action":"execute"}\n'],
+]) test(`startup ${name} input remains a failure after missing-config observation`, async t => {
+  const f = await fixture(t)
+  const p = launch(t, f, 'early-input')
+  await p.waitFor(() => p.events.find(e => e.event === 'config_waiting'))
+  p.child.stdin.write(input)
+  await p.waitFor(() => p.statuses.find(s => s.phase === 'stopping'))
+  p.fixture('release_config')
+  assert.equal((await p.done).code, 2)
+  const s = await readHostStatus(f.root)
+  assert.equal(s.configuration, 'missing')
+  assert.equal(s.attention, 'host_control_input_invalid')
+  assert.equal(p.stdout().includes('PRIVATE-EARLY'), false)
+  assert.equal(p.events.some(e => e.event === 'component_started' || e.event === 'transfer_action'), false)
+})
+
 test('inherited input closure drains host instead of leaving an orphan foreground process', async t => {
   const f = await fixture(t)
   const p = launch(t, f); await running(p)
@@ -247,6 +266,27 @@ test('failed owned cleanup keeps host observable and lease held until explicit s
   p.fixture('allow_stop'); p.command('stop')
   assert.equal((await p.done).code, 2)
   assert.equal((await readHostStatus(f.root)).phase, 'stopped')
+})
+
+test('EOF with failed cleanup reports a closed control stream and retains ownership without replay', async t => {
+  const f = await fixture(t, true)
+  const p = launch(t, f, 'stop-failure'); await running(p)
+  p.child.stdin.end()
+  const s = await p.waitFor(() => p.statuses.find(s => s.phase === 'stop_failed'))
+  // Allowing the synthetic driver to stop must not itself retry cleanup after EOF.
+  p.fixture('allow_stop')
+  await sleep(350)
+  const second = launch(t, f)
+  assert.equal((await second.done).code, 2)
+  assert.ok(second.statuses.some(s => s.attention === 'endpoint_already_owned'))
+  const journal = JSON.parse(await fs.readFile(path.join(f.stateDirectory, 'lifecycle.json'), 'utf8'))
+  assert.equal(journal.attention, 'connector_stop_unknown')
+  assert.equal(p.events.filter(e => e.event === 'component_started').length, 2)
+  assert.equal(p.events.some(e => e.event === 'component_stopped' && e.component === 'connector'), false)
+  assert.equal(s.control, 'stdin_closed')
+  assert.equal((await readHostStatus(f.root)).control, 'stdin_closed')
+  // Test teardown forcibly terminates only its own fixture. Product code keeps
+  // the lease and journal; this is not a demonstrated graceful EOF recovery.
 })
 
 test('observation failure during failed cleanup preserves control and never abandons ownership', async t => {

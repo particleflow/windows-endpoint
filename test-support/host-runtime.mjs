@@ -1,21 +1,32 @@
 import { fork } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { runForeground } from '../host.mjs'
+import { ForegroundHost, runForeground } from '../host.mjs'
 import { EndpointLifecycle, LifecycleError, StateStore, acquireLeases, leaseKeys } from '../lifecycle.mjs'
 import { TransferLifecycle } from '../transfer-lifecycle.mjs'
 
 const [root, scenario] = process.argv.slice(2)
 const notify = value => { if (process.connected) process.send({ fixture: value }) }
-let driver, releaseAdvance, releaseReady
+let driver, releaseAdvance, releaseReady, releaseConfig
 let failStop = scenario === 'stop-failure'
 const control = message => {
   if (message.fixture === 'crash_connector') driver?.children.get('connector')?.child.send({ action: 'crash' })
   if (message.fixture === 'authentication_failure') driver?.children.get('connector')?.child.send({ action: 'auth_failure' })
   if (message.fixture === 'release_advance') releaseAdvance?.()
   if (message.fixture === 'release_ready') releaseReady?.()
+  if (message.fixture === 'release_config') releaseConfig?.()
   if (message.fixture === 'allow_stop') failStop = false
 }
 process.on('message', control)
+
+if (scenario === 'early-input') {
+  // Deterministic test barrier at the real asynchronous config-read boundary.
+  // This fixture-only override is not exposed by CLI/config/environment.
+  const configRaw = ForegroundHost.prototype.configRaw
+  ForegroundHost.prototype.configRaw = async function () {
+    await new Promise(resolve => { releaseConfig = resolve; notify({ event: 'config_waiting' }) })
+    return configRaw.call(this)
+  }
+}
 
 const code = await runForeground({ root, tickMs: 100, createTestRuntime: async ({ config, stateDirectory }) => {
   const children = new Map()
