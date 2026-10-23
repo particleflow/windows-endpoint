@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: '24.14.0'
       - name: Verify delivery boundary and recovery fixtures
-        run: node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs
+        run: node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs official-smoke/producer-fixtures.test.mjs
       - name: Validate transfer fixture JavaScript syntax
         run: node --check official-smoke/transfer.mjs
       - name: Validate transfer fixture PowerShell syntax
@@ -78,6 +78,9 @@ jobs:
           ref: 4c880e07ecdff1b6caadd86348779603fce9e8aa
           path: producer-source
           persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
       - uses: actions/setup-go@v5
         with:
           go-version-file: producer-source/go.mod
@@ -92,7 +95,7 @@ jobs:
       - name: Verify producer native fixtures (test dispatcher has fixture-only CA injection)
         shell: pwsh
         run: |
-          & '${{ runner.temp }}/endpoint-transfer-source-build/verify-fixtures.ps1'
+          node ./official-smoke/producer-fixtures.mjs '${{ runner.temp }}/endpoint-transfer-source-build'
           if ($LASTEXITCODE -ne 0) { throw 'Producer native fixtures failed' }
       - name: Assemble fixed component inventory for explicit host review
         shell: pwsh

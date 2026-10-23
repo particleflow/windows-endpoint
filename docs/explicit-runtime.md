@@ -60,6 +60,11 @@ re-requested. The old `transfer-artifact.json` and its legacy seven-file fixture
 remain historical, unexecuted inputs; they are not the new build's provenance.
 The official dependency archives retain their fixed hashes/npm integrity lock.
 The newly built inventory remains `review-only`.
+The original native test binary exceeded its aggregate five-minute alarm in
+run 39901771088 after 29 completed tests. The downstream
+[fixture budget and complete coverage plan](producer-fixture-budget.md) preserves
+the unchanged producer tests with bounded groups and verifies every selected
+top-level test and all subtests; it does not modify the producer verifier.
 
 The new Windows job exercises the public host process, official Herdr/Agenvo and
 production `transferqueue.exe` with fresh isolated data. It admits one seven-byte

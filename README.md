@@ -35,7 +35,7 @@ Use Node 24. No npm install is needed for the unit suite:
 
 ```sh
 node endpoint.mjs help
-node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs
+node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs official-smoke/producer-fixtures.test.mjs
 ```
 
 The `Windows endpoint delivery checks` workflow runs on every pull request and
