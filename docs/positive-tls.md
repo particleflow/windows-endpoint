@@ -1,5 +1,15 @@
 # Production Windows CLI with isolated test trust
 
+Current blocker: run `39911092750` at
+`5aa2dd5eb79c4ced4b6e8707d838a4b2710c0672` completed certificate generation,
+then `Import-Certificate` exited 1 with `UI is not allowed in this operation.`
+Cleanup observed the generated fingerprint absent and the owned process tree
+empty; it did not execute removal. The legacy `removed_and_absent` label is not
+proof of import/deletion. Positive assertions below were not run. Independent
+installation-reference commits retain a failing TLS prerequisite without issuing
+another import. No alternative API, prompt suppression or larger trust scope is
+used. The test implementation remains for a separately resolved prerequisite.
+
 The prior all-green checkpoint is `aedf30f51a0aec03c05e3ef1255608c17991b9a7`,
 run `39903770625`. Its real CLI correctly rejected the self-signed fixture.
 The earlier producer test dispatcher injected a CA; that was not production CLI

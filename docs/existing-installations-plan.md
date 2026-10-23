@@ -1,0 +1,147 @@
+# Referencing existing official installations
+
+This first implementation reuses user-selected official Pi/Herdr programs and
+their explicitly selected configuration directories. It does not install a
+second copy, update an official package, import historical sessions or enable
+automatic upgrade/rollback. The prior bundle/TLS checkpoint remains
+`5aa2dd5eb79c4ced4b6e8707d838a4b2710c0672`.
+
+## Configuration
+
+Use the existing endpoint config file, `<host root>/config/endpoint.json`, with
+schema 2. This example is a path template, not an installer command or real
+machine configuration. Official installers/package managers own these programs.
+The referenced Node, Git and Agenvo installation must already exist.
+Use physical paths, not version-manager junctions or ambient PATH discovery.
+
+```json
+{
+  "schema": 2,
+  "programs": {
+    "node": "C:\\Tools\\node\\node.exe",
+    "herdr": "C:\\Tools\\herdr\\herdr.exe",
+    "piPackage": "C:\\Tools\\npm\\node_modules\\@earendil-works\\pi-coding-agent",
+    "piBin": "C:\\Tools\\npm",
+    "gitRoot": "C:\\Tools\\Git",
+    "connectorPackage": "C:\\Tools\\npm\\node_modules\\@agenvo\\herdr"
+  },
+  "sourceRoot": "C:\\EndpointWork",
+  "herdrConfigRoot": "C:\\ExistingConfig\\herdr",
+  "herdrStateRoot": "C:\\ExistingState\\herdr",
+  "agenvoConfigDir": "C:\\ExistingConfig\\agenvo",
+  "piConfigDir": "C:\\ExistingPiConfig",
+  "deviceId": "11111111-1111-4111-8111-111111111111",
+  "runtimeId": "22222222-2222-4222-8222-222222222222",
+  "instanceId": "existing-instance",
+  "session": "endpoint-work"
+}
+```
+
+Replace example identifiers with the existing authorized mapping; this command
+creates no identity or credential. Agenvo's existing config must name the same
+Herdr binary, configRoot and cwd. No registration is rewritten. The host retains
+only its own config/data/logs below its root. Component roots must not overlap
+those owned directories or each other's data/program paths.
+
+Run `doctor --config FILE` to detect actual versions, package names, required CLI
+flags and the Pi launcher resolved under the controlled Git Bash environment.
+All executable probes are finite local version/help checks; no model request is
+made. `plan --config FILE` shows the local launch plan. `configure --from FILE
+--config FILE` still creates references exclusively, without copying official
+configuration, packages or credentials.
+
+To explicitly start components, `<host root>/config/runtime.json` is:
+
+```json
+{"schema":2,"mode":"existing-installations","transfer":"disabled"}
+```
+
+Then `host run --root DIR` runs the foreground host. Its existing stdin
+`{"action":"stop"}` drains/stops only components it owns. No service, scheduled
+task or unattended startup is registered. Without runtime.json it remains an
+observer. Schema 1 retains the inventory-bound bundle mode.
+
+## Programs, configuration and sessions are separate
+
+Sharing Pi's program does not share its sessions. Sharing `PI_CODING_AGENT_DIR`
+is an explicit reference, not a credential copy; official Pi can itself write
+that directory, so this is not a concurrent-write isolation guarantee. No auth
+content is read by preflight; presence is not authentication success. The current
+producer uses a distinct `--session-dir` and exact `--session-id` for batch tasks.
+Keep those separate from a user's interactive TUI.
+
+Reference mode requires a named, non-default Herdr session. A running server is
+refused, even if its binary is selected. A persisted session with workspaces or
+an unknown schema is refused before startup; this batch does not adopt or resume
+historical Agent tasks. Other sessions/configuration are not migrated or deleted.
+Empty-session restart and observed owned-process recovery use the existing
+PID/generation/pipe checks and device/config leases.
+
+## Official updates and rechecking
+
+There is no new user-maintained version/hash manifest or per-update approval
+workflow. Preflight reads versions from the selected programs. Current probes
+require Node >=24.13.0, Herdr >=0.9.5 and Pi >=1.2.0 plus required CLI flags,
+official package names and matching package/runtime versions. Agenvo's currently
+implemented status/lock protocol remains 0.2.0. These checks do not prove every
+future release's semantics; unknown state/protocol behavior still fails clearly.
+Herdr readiness/ping must report this run's observed version and
+`endpoint_compatible:true`.
+
+File hashes are observed evidence, not a provenance approval system. Program and
+package-tree metadata are captured automatically for this run; changes stop
+automatic recovery and persist `installation_changed_restart_required`.
+Existing processes remain running until explicit stop. Owned pipe stop does not
+invoke the replaced Herdr binary; unchanged connector cleanup remains available.
+This detects ordinary official updates; it is not an OS write lock or protection
+against a hostile writer racing metadata checks.
+
+After an explicit clean stop, the next explicit run rechecks the installation
+and may clear only that installation-change attention. Other errors, an uncertain
+previous stop and nonempty historical sessions retain their gates. The endpoint
+never runs an official updater, rolls state back or kills tasks to upgrade.
+Coordinating upgrades while business tasks run is still unimplemented: no new
+producer drain API is invented by this batch.
+
+## Existing producer profile comparison
+
+The fixed producer is `4c880e07ecdff1b6caadd86348779603fce9e8aa`.
+`internal/agenvo/client.go` defines `Target.WorkDir/BashPath` and
+`AgentProfile.ExecutionMode/Provider/Model/ConfigDir/Path`. `profile.go` and
+`internal/handlers/user_runtime.go` expose the existing owner route
+`PUT /users/me/runtimes/{id}/agenvo-agent`. No new producer field/API or source
+change is required for this first batch.
+
+For a local export of existing Target JSON, `doctor --config FILE --target FILE`
+compares device/instance/session/work root, Bash, `pi-json-v1`, Pi config and any
+explicit PATH override. It does not fetch credentials or call that production
+route here. `configuration_matches` proves supplied configuration agreement,
+not live registration/authentication or task execution. Configure the actual
+runtime target/profile through its existing owner.
+
+`pi_batch_service.go` overrides the tab's Pi config/PATH; host PATH alone does
+not prove mobile-task resolution. `pi_batch.go` retains session IDs and attempt/
+result handling. A future upgrade gate needs authoritative stopped-admission/
+active/unknown evidence from the existing computer-task owners. Transfer idle
+and an empty Agent profile cannot supply it. This is a remaining handoff, not
+a new task queue, installation registry or update service.
+
+## Evidence limits
+
+Local tests use inert files and injected probe output; they prove validation,
+preservation, change detection and public observer behavior, not native execution.
+The added Windows CI scenario uses unchanged official programs in external
+temporary installation directories and a synthetic relay. It exercises the
+public host, owned stop/recheck, same-device contention, external-peer refusal
+and synthetic history preservation without model calls or OS trust changes.
+Read results at the exact CI head; writing a fixture is not a pass.
+
+Reference mode currently leaves transfer disabled; schema 1 retains the finite
+consumer. Neither mode is a qualified production installation. Overall
+`ready:false`, Agent/desktop unavailable and `transferAutomaticRecovery:false`
+remain. No real PC/NAS, model task, installation/update or physical-power-loss
+acceptance has been performed.
+
+Positive native transfer TLS remains an explicitly failing CI prerequisite.
+The rejected CurrentUser Root import is not retried by these independent commits;
+the positive fixture and its assertions remain present and unverified.

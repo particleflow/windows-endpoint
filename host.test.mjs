@@ -11,6 +11,7 @@ import { deploymentReferences } from './deployment.mjs'
 import { acquireLeases, leaseKeys } from './lifecycle.mjs'
 import { readHostStatus } from './host.mjs'
 import { deploymentFixture, syntheticBundle } from './test-support/deployment-fixture.mjs'
+import { installedFixture } from './test-support/installed-fixture.mjs'
 
 const endpoint = fileURLToPath(new URL('./endpoint.mjs', import.meta.url))
 const worker = fileURLToPath(new URL('./test-support/host-runtime.mjs', import.meta.url))
@@ -62,6 +63,18 @@ async function syntheticRunning(p) {
   assert.equal(s.componentLifecycle?.phase, 'running')
   return s
 }
+
+test('public observer accepts explicit external installation/config roots without copying or launching them', async t => {
+  const f = await installedFixture(t), root = path.join(f.base, 'host-root')
+  await fs.mkdir(path.join(root, 'config'), { recursive: true })
+  await fs.writeFile(path.join(root, 'config/endpoint.json'), JSON.stringify(f.config))
+  const p = launch(t, { root }), s = await running(p)
+  assert.equal(s.configuration, 'loaded'); assert.equal(s.attention, null)
+  assert.equal(s.componentLifecycle, null); assert.equal(s.components, 'unavailable_unqualified')
+  assert.equal(s.ready, false)
+  assert.equal(await fs.readFile(path.join(f.config.piConfigDir, 'auth.json'), 'utf8'), 'SYNTHETIC UNREAD PI CONFIG')
+  assert.equal((await stop(p)).code, 0)
+})
 
 test('public foreground entry stays observable with missing config, enforces one host, and stops cleanly', async t => {
   const f = await fixture(t)

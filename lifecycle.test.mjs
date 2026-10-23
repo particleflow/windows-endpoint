@@ -49,6 +49,20 @@ test('single instance protects shared identity even with another config location
   const next = create(); await next.start(); await next.stop()
 })
 
+test('installation change keeps running components and persists attention until explicit stop', async t => {
+  const { lifecycle, driver, alive, calls, store } = await fixture(t)
+  await lifecycle.start(); calls.length = 0
+  driver.checkPrograms = () => { throw new LifecycleError('installation_changed_restart_required') }
+  await lifecycle.tick(); await lifecycle.tick()
+  assert.equal(lifecycle.state.attention, 'installation_changed_restart_required')
+  assert.deepEqual([...alive], ['herdr', 'connector']); assert.deepEqual(calls, [])
+  assert.equal((await store.load()).attention, 'installation_changed_restart_required')
+  await lifecycle.stop()
+  assert.deepEqual(calls, ['stop:connector', 'stop:herdr'])
+  assert.equal((await store.load()).phase, 'stopped')
+  assert.equal((await store.load()).attention, 'installation_changed_restart_required')
+})
+
 test('concurrent wake checks recover a crashed connector once without restarting host', async t => {
   const { lifecycle, alive, calls } = await fixture(t)
   await lifecycle.start(); alive.delete('connector')

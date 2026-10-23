@@ -1,5 +1,10 @@
 # Explicit foreground component review
 
+This document describes schema 1, the inventory-bound bundle review mode.
+[Schema 2 existing-installation references](existing-installations-plan.md)
+reuse selected official programs/configuration without a second package copy or
+user-maintained version manifest; that initial mode has transfer disabled.
+
 This batch connects the public `host run` entry to the existing native lifecycle
 and finite CLI consumer. It does not install a service, pair a device, authorize
 an endpoint, activate the offline selector, or certify a release. The default

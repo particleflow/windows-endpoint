@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: '24.14.0'
       - name: Verify delivery boundary and recovery fixtures
-        run: node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs
+        run: node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs installed.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs
       - name: Validate transfer fixture JavaScript syntax
         run: node --check official-smoke/transfer.mjs
       - name: Validate transfer fixture PowerShell syntax
@@ -69,6 +69,9 @@ jobs:
         run: |
           & '${{ runner.temp }}/endpoint official Unicode 空格/node/node.exe' ./official-smoke/lifecycle.mjs '${{ runner.temp }}/endpoint official Unicode 空格'
           if ($LASTEXITCODE -ne 0) { throw 'Official lifecycle smoke failed' }
+      - name: Exercise references to existing official installations
+        shell: pwsh
+        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint official Unicode 空格' -Root '${{ runner.temp }}/endpoint existing installation references' -UntrustedOnly -ExistingInstallations
   explicit-runtime:
     name: Explicit Windows host with source-built transfer CLI
     runs-on: windows-2025
@@ -116,4 +119,7 @@ jobs:
         run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint untrusted TLS' -UntrustedOnly
       - name: Verify production CLI trusted TLS with disposable CurrentUser test root
         shell: pwsh
-        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint trusted TLS'
+        # Keep a real failing prerequisite; never repeat the rejected import
+        # merely because independent component-reference development was pushed.
+        run: |
+          throw 'Positive TLS blocked: CurrentUser Root import returned UI is not allowed in this operation in run 39911092750. No new import attempted; positive assertions remain unverified.'

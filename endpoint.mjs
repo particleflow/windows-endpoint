@@ -69,6 +69,20 @@ export async function digest(file) {
 }
 
 export function validateConfig(config) {
+  if (config?.schema === 2) {
+    const roots = ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir']
+    keys(config, ['schema', 'programs', ...roots, 'deviceId', 'runtimeId', 'instanceId', 'session'])
+    keys(config.programs, ['node', 'herdr', 'piPackage', 'piBin', 'gitRoot', 'connectorPackage'])
+    for (const value of [...roots.map(k => config[k]), ...Object.values(config.programs)]) absolute(value)
+    requireThat(uuidPattern.test(config.deviceId) && uuidPattern.test(config.runtimeId) && idPattern.test(config.instanceId) && idPattern.test(config.session) && config.session !== 'default', 'dedicated_session_required')
+    requireThat(path.basename(config.herdrConfigRoot) === 'herdr' && path.basename(config.herdrStateRoot) === 'herdr', 'herdr_root_name_required')
+    const programs = programPaths(config)
+    for (const root of roots.map(k => config[k])) {
+      for (const location of [path.dirname(programs.node), path.dirname(programs.herdr), config.programs.piPackage, config.programs.piBin, config.programs.gitRoot, config.programs.connectorPackage]) requireThat(!overlaps(root, location), 'data_program_overlap')
+    }
+    for (let i = 0; i < roots.length; i++) for (let j = i + 1; j < roots.length; j++) requireThat(!overlaps(config[roots[i]], config[roots[j]]), 'component_data_overlap')
+    return config
+  }
   keys(config, configFields)
   requireThat(config.schema === 1, 'config_version_unsupported')
   for (const field of pathFields) absolute(config[field])
@@ -193,7 +207,8 @@ export async function configure(from, to) {
   absolute(to)
   const config = validateConfig(await readJSON(from))
   await canonical(path.dirname(to))
-  requireThat(!pathFields.some(f => overlaps(config[f], to)), 'configuration_location_rejected')
+  const locations = config.schema === 2 ? [...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir'].map(k => config[k]), ...Object.values(config.programs)] : pathFields.map(k => config[k])
+  requireThat(!locations.some(location => overlaps(location, to)), 'configuration_location_rejected')
   // Exclusive creation; upgrading never overwrites the references or credentials.
   const handle = await fs.open(to, 'wx')
   try { await handle.writeFile(`${JSON.stringify(config, null, 2)}\n`); await handle.sync() }
@@ -201,15 +216,24 @@ export async function configure(from, to) {
   return { state: 'references_saved', credentialsRead: false, activation: 'blocked' }
 }
 
+export function programPaths(config) {
+  if (config.schema === 2) {
+    const p = config.programs
+    return { node: p.node, herdr: p.herdr, pi: path.join(p.piPackage, 'dist/bundle/cli.js'), connector: path.join(p.connectorPackage, 'dist/cli.js'),
+      git: path.join(p.gitRoot, 'bin/bash.exe'), piBin: p.piBin, gitRoot: p.gitRoot }
+  }
+  const entry = id => path.join(config.bundleRoot, catalog.components[id].entry)
+  return { node: entry('node'), herdr: entry('herdr'), pi: entry('pi'), connector: entry('connector'), git: entry('git'), piBin: path.join(config.bundleRoot, 'node_modules/.bin'), gitRoot: path.join(config.bundleRoot, 'git') }
+}
 export function managedEnvironment(config, inherited = process.env) {
-  const root = config.bundleRoot
   const env = { ...inherited }
   // Keep the caller's ordinary OS environment but remove shell/runtime injection.
   for (const k of Object.keys(env)) {
     if (/^(PATH|NODE_OPTIONS|NODE_PATH|BASH_ENV|BASH_FUNC_.*|ENV|CDPATH|SHELLOPTS|BASHOPTS|HERDR_.*|XDG_CONFIG_HOME|XDG_STATE_HOME|AGENVO_.*|PI_CODING_AGENT_DIR)$/i.test(k)) delete env[k]
   }
   const system = path.join(inherited.SystemRoot || 'C:\\Windows', 'System32')
-  env.PATH = [path.join(root, 'node'), path.join(root, 'herdr'), path.join(root, 'node_modules/.bin'), path.join(root, 'git/bin'), path.join(root, 'git/usr/bin'), path.join(root, 'git/mingw64/bin'), path.join(root, 'git/cmd'), system, path.join(system, 'WindowsPowerShell/v1.0')].join(path.delimiter)
+  const p = programPaths(config)
+  env.PATH = [path.dirname(p.node), path.dirname(p.herdr), p.piBin, path.join(p.gitRoot, 'bin'), path.join(p.gitRoot, 'usr/bin'), path.join(p.gitRoot, 'mingw64/bin'), path.join(p.gitRoot, 'cmd'), system, path.join(system, 'WindowsPowerShell/v1.0')].join(path.delimiter)
   env.HERDR_CONFIG_PATH = path.join(config.herdrConfigRoot, 'config.toml')
   env.XDG_CONFIG_HOME = path.dirname(config.herdrConfigRoot)
   env.XDG_STATE_HOME = path.dirname(config.herdrStateRoot)
@@ -240,7 +264,7 @@ export function transferEnvironment(config, inherited = process.env) {
     HERDR_PLUGIN_STATE_DIR: config.transferStateDir }
 }
 export function launchPlan(config) {
-  const entry = id => path.join(config.bundleRoot, catalog.components[id].entry)
+  const entry = id => programPaths(config)[id]
   return {
     activation: 'blocked', reason: 'compatibility_qualification_pending',
     commands: [
@@ -259,6 +283,10 @@ function probe(file, args, env) {
 
 export async function doctor(config, run = probe) {
   validateConfig(config)
+  if (config.schema === 2) {
+    const { installedDoctor } = await import('./installed.mjs')
+    return installedDoctor(config)
+  }
   const checks = []
   async function check(name, action) {
     try { await action(); checks.push({ check: name, state: 'passed' }); return true }
@@ -364,10 +392,18 @@ export async function main(args) {
   if (command === 'configure') { keys(options, ['--from', '--config']); return configure(options['--from'], options['--config']) }
   if (command === 'stage') { keys(options, ['--source', '--destination', '--manifest-sha256']); return stageBundle(options['--source'], options['--destination'], options['--manifest-sha256']) }
   requireThat(['doctor', 'plan'].includes(command), 'unknown_command')
-  keys(options, ['--config'])
+  keys(options, ['--config'], command === 'doctor' ? ['--target'] : [])
   const config = validateConfig(await readJSON(options['--config']))
+  if (config.schema === 2 && command === 'doctor') {
+    const { installedDoctor } = await import('./installed.mjs')
+    return installedDoctor(config, options['--target'] ? await readJSON(options['--target']) : null)
+  }
+  requireThat(!options['--target'], 'existing_installation_config_required')
   if (command === 'doctor') return doctor(config)
-  await verifyBundle(config.bundleRoot, config.manifestSha256)
+  if (config.schema === 2) {
+    const { inspectInstalled } = await import('./installed.mjs')
+    await inspectInstalled(config)
+  } else await verifyBundle(config.bundleRoot, config.manifestSha256)
   return launchPlan(config)
 }
 

@@ -3,6 +3,7 @@ import path from 'node:path'
 import { catalog, digest, validateConfig, validateDirectory, verifyBundle, verifyToolchain, validateTransferConfiguration, EndpointError } from './endpoint.mjs'
 import { NativeDriver, EndpointLifecycle, StateStore, acquireLeases, leaseKeys, LifecycleError } from './lifecycle.mjs'
 import { NativeTransferDriver, TransferLifecycle } from './transfer-lifecycle.mjs'
+import { inspectInstalled, validateInstalledConfiguration } from './installed.mjs'
 
 export class RuntimeError extends LifecycleError {
   constructor(code) { super(code); this.code = code }
@@ -24,6 +25,10 @@ async function json(file) {
 // inventory; it is not a release certification or a way to supply executables,
 // arguments, shell commands, credentials, or a test driver.
 export function validateRuntimeRequest(value, config) {
+  if (config.schema === 2) {
+    requireRuntime(value && typeof value === 'object' && Object.keys(value).sort().join(',') === 'mode,schema,transfer' && value.schema === 2 && value.mode === 'existing-installations' && value.transfer === 'disabled', 'runtime_request_invalid')
+    return Object.freeze({ ...value })
+  }
   requireRuntime(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).sort().join(',') === 'manifestSha256,mode,schema,transfer', 'runtime_request_invalid')
   requireRuntime(value.schema === 1 && value.mode === 'explicit-review' && ['disabled', 'existing-queue'].includes(value.transfer), 'runtime_request_invalid')
   requireRuntime(value.manifestSha256 === config.manifestSha256, 'runtime_manifest_mismatch')
@@ -32,6 +37,7 @@ export function validateRuntimeRequest(value, config) {
 
 export async function validateRuntimeConfiguration(config, request) {
   validateConfig(config); validateRuntimeRequest(request, config)
+  if (config.schema === 2) return validateInstalledConfiguration(config)
   for (const key of ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir']) await validateDirectory(config[key])
   await regular(path.join(config.herdrConfigRoot, 'config.toml'))
   const connector = await json(path.join(config.agenvoConfigDir, 'config.json'))
@@ -55,10 +61,18 @@ export async function validateRuntimeConfiguration(config, request) {
 
 export function createExplicitRuntime({ config, stateDirectory, request }) {
   validateRuntimeRequest(request, config)
-  let verified
+  let verified, installation, driver
   const qualify = async () => {
     try {
       requireRuntime(process.platform === 'win32' && process.arch === 'x64', 'runtime_windows_x64_required')
+      if (config.schema === 2) {
+        // A running owner's recovery cannot silently accept an official update.
+        // A new explicit run re-detects versions without a new approval manifest.
+        installation?.assertUnchanged()
+        installation = await inspectInstalled(config)
+        driver.herdrVersion = installation.versions.herdr
+        return true
+      }
       verified = await verifyBundle(config.bundleRoot, config.manifestSha256)
       await validateRuntimeConfiguration(config, request)
       requireRuntime((await verifyToolchain(config, verified.manifest.components.git.version)).every(c => c.state === 'passed'), 'runtime_toolchain_verification_failed')
@@ -83,6 +97,10 @@ export function createExplicitRuntime({ config, stateDirectory, request }) {
     return true
   }
   const transfer = request.transfer === 'existing-queue' ? new TransferLifecycle({ driver: new NativeTransferDriver(config, { qualify: qualifyTransfer }) }) : null
-  return new EndpointLifecycle({ driver: new NativeDriver(config, { qualify }),
+  driver = new NativeDriver(config, { qualify, checkPrograms: config.schema === 2 ? scope => {
+    requireRuntime(installation, 'installation_not_checked')
+    try { installation.assertUnchanged(scope) } catch (error) { throw new RuntimeError(error.code) }
+  } : null })
+  return new EndpointLifecycle({ driver,
     store: new StateStore(stateDirectory, config.deviceId), acquire: () => acquireLeases(leaseKeys(config), stateDirectory), transfer })
 }

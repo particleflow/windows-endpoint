@@ -126,9 +126,16 @@ export class ForegroundHost {
       else {
         let config
         try { config = validateConfig(JSON.parse(raw)) } catch { throw new HostError('host_configuration_invalid') }
-        const expected = deploymentReferences(this.root, { manifestSha256: config.manifestSha256, nasOrigin: config.nasOrigin, deviceId: config.deviceId, runtimeId: config.runtimeId, instanceId: config.instanceId, session: config.session })
-        for (const key of ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir', 'transferConfigDir', 'transferStateDir']) {
-          if (!samePath(config[key], expected[key])) throw new HostError('host_configuration_root_mismatch')
+        if (config.schema === 1) {
+          const expected = deploymentReferences(this.root, { manifestSha256: config.manifestSha256, nasOrigin: config.nasOrigin, deviceId: config.deviceId, runtimeId: config.runtimeId, instanceId: config.instanceId, session: config.session })
+          for (const key of ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir', 'transferConfigDir', 'transferStateDir']) {
+            if (!samePath(config[key], expected[key])) throw new HostError('host_configuration_root_mismatch')
+          }
+        } else {
+          const overlaps = (a, b) => [path.relative(a, b), path.relative(b, a)].some(r => r === '' || !path.isAbsolute(r) && r !== '..' && !r.startsWith(`..${path.sep}`))
+          for (const external of [...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir'].map(k => config[k]), ...Object.values(config.programs)]) {
+            if ([this.layout.config, this.layout.data, this.layout.logs].some(owned => overlaps(owned, external))) throw new HostError('host_reference_overlap')
+          }
         }
         this.configuration = 'loaded'
         const runtimeRaw = await this.configRaw(this.runtimeFile)
@@ -140,17 +147,20 @@ export class ForegroundHost {
         }
         await this.observeAuthorization(config)
         const previous = await new StateStore(this.stateDirectory, config.deviceId).load()
-        if (previous.attention) this.attention = previous.attention
+        const recheckInstallation = Boolean(request) && config.schema === 2 && previous.phase === 'stopped' && previous.attention === 'installation_changed_restart_required'
+        if (previous.attention && !recheckInstallation) this.attention = previous.attention
         else if (previous.phase !== 'stopped') this.attention = 'host_previous_runtime_uncertain'
-        try { await verifyBundle(config.bundleRoot, config.manifestSha256) }
-        catch (error) { this.components = error.code === 'ENOENT' ? 'unavailable_missing' : 'unavailable_invalid' }
+        if (config.schema === 1) {
+          try { await verifyBundle(config.bundleRoot, config.manifestSha256) }
+          catch (error) { this.components = error.code === 'ENOENT' ? 'unavailable_missing' : 'unavailable_invalid' }
+        }
         // Test injection remains confined to the separate source fixture.
         if (this.createTestRuntime && !this.stopRequested && !this.attention) {
           this.runtime = await this.createTestRuntime({ config, stateDirectory: this.stateDirectory })
           if (!this.stopRequested) { await this.runtime.start(); this.components = 'synthetic_fixture' }
         } else if (request && !this.stopRequested && !this.attention) {
           this.runtime = createExplicitRuntime({ config, stateDirectory: this.stateDirectory, request })
-          await this.runtime.start()
+          await this.runtime.start({ acknowledgeAttention: recheckInstallation })
           if (!this.stopRequested) this.components = 'verified_local'
         }
       }

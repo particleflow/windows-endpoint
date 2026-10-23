@@ -12,12 +12,17 @@ foreground host. The host reports missing configuration and unavailable capabili
 an explicit review request can start inventory-verified local official components
 and consume an existing transfer queue. See [explicit runtime](docs/explicit-runtime.md)
 for its separate component, authorization and business-readiness boundaries.
+The [existing-installation mode](docs/existing-installations-plan.md) references
+official programs/configuration directly, rechecks actual versions and starts
+the same owned lifecycle. It does not install another Pi/Herdr copy or enable
+business-task upgrade handoff; transfer stays disabled in that mode.
 
 ## Layout
 
 - `endpoint.mjs`, `endpoint.ps1`: delivery CLI and explicit-hash Windows bootstrap.
 - `host.mjs`: local foreground entry, status snapshots and bounded per-run logs.
 - `runtime.mjs`: explicit local inventory/configuration checks and native adapter wiring.
+- `installed.mjs`: existing official installation references, probes and profile comparison.
 - `lifecycle.mjs`, `owned-herdr.ps1`: foreground coordination and owned-peer API client.
 - `transfer-lifecycle.mjs`, `transfer-contract.mjs`: internal finite command consumer
   and strict producer decisions; no Agent task replay or second queue.
@@ -35,7 +40,7 @@ Use Node 24. No npm install is needed for the unit suite:
 
 ```sh
 node endpoint.mjs help
-node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs official-smoke/producer-fixtures.test.mjs
+node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs installed.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs
 ```
 
 The `Windows endpoint delivery checks` workflow runs on every pull request and
