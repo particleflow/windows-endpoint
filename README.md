@@ -6,13 +6,15 @@ transfer queue/plugin implementation remains in Memoh and will be consumed as a
 qualified, versioned artifact.
 
 **Development baseline, not a released installer or runnable product bundle.**
-Public activation remains blocked. The current CLI provides configuration
-references, diagnostics, launch plans and verified offline staging. The internal
-foreground lifecycle is exercised only in isolated tests.
+Public component activation remains blocked. The current CLI provides configuration
+references, diagnostics, launch plans, verified offline staging and a runnable
+foreground host. The host reports missing configuration and unavailable capabilities;
+its component lifecycle is exercised with explicitly synthetic child processes.
 
 ## Layout
 
 - `endpoint.mjs`, `endpoint.ps1`: delivery CLI and explicit-hash Windows bootstrap.
+- `host.mjs`: local foreground entry, status snapshots and bounded per-run logs.
 - `lifecycle.mjs`, `owned-herdr.ps1`: foreground coordination and owned-peer API client.
 - `transfer-lifecycle.mjs`, `transfer-contract.mjs`: internal finite command consumer
   and strict producer decisions; activation awaits a qualified producer artifact.
@@ -30,7 +32,7 @@ Use Node 24. No npm install is needed for the unit suite:
 
 ```sh
 node endpoint.mjs help
-node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs
+node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs
 ```
 
 The `Windows endpoint delivery checks` workflow runs on every pull request and
@@ -65,6 +67,12 @@ It preserves user config/data/logs, defers busy/unknown state and rejects incomp
 rollback. Its component/state observations are synthetic; the public launcher does
 not consume the selection. Real installation and updates remain blocked pending
 official path approval, admission control and complete component qualification.
+
+The [foreground host](docs/foreground-host.md) can run in an existing canonical
+root using `node endpoint.mjs host run --root DIR`. It accepts only local stdin
+status/stop commands, holds a lifetime lease and reports configuration, authorization
+and component qualification separately. It does not activate the offline selected
+package or start real components. Process liveness never implies PC readiness.
 
 ## Boundaries
 

@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
+import { randomUUID } from 'node:crypto'
 import { catalog, digest } from '../endpoint.mjs'
 import { DeploymentTransactions } from '../deployment.mjs'
 import { StateStore } from '../lifecycle.mjs'
@@ -45,7 +46,9 @@ export async function deploymentFixture(t) {
     sourceRoot: path.join(root, 'data/exports'), herdrConfigRoot: path.join(root, 'config/herdr'), herdrStateRoot: path.join(root, 'data/herdr'),
     agenvoConfigDir: path.join(root, 'config/agenvo'), piConfigDir: path.join(root, 'data/pi'),
     transferConfigDir: path.join(root, 'config/herdr/plugins/config/memoh.delivery'), transferStateDir: path.join(root, 'data/herdr/plugins/memoh.delivery'),
-    deviceId: '11111111-1111-4111-8111-111111111111', runtimeId: '22222222-2222-4222-8222-222222222222', instanceId: 'fixture-herdr', session: 'default' }
+    // Isolate independent fixture processes without weakening global device
+    // ownership. The same fixture's restarts keep this config/identity.
+    deviceId: randomUUID(), runtimeId: '22222222-2222-4222-8222-222222222222', instanceId: 'fixture-herdr', session: 'default' }
   const lifecycleDirectory = path.join(root, 'data/endpoint')
   for (const directory of [lifecycleDirectory, ...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir', 'transferConfigDir', 'transferStateDir'].map(k => config[k])]) await fs.mkdir(directory, { recursive: true })
   const settings = { root, config, lifecycleDirectory, profile: a.profile }
