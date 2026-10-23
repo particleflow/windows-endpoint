@@ -51,7 +51,7 @@ No full installer, real Agent pending-tool, automatic transfer, update/rollback,
 real UI, capacity or physical power-loss acceptance is established by these tests.
 
 The explicit runtime CI additionally builds the public Memoh source at
-[`f7479c56f9d9e67be0ddff2ef73bcc6d0b952f75`](https://github.com/particleflow/Memoh/commit/f7479c56f9d9e67be0ddff2ef73bcc6d0b952f75)
+[`40f0a69fd4b7e34dfcf36ec8a44a9805403e7be8`](https://github.com/particleflow/Memoh/commit/40f0a69fd4b7e34dfcf36ec8a44a9805403e7be8)
 using that commit's unchanged build script. Its plugin version is 0.7.0. No Go
 implementation is imported, no old denied artifact is fetched, and no binary is
 redistributed by this repository. See [scope and limits](explicit-runtime.md).
@@ -63,6 +63,10 @@ Git blob `67cc407e6b914dd52ce7a244a82a580c72ad2ec1`, under the retained AGPL-3.0
 license. Only those 30 data vectors are imported; no Go implementation is copied.
 They retain the same blob at the current producer pin. The source-built test
 executable runs its original contract test against all 30 cases in that checkout.
+It separately runs both task API-base boundary tests and requires all 13 cases.
+The current producer fix validates the original base's 2048-byte limit before
+appending the fixed task namespace and validated IDs; it preserves TLS, ID and
+authentication checks without changing configuration or queue bytes.
 
 Compared with the preceding `4c880e07` component, the transfer build closure
 changes only `internal/transferclient/api_base.go`, `api_base_test.go`,

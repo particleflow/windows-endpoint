@@ -5,7 +5,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { catalog, digest } from '../endpoint.mjs'
-import { testNames, fixturePlan, completedTests, completedAPIBaseCases, verifyProducerBundle } from './producer-fixtures.mjs'
+import { testNames, fixturePlan, completedTests, completedAPIBaseCases, completedTaskAPIBaseCases, verifyProducerBundle } from './producer-fixtures.mjs'
 
 const native = ['TestWindowsNativeActiveJournal', 'TestWindowsNativePublicationBucketBudget', 'TestWindowsNativePublicationMigrationProcessCrash', 'TestWindowsNativePublicationNewCase', 'TestWindowsNativeNewCore']
 const cli = ['TestCLIPathChild', 'TestCLIPathTLSRestartAndLostResponses']
@@ -31,6 +31,19 @@ test('packaged API base contract requires every shared case and rejects skipped 
   const log = selected => selected.map(n => `    --- PASS: TestAPIBaseContractVectors/${n} (0.00s)`).join('\n') + '\n' + output(['TestAPIBaseContractVectors'])
   assert.deepEqual(completedAPIBaseCases(log(names), names), names)
   for (const raw of ['PASS\n', log([]), log(names.slice(1)), log([...names, names[0]]), log([...names, 'unexpected']), log(names).replace('PASS: TestAPIBaseContractVectors/empty-port', 'SKIP: TestAPIBaseContractVectors/empty-port')]) assert.throws(() => completedAPIBaseCases(raw, names))
+})
+test('new task API boundaries require both actual top-level tests and all 13 distinct cases', () => {
+  const parents = ['TestTaskAPIBaseLengthBoundary', 'TestTaskAPIBaseBoundaryPreservesChecks']
+  const names = [
+    ...[2047, 2048, 2049].flatMap(n => ['false', 'true'].map(slash => `${parents[0]}/bytes-${n}/trailing-${slash}`)),
+    ...['query-at-limit', 'operation-path', 'delivery-path', 'operation-too-long', 'delivery-too-long', 'missing-auth', 'insecure-transport'].map(n => `${parents[1]}/${n}`),
+  ]
+  const log = selected => selected.map(n => `    --- PASS: ${n} (0.00s)`).join('\n') + '\n' + output(parents)
+  assert.equal(names.length, 13)
+  assert.deepEqual(completedTaskAPIBaseCases(log(names)), names)
+  const inventory = ['TestAPIBaseContractVectors', ...parents]
+  assert.deepEqual(testNames(inventory.join('\n'), 'Test(Task)?APIBase'), inventory)
+  for (const raw of [output(['TestAPIBaseContractVectors']), 'PASS\n', log([]), log(names.slice(1)), log([...names, names[0]]), log([...names, `${parents[1]}/unexpected`]), log(names).replace(`PASS: ${names[0]}`, `SKIP: ${names[0]}`), log(names).replace(`--- PASS: ${parents[1]} (0.01s)\n`, '')]) assert.throws(() => completedTaskAPIBaseCases(raw))
 })
 test('shared vector checkout stays byte-identical under a Windows CRLF Git profile', async t => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'producer-vector-checkout-')))

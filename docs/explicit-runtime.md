@@ -59,7 +59,7 @@ have not been established. There is no global READY inferred from living PIDs.
 ## Source and CI evidence boundaries
 
 CI checks out public `particleflow/Memoh` at
-`f7479c56f9d9e67be0ddff2ef73bcc6d0b952f75` (plugin 0.7.0) and calls its unchanged
+`40f0a69fd4b7e34dfcf36ec8a44a9805403e7be8` (plugin 0.7.0) and calls its unchanged
 `scripts/build-transferqueue-bundle.py`. The source is a separate build input,
 not a second Go implementation in this repository. No blocked hosted artifact is
 re-requested. The old `transfer-artifact.json` and its legacy seven-file fixture
@@ -73,7 +73,9 @@ the unchanged producer tests with bounded groups and verifies every selected
 top-level test and all subtests; it does not modify the producer verifier.
 The packaged test executable also runs the new producer API-base contract from
 its fixed source directory, with byte-identical vectors and all 30 subcases
-required. Fixture data is not added to the runtime package.
+required. Both task API-base boundary tests also run separately, requiring all
+13 cases for the original base length and retained validation checks. Fixture
+data is not added to the runtime package.
 
 The new Windows job exercises the public host process, official Herdr/Agenvo and
 production `transferqueue.exe` with fresh isolated data. It admits one seven-byte

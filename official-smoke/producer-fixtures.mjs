@@ -44,6 +44,18 @@ export function completedAPIBaseCases(output, expected) {
   return passed
 }
 
+const taskAPIBaseTests = ['TestTaskAPIBaseLengthBoundary', 'TestTaskAPIBaseBoundaryPreservesChecks']
+export function completedTaskAPIBaseCases(output) {
+  completedTests(output, taskAPIBaseTests)
+  const expected = [
+    ...[2047, 2048, 2049].flatMap(length => [false, true].map(trailing => `${taskAPIBaseTests[0]}/bytes-${length}/trailing-${trailing}`)),
+    ...['query-at-limit', 'operation-path', 'delivery-path', 'operation-too-long', 'delivery-too-long', 'missing-auth', 'insecure-transport'].map(name => `${taskAPIBaseTests[1]}/${name}`),
+  ]
+  const passed = [...output.matchAll(/^[ \t]+--- PASS: (TestTaskAPIBase[A-Za-z0-9_]+\/[A-Za-z0-9_/-]+) \([\d.]+s\)\r?$/gm)].map(m => m[1])
+  requireFixture(sameSet(passed, expected), 'producer_task_api_base_coverage_incomplete')
+  return passed
+}
+
 export async function verifyProducerBundle(root) {
   await validateDirectory(root)
   requireFixture(sameSet(await fs.readdir(root), [...payloads, 'SHA256SUMS.json']), 'producer_fixture_bundle_inventory_invalid')
@@ -97,11 +109,14 @@ export async function verifyFixtures(root, sourceRoot) {
   const contract = JSON.parse(sourceRaw)
   requireFixture(contract.contract === 'memoh.file-api-base.v1' && contract.cases.length === 30, 'producer_api_base_contract_invalid')
   const binary = path.join(root, 'transferqueue.test.exe')
-  const contractTests = testNames(await execute(binary, ['-test.list=^TestAPIBase'], remaining(30000), false, contractDirectory), 'TestAPIBase')
-  requireFixture(sameSet(contractTests, ['TestAPIBaseContractVectors']), 'producer_api_base_inventory_changed')
+  const contractTests = testNames(await execute(binary, ['-test.list=^Test(Task)?APIBase'], remaining(30000), false, contractDirectory), 'Test(Task)?APIBase')
+  requireFixture(sameSet(contractTests, ['TestAPIBaseContractVectors', ...taskAPIBaseTests]), 'producer_api_base_inventory_changed')
   const contractOutput = await execute(binary, ['-test.run=^TestAPIBaseContractVectors$', '-test.v', '-test.timeout=30s'], remaining(40000), true, contractDirectory)
   completedAPIBaseCases(contractOutput, contract.cases.map(c => c.name))
   process.stdout.write(JSON.stringify({ producerAPIBaseContract: 'passed', sourceCommit, contract: contract.contract, vectors: contract.cases.length, skipped: 0 }) + '\n')
+  const boundaryOutput = await execute(binary, [`-test.run=^(${taskAPIBaseTests.join('|')})$`, '-test.v', '-test.timeout=30s'], remaining(40000), true, contractDirectory)
+  const boundaryCases = completedTaskAPIBaseCases(boundaryOutput)
+  process.stdout.write(JSON.stringify({ producerTaskAPIBaseBoundary: 'passed', sourceCommit, topLevel: taskAPIBaseTests.length, cases: boundaryCases.length, skipped: 0 }) + '\n')
   const native = testNames(await execute(path.join(root, 'transferqueue.test.exe'), ['-test.list=^TestWindowsNative'], remaining(30000)), 'TestWindowsNative')
   const cli = testNames(await execute(path.join(root, 'transferqueue-cli.test.exe'), ['-test.list=^TestCLIPath'], remaining(30000)), 'TestCLIPath')
   const groups = fixturePlan(native, cli)
@@ -121,7 +136,7 @@ export async function verifyFixtures(root, sourceRoot) {
     process.stdout.write(JSON.stringify({ producerFixtureGroup: group.name, state: 'passed', tests, skipped: 0, durationMs: Date.now() - started }) + '\n')
   }
   requireFixture(sameSet(passed, [...native, ...cli]), 'producer_fixture_suite_incomplete')
-  process.stdout.write(JSON.stringify({ producerFixtureSuite: 'passed', sourceCommit, apiBaseTopLevel: contractTests.length, apiBaseVectors: contract.cases.length, nativeTopLevel: native.length, cliTopLevel: cli.length, skipped: 0 }) + '\n')
+  process.stdout.write(JSON.stringify({ producerFixtureSuite: 'passed', sourceCommit, apiBaseTopLevel: contractTests.length, apiBaseVectors: contract.cases.length, taskAPIBaseBoundaryCases: boundaryCases.length, nativeTopLevel: native.length, cliTopLevel: cli.length, skipped: 0 }) + '\n')
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

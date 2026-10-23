@@ -205,7 +205,7 @@ the fixture's original bytes and exercises the same pending queue. This is
 admission/binding and untrusted-TLS coverage, not a positive `/api` upload proof.
 
 The producer's existing `SHA256SUMS.json` must identify reviewed source
-`f7479c56f9d9e67be0ddff2ef73bcc6d0b952f75`, amd64 and the complete build output.
+`40f0a69fd4b7e34dfcf36ec8a44a9805403e7be8`, amd64 and the complete build output.
 Preflight verifies those file hashes, then each finite invocation rechecks the
 captured executable, manifest, receipt and plugin-registration bytes. A changed
 receipt cannot silently replace the running component. This is an integrity
