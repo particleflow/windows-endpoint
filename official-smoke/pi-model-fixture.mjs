@@ -9,8 +9,11 @@ export const fixtureBytes = '42\n'
 export const fixtureOutput = 'joint-fixture-complete'
 const callId = 'endpoint_fixture_write'
 
-export async function startPiModelFixture() {
+export async function startPiModelFixture({ holdCompletion = false } = {}) {
   let requests = 0, offeredWrites = 0
+  let releaseCompletion
+  const completion = new Promise(resolve => { releaseCompletion = resolve })
+  if (!holdCompletion) releaseCompletion()
   const server = http.createServer(async (req, res) => {
     try {
       if (req.method !== 'POST' || req.url !== '/v1/chat/completions') throw Error('route')
@@ -30,6 +33,7 @@ export async function startPiModelFixture() {
         delta = { role: 'assistant', content: null, tool_calls: [{ index: 0, id: callId, type: 'function', function: { name: 'write', arguments: JSON.stringify({ path: fixtureFile, content: fixtureBytes }) } }] }
         finish = 'tool_calls'
       } else if (requests === 2 && body.messages.at(-1)?.role === 'tool' && body.messages.at(-1)?.tool_call_id === callId) {
+        await completion
         delta = { role: 'assistant', content: fixtureOutput }; finish = 'stop'
       } else throw Error('unexpected_reexecution')
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' })
@@ -51,6 +55,7 @@ export async function startPiModelFixture() {
     // no external access and is unrelated to Agenvo OAuth or target approval.
     models: { providers: { [fixtureProvider]: { baseUrl, api: 'openai-completions', apiKey: 'fixture-no-credential', models: [{ id: fixtureModel, reasoning: false, input: ['text'], contextWindow: 32768, maxTokens: 2048 }] } } },
     snapshot: () => ({ requests, offeredWrites }),
-    close: () => new Promise((resolve, reject) => { server.close(e => e ? reject(e) : resolve()); server.closeAllConnections() }),
+    releaseCompletion,
+    close: () => new Promise((resolve, reject) => { releaseCompletion(); server.close(e => e ? reject(e) : resolve()); server.closeAllConnections() }),
   }
 }

@@ -4,7 +4,8 @@ import assert from 'node:assert/strict'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { setTimeout as delay } from 'node:timers/promises'
 import { catalog, programPaths, verifyToolchain } from '../endpoint.mjs'
@@ -21,7 +22,7 @@ for (const key of ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoCon
 const programs = programPaths(config), sessions = path.join(root, 'sessions'), session = randomBytes(32).toString('hex')
 await fs.mkdir(sessions)
 await fs.writeFile(path.join(config.herdrConfigRoot, 'config.toml'), '[update]\nversion_check = false\nmanifest_check = false\n')
-const model = await startPiModelFixture()
+const model = await startPiModelFixture({ holdCompletion: true })
 // Keep Windows' actual OS paths, as the product host does. Replacing the user
 // profile/AppData/Temp with an uninitialized fixture directory also changes the
 // PowerShell/.NET ownership helper's environment, not just Pi's data location.
@@ -64,6 +65,30 @@ try {
   const pane = created.root_pane.pane_id
   stage = 'pi_invoke'
   driver.command(driver.herdr, ['--session', config.session, 'pane', 'run', pane, 'node run-pi.cjs'])
+  stage = 'active_update_refusal'
+  const waitingDeadline = Date.now() + 45000
+  while (model.snapshot().requests !== 2 && Date.now() < waitingDeadline) await delay(100)
+  assert.deepEqual(model.snapshot(), { requests: 2, offeredWrites: 1 }, 'Real Pi must reach its unfinished model response')
+  await assert.rejects(fs.access(path.join(config.sourceRoot, 'exit.json')), { code: 'ENOENT' })
+  assert.equal(await fs.readFile(path.join(config.sourceRoot, fixtureFile), 'utf8'), fixtureBytes)
+  const generation = await driver.ownedGeneration()
+  const beforeUpdate = JSON.parse(driver.command(driver.herdr, ['--session', config.session, 'api', 'snapshot'])).result.snapshot
+  const activePane = beforeUpdate.panes.find(p => p.pane_id === pane)
+  assert.ok(activePane?.terminal_id)
+  const update = spawnSync(programs.node, [fileURLToPath(new URL('../endpoint.mjs', import.meta.url)), 'update'], { env: driver.env, encoding: 'utf8', timeout: 10000, maxBuffer: 16384, windowsHide: true })
+  assert.equal(update.status, 2)
+  assert.equal(JSON.parse(update.stderr).error, 'qualification_required_no_runtime_or_data_changed')
+  assert.equal(await driver.ownedGeneration(), generation)
+  assert.equal((await driver.ownedHostRequest('ping')).type, 'pong')
+  const afterUpdate = JSON.parse(driver.command(driver.herdr, ['--session', config.session, 'api', 'snapshot'])).result.snapshot
+  const samePane = afterUpdate.panes.find(p => p.pane_id === pane)
+  assert.equal(samePane?.terminal_id, activePane.terminal_id)
+  await assert.rejects(fs.access(path.join(config.sourceRoot, 'exit.json')), { code: 'ENOENT' })
+  assert.equal(await fs.readFile(path.join(config.sourceRoot, 'invocations.txt'), 'utf8'), 'once\n')
+  assert.deepEqual(model.snapshot(), { requests: 2, offeredWrites: 1 })
+  process.stdout.write(JSON.stringify({ activePiUpdateCheck: 'rejected_without_stopping_or_replaying_task', automaticHandoff: false }) + '\n')
+  model.releaseCompletion()
+  stage = 'pi_completion'
   const deadline = Date.now() + 75000
   let exited
   while (Date.now() < deadline) {

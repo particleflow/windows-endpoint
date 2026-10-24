@@ -25,3 +25,22 @@ test('unrelated model and non-streaming requests cannot advance the fixed worklo
   }
   assert.deepEqual(fixture.snapshot(), { requests: 0, offeredWrites: 0 })
 })
+
+test('completion gate keeps the real-model response pending until an explicit release', async t => {
+  const fixture = await startPiModelFixture({ holdCompletion: true }); t.after(() => fixture.close())
+  const call = body => fetch(`${fixture.baseUrl}/chat/completions`, { method: 'POST', body: JSON.stringify(body), signal: AbortSignal.timeout(3000) })
+  const initial = { model: fixtureModel, stream: true, messages: [{ role: 'user', content: 'synthetic task' }], tools: [{ type: 'function', function: { name: 'write' } }] }
+  const first = await call(initial)
+  const tool = JSON.parse((await first.text()).split('\n').find(l => l.startsWith('data: {')).slice(6)).choices[0].delta.tool_calls[0]
+  let received = false
+  const pending = call({ ...initial, messages: [{ role: 'tool', tool_call_id: tool.id, content: 'written' }] }).then(async r => { received = true; assert.equal(r.status, 200); return r.text() })
+  const deadline = Date.now() + 1000
+  while (fixture.snapshot().requests !== 2 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.deepEqual(fixture.snapshot(), { requests: 2, offeredWrites: 1 })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(received, false)
+  fixture.releaseCompletion()
+  assert.match(await pending, new RegExp(fixtureOutput))
+  fixture.releaseCompletion()
+  assert.deepEqual(fixture.snapshot(), { requests: 2, offeredWrites: 1 })
+})

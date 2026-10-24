@@ -240,6 +240,13 @@ try {
   const restored = JSON.parse(control.command(nextBinary, ['--session', carry.session, 'api', 'snapshot'])).result.snapshot
   assert.ok(restored.workspaces.some(w => w.workspace_id === workspace.workspace.workspace_id))
   assert.ok(restored.panes.some(pane => pane.pane_id === workspace.root_pane.pane_id && !pane.restore_error))
+  const restoredPane = restored.panes.find(pane => pane.pane_id === workspace.root_pane.pane_id)
+  assert.ok(workspace.root_pane.terminal_id && restoredPane.terminal_id)
+  assert.notEqual(restoredPane.terminal_id, workspace.root_pane.terminal_id)
+  // Memoh 40f0a69 readBatchFile requires the persisted ControlTerminal to
+  // equal pane.get's terminal_id before typing a receipt read. A restored pane
+  // is not permission to replace that original task binding in this host.
+  process.stdout.write(JSON.stringify({ ordinaryRestoreTaskBoundary: 'pane_preserved_terminal_replaced', producerControlBinding: 'original_terminal_no_longer_matches', receiptReadAfterRestart: 'not_qualified', automaticTaskReplay: false }) + '\n')
   assert.equal(await fs.readFile(path.join(carry.sourceRoot, 'executions.txt'), 'utf8'), 'once\n')
   for (const file of sentinels) assert.equal(await fs.readFile(path.join(carry.sourceRoot, file), 'utf8'), `SYNTHETIC ORIGINAL REFERENCE ${file}\n`)
   assert.equal(await continued.stop(), 0)

@@ -108,6 +108,23 @@ stay in their original source root; this does not validate their current busines
 outcome or provide native Agent task handoff. `doctor` remains a read-only history
 observation and does not grant continuation authority from a lifecycle journal.
 
+Workspace/pane continuity is not terminal continuity. Official Herdr allocates
+new `terminal_id` values when restoring panes. The fixed producer's
+[`readBatchFile`](https://github.com/particleflow/Memoh/blob/40f0a69fd4b7e34dfcf36ec8a44a9805403e7be8/internal/agenvo/pi_batch_service.go)
+requires the original persisted `ControlTerminal` before issuing a receipt/file
+read. Replacing it with the newly observed terminal would erase an ownership
+check; this host does not do that. Pi session/result files remaining intact do
+not establish that the original Memoh task can retrieve them after Herdr restart.
+
+The remaining planned-upgrade handoff belongs to the original task owner: stop
+new admissions, let live attempts finish, collect their correlated receipts and
+result pages into the existing durable operation store, then provide an
+authoritative settled/quiescent result before the host stops components. Busy,
+unknown or uncollected outcomes cannot authorize that stop. No such production
+handoff is wired here. The native Pi fixture holds a real invocation unfinished
+and checks the current public `update` refusal leaves it running once; this is
+an upgrade-refusal check, not an implemented drain, upgrade or task recovery API.
+
 ## Official updates and rechecking
 
 There is no new user-maintained version/hash manifest or per-update approval
