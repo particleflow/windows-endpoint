@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: '24.14.0'
       - name: Verify delivery boundary and recovery fixtures
-        run: node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs installed.test.mjs session-diagnostics.test.mjs session-continuation.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs official-smoke/pi-model-fixture.test.mjs
+        run: node --test --test-timeout=30000 endpoint.test.mjs queue-budget.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs installed.test.mjs session-diagnostics.test.mjs session-continuation.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs official-smoke/pi-model-fixture.test.mjs
       - name: Validate transfer fixture JavaScript syntax
         run: node --check official-smoke/transfer.mjs
       - name: Validate transfer fixture PowerShell syntax
@@ -83,7 +83,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: particleflow/Memoh
-          ref: 40f0a69fd4b7e34dfcf36ec8a44a9805403e7be8
+          ref: 37b7464fe062714258ddea5208cce2a6f9ea5f5b
           path: producer-source
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -97,7 +97,7 @@ jobs:
         shell: pwsh
         working-directory: producer-source
         run: |
-          if ((git rev-parse HEAD) -ne '40f0a69fd4b7e34dfcf36ec8a44a9805403e7be8') { throw 'Wrong producer source' }
+          if ((git rev-parse HEAD) -ne '37b7464fe062714258ddea5208cce2a6f9ea5f5b') { throw 'Wrong producer source' }
           python scripts/build-transferqueue-bundle.py --output '${{ runner.temp }}/endpoint-transfer-source-build'
           if ($LASTEXITCODE -ne 0) { throw 'Producer source build failed' }
       - name: Verify producer native fixtures (test dispatcher has fixture-only CA injection)

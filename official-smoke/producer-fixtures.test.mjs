@@ -5,11 +5,20 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { catalog, digest } from '../endpoint.mjs'
-import { testNames, fixturePlan, completedTests, completedAPIBaseCases, completedTaskAPIBaseCases, verifyProducerBundle } from './producer-fixtures.mjs'
+import { testNames, fixturePlan, completedTests, completedAPIBaseCases, completedTaskAPIBaseCases, budgetTests, cliBudgetTests, verifyProducerBundle } from './producer-fixtures.mjs'
 
 const native = ['TestWindowsNativeActiveJournal', 'TestWindowsNativePublicationBucketBudget', 'TestWindowsNativePublicationMigrationProcessCrash', 'TestWindowsNativePublicationNewCase', 'TestWindowsNativeNewCore']
 const cli = ['TestCLIPathChild', 'TestCLIPathTLSRestartAndLostResponses']
 const output = names => names.map(n => `=== RUN   ${n}\n--- PASS: ${n} (0.01s)`).join('\n') + '\nPASS\n'
+
+test('budget coverage requires all five library tests and the actual CLI dispatcher test', () => {
+  assert.equal(budgetTests.length, 5); assert.equal(cliBudgetTests.length, 1)
+  for (const names of [budgetTests, cliBudgetTests]) {
+    assert.deepEqual(completedTests(output(names), names), names)
+    assert.throws(() => completedTests(output(names.slice(1)), names))
+    assert.throws(() => completedTests(output(names).replace('--- PASS:', '--- SKIP:'), names))
+  }
+})
 
 test('binary inventory partitions exactly once and selects every original subtest', () => {
   const groups = fixturePlan(native, cli)

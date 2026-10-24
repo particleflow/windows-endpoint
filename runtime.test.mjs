@@ -5,6 +5,7 @@ import path from 'node:path'
 import { validateRuntimeRequest, validateRuntimeConfiguration, createExplicitRuntime } from './runtime.mjs'
 import { deploymentFixture } from './test-support/deployment-fixture.mjs'
 import { parseAdvanceDecision } from './transfer-contract.mjs'
+import { catalog } from './endpoint.mjs'
 
 const request = config => ({ schema: 1, mode: 'explicit-review', manifestSha256: config.manifestSha256, transfer: 'existing-queue' })
 async function configured(t) {
@@ -14,7 +15,7 @@ async function configured(t) {
   await fs.writeFile(file, JSON.stringify(connector))
   await fs.writeFile(path.join(c.transferConfigDir, 'transfer.json'), JSON.stringify({ version: 1, origin: c.nasOrigin, source_root: c.sourceRoot }))
   await fs.writeFile(path.join(c.transferConfigDir, 'device.credential'), 'synthetic-only')
-  await fs.writeFile(path.join(c.herdrConfigRoot, 'plugins.json'), JSON.stringify([{ plugin_id: 'memoh.delivery', enabled: true, version: '0.7.0', plugin_root: path.join(c.bundleRoot, 'transfer'), manifest_path: path.join(c.bundleRoot, 'transfer/herdr-plugin.toml') }]))
+  await fs.writeFile(path.join(c.herdrConfigRoot, 'plugins.json'), JSON.stringify([{ plugin_id: 'memoh.delivery', enabled: true, version: catalog.components.transfer.version, plugin_root: path.join(c.bundleRoot, 'transfer'), manifest_path: path.join(c.bundleRoot, 'transfer/herdr-plugin.toml') }]))
   return { ...f, connector, file }
 }
 test('explicit request rejects executable, credential, test-driver and qualification overrides', () => {

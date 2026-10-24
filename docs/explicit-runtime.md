@@ -59,7 +59,7 @@ have not been established. There is no global READY inferred from living PIDs.
 ## Source and CI evidence boundaries
 
 CI checks out public `particleflow/Memoh` at
-`40f0a69fd4b7e34dfcf36ec8a44a9805403e7be8` (plugin 0.7.0) and calls its unchanged
+`37b7464fe062714258ddea5208cce2a6f9ea5f5b` (plugin 0.8.0) and calls its unchanged
 `scripts/build-transferqueue-bundle.py`. The source is a separate build input,
 not a second Go implementation in this repository. No blocked hosted artifact is
 re-requested. The old `transfer-artifact.json` and its legacy seven-file fixture

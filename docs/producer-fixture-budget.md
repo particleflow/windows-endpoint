@@ -42,7 +42,7 @@ manifest, assertion, synchronization or original `verify-fixtures.ps1` is edited
 That original verifier remains hash-checked; its aggregate invocation is replaced
 only in this downstream job.
 
-The current source pin is `40f0a69fd4b7e34dfcf36ec8a44a9805403e7be8`.
+The current source pin is `37b7464fe062714258ddea5208cce2a6f9ea5f5b`.
 Its three API-base top-level tests are outside those two historical selections.
 The same packaged test executable runs `TestAPIBaseContractVectors` separately
 from the fixed source's `internal/transferclient` directory. That test reads its own
@@ -140,3 +140,11 @@ TestCLIPathWindowsDefaultOwnerDiagnostic
 Passing these fixtures remains distinct from production CLI positive TLS or real
 PC-to-NAS acceptance. Their ephemeral TLS dispatcher uses test-only CA injection;
 the public host fixture's production CLI still must reject that untrusted CA.
+
+Plugin 0.8 additionally runs all five `TestHostBudget`/`TestBudgetMigration`
+tests and the real CLI dispatcher `TestCLIBudgetConfigurationAndOldQueueRecovery`
+from the same binaries, each group bounded at two minutes (130-second wrapper).
+The native inventory also includes `TestWindowsNativeBudgetPublicationRecovery`.
+No old test is removed. These verify 8/16 GiB settings using small payloads,
+original records and process exits; they do not transfer multi-GiB files or prove
+physical power-loss durability. The total suite/job deadlines are unchanged.

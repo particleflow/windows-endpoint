@@ -71,10 +71,29 @@ rollback are not implemented by the current endpoint.
 
 The finite consumer coalesces hints, honors producer deadlines and drains an
 invocation before shutdown. The current candidate source is Memoh
-`4c880e07ecdff1b6caadd86348779603fce9e8aa` / plugin 0.7.0; CI builds it using its
+`37b7464fe062714258ddea5208cce2a6f9ea5f5b` / plugin 0.8.0; CI builds it using its
 unchanged source build script. The older artifact and PR56 history in
 [the original handoff](docs/transfer-integration-gap.md) are not current
 qualification evidence. No denied artifact is downloaded or substituted.
+
+Queue capacity uses the producer's optional `queue-budget.json` inside the same
+Herdr plugin configuration directory, without changing `transfer.json`, roots,
+credentials or task identities. `node endpoint.mjs transfer-budget --root DIR`
+reports the configured budget (256 MiB when absent). Before the first host/queue
+use, `--bytes 8589934592` creates the native 8 GiB policy through this same entry;
+it does not install another CLI/service or allocate 8 GiB. Both configuration
+schemas use the same policy. Invalid or interrupted files fail explicitly.
+
+This initial-provisioning command never overwrites a policy. A running owner,
+existing queue, lifecycle record or Herdr session defers changes. It cannot prove
+that every external or idle old writer has stopped, so existing-queue migration
+is not automated: the producer requires all writers stopped, a complete raw
+backup, prior history/publication upgrades and its finite `migrate-budget` action.
+Its locator gates prevent downgrade; decreasing the policy or moving config/state
+roots is not a migration. The endpoint preserves those files and reports this gap
+instead of changing bindings or treating an idle queue as permission to upgrade.
+Windows CI runs that fixed producer's small-data migration, original-ID recovery,
+busy rejection and crash tests; 8/16 GiB parameters are not large-file acceptance.
 
 The [offline deployment transaction batch](docs/deployment-transactions.md) reuses
 verified staging and endpoint ownership to test candidate selection and recovery.

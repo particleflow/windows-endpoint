@@ -192,6 +192,7 @@ export async function installedDoctor(config, target = null) {
     result.sessionObservation = await observeExistingSession(inspected)
     if (config.transfer) {
       await inspectInstalledTransfer(config)
+      result.transferBudget = await validateTransferConfiguration(config)
       checks.push({ check: 'existing_transfer_reference', state: 'passed' })
       result.transfer = 'reference_checked; native_tls_and_authorization_unverified'
     }

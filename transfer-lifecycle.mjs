@@ -26,7 +26,11 @@ export class NativeTransferDriver {
     if (process.platform !== 'win32' || process.arch !== 'x64' || typeof this.qualify !== 'function' || await this.qualify() !== true) {
       throw new TransferError('transfer_component_unqualified')
     }
-    try { await validateTransferConfiguration(this.config) }
+    try {
+      const budget = await validateTransferConfiguration(this.config)
+      if (this.budgetBytes !== undefined && this.budgetBytes !== budget.bytes) throw new TransferError('transfer_budget_changed')
+      this.budgetBytes = budget.bytes
+    }
     catch (error) {
       const reason = ['EACCES', 'EPERM'].includes(error.code) ? 'permission' : error.code === 'transfer_credential_missing' ? 'authentication' : 'configuration'
       throw new TransferError(`transfer_${reason}`)

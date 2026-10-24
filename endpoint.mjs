@@ -290,6 +290,8 @@ export async function validateTransferConfiguration(config) {
   requireThat(cfg.version === 1 && cfg.origin === locations.origin && samePath(cfg.source_root, config.sourceRoot), 'transfer_configuration_mismatch')
   try { requireThat((await regular(path.join(locations.config, 'device.credential'))).size > 0, 'transfer_credential_missing') }
   catch (error) { if (error.code === 'ENOENT') throw new EndpointError('transfer_credential_missing'); throw error }
+  const { readQueueBudget } = await import('./queue-budget.mjs')
+  return readQueueBudget(config)
 }
 
 export function transferEnvironment(config, inherited = process.env) {
@@ -347,7 +349,8 @@ export async function doctor(config, run = probe) {
     requireThat((await regular(path.join(config.piConfigDir, 'auth.json'))).size > 0, 'pi_authentication_missing')
     await regular(path.join(config.herdrConfigRoot, 'config.toml'))
   })
-  await check('transfer_configuration', () => validateTransferConfiguration(config))
+  let transferBudget = null
+  await check('transfer_configuration', async () => { transferBudget = await validateTransferConfiguration(config) })
   await check('existing_transfer_plugin', async () => {
     const registry = await readJSON(path.join(config.herdrConfigRoot, 'plugins.json'))
     requireThat(Array.isArray(registry), 'plugin_registry_invalid')
@@ -373,7 +376,7 @@ export async function doctor(config, run = probe) {
     checks.push(...await verifyToolchain(config, bundle.manifest.components.git.version, run))
   }
   return {
-    schema: 1, ready: false, activation: 'blocked', checks,
+    schema: 1, ready: false, activation: 'blocked', checks, transferBudget,
     capabilities: { connection, agent: 'readiness_unverified', desktop: 'unsupported_by_command_connector', transfer: 'native_storage_and_route_unverified' },
     lifecycle: { owner: 'unified_endpoint', implementation: 'pending', idleQueueWake: 'missing', herdrStartupHook: 'available_one_shot_only', connectorReconnect: 'network_only', automaticRecovery: false },
     blockers: [...catalog.blockers],
@@ -422,8 +425,13 @@ export async function main(args) {
     requireThat(/^--[a-z-]+$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'invalid_arguments')
     options[rest[i]] = rest[i + 1]
   }
-  if (command === 'help' || !command) return { commands: ['configure --from FILE --config FILE', 'doctor --config FILE', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR'], status: 'host observation and explicit verified component review available; release activation/update/rollback/uninstall blocked pending qualification' }
+  if (command === 'help' || !command) return { commands: ['configure --from FILE --config FILE', 'doctor --config FILE', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR', 'transfer-budget --root DIR [--bytes INTEGER]'], status: 'host observation and explicit verified component review available; release activation/update/rollback/uninstall blocked pending qualification' }
   if (['start', 'activate', 'update', 'rollback', 'uninstall'].includes(command)) throw new EndpointError('qualification_required_no_runtime_or_data_changed')
+  if (command === 'transfer-budget') {
+    keys(options, ['--root'], ['--bytes'])
+    const { queueBudgetCommand } = await import('./queue-budget.mjs')
+    return queueBudgetCommand(options['--root'], options['--bytes'])
+  }
   if (command === 'configure') { keys(options, ['--from', '--config']); return configure(options['--from'], options['--config']) }
   if (command === 'stage') { keys(options, ['--source', '--destination', '--manifest-sha256']); return stageBundle(options['--source'], options['--destination'], options['--manifest-sha256']) }
   requireThat(['doctor', 'plan'].includes(command), 'unknown_command')
