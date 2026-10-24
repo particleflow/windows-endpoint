@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { inspectInstalled, inspectInstalledTransfer, compareProducerTarget } from './installed.mjs'
-import { catalog, digest, validateConfig, managedEnvironment, programPaths, configure, transferLocations, transferEnvironment } from './endpoint.mjs'
+import { catalog, digest, validateConfig, managedEnvironment, programPaths, configure, main, transferLocations, transferEnvironment } from './endpoint.mjs'
 import { validateRuntimeRequest, createExplicitRuntime } from './runtime.mjs'
 import { NativeDriver, LifecycleError, leaseKeys } from './lifecycle.mjs'
 import { transferCommand } from './transfer-lifecycle.mjs'
@@ -36,6 +36,24 @@ test('omitted Herdr path resolves only from the selected official instance witho
   await f.write(path.join(f.base, 'input.json'), input)
   await configure(path.join(f.base, 'input.json'), destination)
   assert.equal(JSON.parse(await fs.readFile(destination)).programs.herdr, undefined)
+})
+test('configure host root preserves existing installation references and rejects host data overlap', async t => {
+  const f = await installedFixture(t)
+  delete f.config.programs.herdr
+  const originalFiles = [path.join(f.config.agenvoConfigDir, 'config.json'), path.join(f.config.piConfigDir, 'auth.json'), path.join(f.config.herdrConfigRoot, 'config.toml')]
+  const before = await Promise.all(originalFiles.map(file => fs.readFile(file)))
+  const input = path.join(f.base, 'input.json'), root = path.join(f.base, 'host')
+  await f.write(input, JSON.stringify(f.config)); await fs.mkdir(path.join(root, 'config'), { recursive: true })
+  await main(['configure', '--from', input, '--root', root])
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(root, 'config/endpoint.json'))), f.config)
+  assert.deepEqual(await fs.readdir(root), ['config'])
+  assert.deepEqual(await Promise.all(originalFiles.map(file => fs.readFile(file))), before)
+  assert.equal(f.calls.length, 0, 'configuration never probes or starts an official component')
+  const second = path.join(f.base, 'next-host')
+  await fs.mkdir(path.join(second, 'config'), { recursive: true })
+  await f.write(input, JSON.stringify({ ...f.config, sourceRoot: path.join(second, 'data/exports') }))
+  await assert.rejects(main(['configure', '--from', input, '--root', second]), /host_reference_overlap/)
+  await assert.rejects(fs.stat(path.join(second, 'config/endpoint.json')), { code: 'ENOENT' })
 })
 test('official instance binary changes are frozen during a run and followed by a fresh check without editing endpoint config', async t => {
   const f = await installedFixture(t), file = path.join(f.config.agenvoConfigDir, 'config.json')

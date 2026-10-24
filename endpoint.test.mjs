@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { catalog, configure, digest, doctor, launchPlan, main, stageBundle, transferLocations, validateConfig, validateTransferConfiguration, verifyBundle } from './endpoint.mjs'
 import { installedFixture } from './test-support/installed-fixture.mjs'
+import { deploymentReferences } from './deployment.mjs'
 
 const apiBaseVectors = JSON.parse(await fs.readFile(new URL('./test-support/api-base-v1.json', import.meta.url)))
 assert.equal(apiBaseVectors.contract, 'memoh.file-api-base.v1')
@@ -151,6 +152,76 @@ test('configure creates references exclusively and never overwrites official fil
   await assert.rejects(configure(input, output), e => e.code === 'EEXIST')
   await assert.rejects(configure(input, path.join(f.config.piConfigDir, 'auth.json')), /configuration_location_rejected/)
   assert.equal(await fs.readFile(path.join(f.config.piConfigDir, 'auth.json'), 'utf8'), 'DO-NOT-DISCLOSE-OR-PARSE-ME')
+})
+
+async function hostTemplate(t) {
+  const f = await fixture(t)
+  const template = JSON.parse(await fs.readFile(new URL('./endpoint.example.json', import.meta.url)))
+  for (const key of ['manifestSha256', 'nasOrigin', 'deviceId', 'runtimeId', 'instanceId']) template[key] = f.config[key]
+  const input = path.join(f.base, 'references.json'), root = path.join(f.base, 'host Unicode 空格')
+  await json(input, template); await fs.mkdir(path.join(root, 'config'), { recursive: true })
+  return { ...f, template, input, hostRoot: root, output: path.join(root, 'config/endpoint.json') }
+}
+
+test('configure published template generates the existing host layout and loads without a path mismatch', async t => {
+  const f = await hostTemplate(t), before = await fs.readFile(f.input)
+  // Exercise the actual CLI, including its deferred module import. No runtime
+  // request or components are supplied; the foreground check is observation-only.
+  const child = spawnSync(process.execPath, [fileURLToPath(new URL('./endpoint.mjs', import.meta.url)), 'configure', '--from', f.input, '--root', f.hostRoot], { encoding: 'utf8', timeout: 10000 })
+  assert.equal(child.status, 0, child.stderr)
+  assert.equal(JSON.parse(child.stdout).state, 'references_saved')
+  assert.deepEqual(JSON.parse(await fs.readFile(f.output)), deploymentReferences(f.hostRoot, f.template))
+  assert.deepEqual(await fs.readdir(f.hostRoot), ['config'], 'configuration must not create component data or install anything')
+  assert.deepEqual(await fs.readFile(f.input), before)
+  const { ForegroundHost } = await import('./host.mjs')
+  const host = new ForegroundHost({ root: f.hostRoot })
+  try {
+    await host.start()
+    assert.equal(host.snapshot().configuration, 'loaded')
+    assert.equal(host.snapshot().attention, null)
+    assert.equal(host.snapshot().ready, false)
+    assert.equal(host.runtime, null)
+  } finally { await host.stop() }
+})
+
+test('configure changing a fresh root derives new references but never relocates existing data', async t => {
+  const f = await hostTemplate(t)
+  await main(['configure', '--from', f.input, '--root', f.hostRoot])
+  const original = await fs.readFile(f.output), saved = JSON.parse(original)
+  const task = path.join(saved.sourceRoot, 'original-task.json')
+  await json(task, { unchanged: true })
+  const next = path.join(f.base, 'other root'), output = path.join(next, 'config/endpoint.json')
+  await fs.mkdir(path.dirname(output), { recursive: true })
+  await main(['configure', '--from', f.input, '--root', next])
+  assert.deepEqual(JSON.parse(await fs.readFile(output)), deploymentReferences(next, f.template))
+  assert.deepEqual(await fs.readFile(f.output), original)
+  assert.deepEqual(JSON.parse(await fs.readFile(task)), { unchanged: true })
+  assert.deepEqual(await fs.readdir(next), ['config'])
+  await assert.rejects(main(['configure', '--from', f.input, '--root', f.hostRoot]), { code: 'EEXIST' })
+  const stale = path.join(f.base, 'stale-root'), staleOutput = path.join(stale, 'config/endpoint.json')
+  await fs.mkdir(path.dirname(staleOutput), { recursive: true })
+  await assert.rejects(main(['configure', '--from', f.output, '--root', stale]), /host_configuration_root_mismatch/)
+  await assert.rejects(fs.stat(staleOutput), { code: 'ENOENT' })
+})
+
+test('configure host form rejects stale explicit paths, placeholders and ambiguous destinations before writing', async t => {
+  const f = await hostTemplate(t)
+  const expected = deploymentReferences(f.hostRoot, f.template)
+  for (const key of ['bundleRoot', 'sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir', 'transferConfigDir', 'transferStateDir']) {
+    await json(f.input, { ...f.template, [key]: path.join(f.base, 'old-root') })
+    await assert.rejects(main(['configure', '--from', f.input, '--root', f.hostRoot]), /host_configuration_root_mismatch/)
+    await assert.rejects(fs.stat(f.output), { code: 'ENOENT' })
+  }
+  await json(f.input, JSON.parse(await fs.readFile(new URL('./endpoint.example.json', import.meta.url))))
+  await assert.rejects(main(['configure', '--from', f.input, '--root', f.hostRoot]), /deployment_manifest_hash_required/)
+  const invalid = spawnSync(process.execPath, [fileURLToPath(new URL('./endpoint.mjs', import.meta.url)), 'configure', '--from', f.input, '--root', f.hostRoot], { encoding: 'utf8', timeout: 10000 })
+  assert.equal(invalid.status, 2)
+  assert.deepEqual(JSON.parse(invalid.stderr), { error: 'deployment_manifest_hash_required' })
+  await json(f.input, expected)
+  await assert.rejects(main(['configure', '--from', f.input, '--root', f.hostRoot, '--config', f.output]), /invalid_arguments/)
+  await assert.rejects(main(['configure', '--from', f.input]), /invalid_arguments/)
+  await main(['configure', '--from', f.input, '--root', f.hostRoot])
+  assert.deepEqual(JSON.parse(await fs.readFile(f.output)), expected)
 })
 
 test('changed approved executable/root/device mappings are blocked', async t => {

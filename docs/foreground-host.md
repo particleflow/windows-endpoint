@@ -75,9 +75,16 @@ mutable paths must agree with `deployment-layout.json`, resolved under this root
 | `data/endpoint/host-status.json` | Atomic, schema-checked host observation |
 | `logs/endpoint-host/<run-id>.jsonl` | Bounded state-change log for one run |
 
-`deploymentReferences(root, existingReferences)` produces these references in code;
-it does not generate credentials or approve a bundle. The older schema-1 delivery example
-with separate roots is not a host configuration. The offline package selection is
+Fill the non-path placeholders in `endpoint.example.json`, then use
+`node endpoint.mjs configure --from FILE --root DIR`. The existing root and its
+`config` directory must already exist. This writes `config/endpoint.json`
+exclusively, using `deploymentReferences` and `deployment-layout.json` for every
+schema-1 component path. The example is an input template, not a runtime config.
+Explicit paths in an existing input must match the selected root or configuration
+is refused; choosing another root does not relocate any existing state. The
+command does not generate credentials, create component directories or approve
+a bundle. The legacy `--config FILE` form still saves fully specified references.
+The offline package selection is
 not consumed by this host. Bundle verification is read-only and does not establish
 the missing component qualification.
 
@@ -90,6 +97,9 @@ component data/program separation checks also remain in force. Do not copy user
 configuration or historical sessions into the schema-1 layout to use this mode.
 Reference acceptance does not grant ownership of an external process or permission
 to resume a historical task.
+The same `configure --from FILE --root DIR` command accepts full schema-2
+references, saves their existing paths unchanged and checks that they do not
+overlap the host-owned config/data/log directories.
 
 Missing config is `host_configuration_missing`; invalid config and changed config
 are distinct attention states. A config edit requires stop/restart and never hot

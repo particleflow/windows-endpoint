@@ -226,11 +226,27 @@ export async function stageBundle(source, destination, expectedHash, { checkpoin
   return { state: 'staged_review_only', manifestSha256: expectedHash }
 }
 
-export async function configure(from, to) {
+export async function configure(from, to, root) {
+  const input = await readJSON(from)
+  let config, layout
+  if (root !== undefined) {
+    const { DeploymentError, deploymentLayout, deploymentReferences } = await import('./deployment.mjs')
+    await validateDirectory(root)
+    layout = deploymentLayout(root)
+    requireThat(to === undefined, 'invalid_arguments')
+    to = path.join(layout.config, 'endpoint.json')
+    if (input?.schema === 1) {
+      try { config = deploymentReferences(root, input) }
+      catch (error) { if (error instanceof DeploymentError) throw new EndpointError(error.code); throw error }
+      // A fresh template omits paths. Explicit existing paths must agree; this
+      // command never silently relocates a queue, workspace or selected bundle.
+      for (const field of pathFields) requireThat(!Object.hasOwn(input, field) || samePath(input[field], config[field]), 'host_configuration_root_mismatch')
+    } else config = validateConfig(input)
+  } else config = validateConfig(input)
   absolute(to)
-  const config = validateConfig(await readJSON(from))
   await canonical(path.dirname(to))
   const locations = config.schema === 2 ? [...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir'].map(k => config[k]), ...Object.values(config.programs), ...(config.transfer ? [config.transfer.pluginRoot] : [])] : pathFields.map(k => config[k])
+  if (layout && config.schema === 2) requireThat(locations.every(location => [layout.config, layout.data, layout.logs].every(owned => !overlaps(owned, location))), 'host_reference_overlap')
   requireThat(!locations.some(location => overlaps(location, to)), 'configuration_location_rejected')
   // Exclusive creation; upgrading never overwrites the references or credentials.
   const handle = await fs.open(to, 'wx')
@@ -425,14 +441,18 @@ export async function main(args) {
     requireThat(/^--[a-z-]+$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'invalid_arguments')
     options[rest[i]] = rest[i + 1]
   }
-  if (command === 'help' || !command) return { commands: ['configure --from FILE --config FILE', 'doctor --config FILE', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR', 'transfer-budget --root DIR [--bytes INTEGER]'], status: 'host observation and explicit verified component review available; release activation/update/rollback/uninstall blocked pending qualification' }
+  if (command === 'help' || !command) return { commands: ['configure --from FILE --root DIR', 'configure --from FILE --config FILE', 'doctor --config FILE', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR', 'transfer-budget --root DIR [--bytes INTEGER]'], status: 'host observation and explicit verified component review available; release activation/update/rollback/uninstall blocked pending qualification' }
   if (['start', 'activate', 'update', 'rollback', 'uninstall'].includes(command)) throw new EndpointError('qualification_required_no_runtime_or_data_changed')
   if (command === 'transfer-budget') {
     keys(options, ['--root'], ['--bytes'])
     const { queueBudgetCommand } = await import('./queue-budget.mjs')
     return queueBudgetCommand(options['--root'], options['--bytes'])
   }
-  if (command === 'configure') { keys(options, ['--from', '--config']); return configure(options['--from'], options['--config']) }
+  if (command === 'configure') {
+    keys(options, ['--from'], ['--config', '--root'])
+    requireThat(Object.hasOwn(options, '--config') !== Object.hasOwn(options, '--root'), 'invalid_arguments')
+    return configure(options['--from'], options['--config'], options['--root'])
+  }
   if (command === 'stage') { keys(options, ['--source', '--destination', '--manifest-sha256']); return stageBundle(options['--source'], options['--destination'], options['--manifest-sha256']) }
   requireThat(['doctor', 'plan'].includes(command), 'unknown_command')
   keys(options, ['--config'], command === 'doctor' ? ['--target'] : [])
