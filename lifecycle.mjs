@@ -159,7 +159,11 @@ export class NativeDriver {
     } catch (error) {
       let reason
       try { reason = JSON.parse(error.stdout).error } catch { /* Bounded diagnostics only. */ }
-      throw new LifecycleError(/^herdr_(owner_mismatch|generation_changed|ownership_unverified|request_(rejected|timeout|incomplete|oversized|failed))$/.test(reason) ? reason : 'herdr_ownership_unverified')
+      const failure = new LifecycleError(/^herdr_(owner_mismatch|generation_changed|ownership_unverified|request_(rejected|timeout|incomplete|oversized|failed))$/.test(reason) ? reason : 'herdr_ownership_unverified')
+      // Keep authority fail-closed, but retain bounded process evidence for a
+      // caller's diagnostics. Never attach command text, environment or output.
+      failure.helper = { outcome: error.killed ? 'deadline' : Number.isInteger(error.code) ? 'nonzero_exit' : 'process_error', exitCode: Number.isInteger(error.code) ? error.code : null, response: typeof reason === 'string' ? 'error_response' : error.stdout ? 'unrecognized_output' : 'absent' }
+      throw failure
     }
     demand(response.id === 'endpoint-owned' && response.result && !response.error, 'herdr_request_failed')
     return response.result
