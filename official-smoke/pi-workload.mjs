@@ -11,6 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { catalog, programPaths, verifyToolchain } from '../endpoint.mjs'
 import { NativeDriver } from '../lifecycle.mjs'
 import { startPiModelFixture, fixtureProvider, fixtureModel, fixtureFile, fixtureBytes, fixtureOutput } from './pi-model-fixture.mjs'
+import { piWorkloadWrapper, piWorkloadEvidence, diagnosticText } from './pi-workload-diagnostics.mjs'
 
 assert.equal(process.platform, 'win32')
 assert.equal(process.env.GITHUB_ACTIONS, 'true')
@@ -34,7 +35,20 @@ for (const key of ['SystemRoot', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'USERPROFIL
 // Herdr XDG roots and PI_CODING_AGENT_DIR still come from this fresh config;
 // explicit session paths and all no-extension/context flags remain unchanged.
 const driver = new NativeDriver(config, { inheritedEnvironment: inherited })
-let stage = 'toolchain', primaryFailure, cleanupFailure
+let stage = 'toolchain', primaryFailure, cleanupFailure, pane
+const diagnosticRoots = [root, bundleRoot, source]
+async function reportEvidence(phase) {
+  try {
+    const evidence = await piWorkloadEvidence(config.sourceRoot, diagnosticRoots)
+    process.stdout.write(JSON.stringify({ nativePiEvidence: phase, model: model.snapshot(), http: model.diagnostics(), files: evidence }) + '\n')
+    if (phase === 'before_cleanup' && pane) {
+      try {
+        const output = driver.command(driver.herdr, ['--session', config.session, 'pane', 'read', pane, '--source', 'recent-unwrapped', '--lines', '30'], 3000)
+        process.stdout.write(JSON.stringify({ nativePiPane: phase, excerpt: diagnosticText(output, diagnosticRoots) }) + '\n')
+      } catch (error) { process.stdout.write(JSON.stringify({ nativePiPane: phase, error: error.code || error.name }) + '\n') }
+    }
+  } catch (error) { reportFailure('diagnostics', error) }
+}
 const reportFailure = (phase, error) => process.stdout.write(JSON.stringify({ nativePiFailure: phase, code: error.code || error.name, helper: error.helper || null }) + '\n')
 const ownedRequest = driver.ownedHostRequest.bind(driver)
 driver.ownedHostRequest = async action => {
@@ -56,19 +70,21 @@ try {
   const pi = path.join(bundleRoot, catalog.components.pi.entry)
   // This test wrapper records real invocation count/output. It does not create
   // a producer attempt, receipt, queue item or claimed server task identity.
-  const wrapper = `const fs=require('node:fs'),{spawnSync}=require('node:child_process');\nfs.appendFileSync('invocations.txt','once\\n');\nconst out=fs.openSync('stdout.jsonl','wx'),err=fs.openSync('stderr.txt','wx');\nlet r;try{r=spawnSync(${JSON.stringify(programs.node)},${JSON.stringify([pi, '--mode', 'json', '--provider', fixtureProvider, '--model', fixtureModel, '--session-dir', sessions, '--session-id', session, '--tools', 'write', '--no-extensions', '--no-mcp', '--no-skills', '--no-prompt-templates', '--no-context-files'])},{input:'Write the fixed synthetic result file, then report completion.',stdio:['pipe',out,err],timeout:60000,windowsHide:true});}finally{fs.closeSync(out);fs.closeSync(err);}\nfs.writeFileSync('exit.json',JSON.stringify({status:r.status,error:r.error?.code??null}));\n`
+  const wrapper = piWorkloadWrapper(programs.node, [pi, '--mode', 'json', '--provider', fixtureProvider, '--model', fixtureModel, '--session-dir', sessions, '--session-id', session, '--tools', 'write', '--no-extensions', '--no-mcp', '--no-skills', '--no-prompt-templates', '--no-context-files'], config.sourceRoot, config.piConfigDir)
   await fs.writeFile(path.join(config.sourceRoot, 'run-pi.cjs'), wrapper)
   stage = 'herdr_start'; await driver.start('herdr')
   stage = 'herdr_ready'; await driver.waitReady('herdr')
   stage = 'workspace_create'
   const created = JSON.parse(driver.command(driver.herdr, ['--session', config.session, 'workspace', 'create', '--cwd', config.sourceRoot])).result
-  const pane = created.root_pane.pane_id
+  pane = created.root_pane.pane_id
   stage = 'pi_invoke'
   driver.command(driver.herdr, ['--session', config.session, 'pane', 'run', pane, 'node run-pi.cjs'])
-  stage = 'active_update_refusal'
+  stage = 'pi_wait_for_model'
   const waitingDeadline = Date.now() + 45000
   while (model.snapshot().requests !== 2 && Date.now() < waitingDeadline) await delay(100)
   assert.deepEqual(model.snapshot(), { requests: 2, offeredWrites: 1 }, 'Real Pi must reach its unfinished model response')
+  await reportEvidence('model_reached')
+  stage = 'active_update_refusal'
   await assert.rejects(fs.access(path.join(config.sourceRoot, 'exit.json')), { code: 'ENOENT' })
   assert.equal(await fs.readFile(path.join(config.sourceRoot, fixtureFile), 'utf8'), fixtureBytes)
   const generation = await driver.ownedGeneration()
@@ -121,11 +137,13 @@ try {
   process.stdout.write(JSON.stringify({ nativePiPreparation: 'passed', producer: catalog.components.transfer.revision, officialPi: catalog.components.pi.version, invocationCount: 1, modelRequests: 2, producerProjection: result.result.outcome, persistedSession: true, repeatedReadUnchanged: true, memohPgJointTask: 'not_run', connectorReconnect: 'not_run', realPcNas: false }) + '\n')
 } catch (error) {
   primaryFailure = error; reportFailure(stage, error)
+  await reportEvidence('before_cleanup')
 } finally {
   try { await driver.stop('herdr') }
   catch (error) { cleanupFailure = error; reportFailure('owned_cleanup', error) }
   try { await model.close() }
   catch (error) { cleanupFailure ||= error; reportFailure('model_cleanup', error) }
+  if (primaryFailure || cleanupFailure) await reportEvidence('after_cleanup')
   if (!cleanupFailure) process.stdout.write(JSON.stringify({ nativePiPreparationCleanup: 'owned_herdr_stopped_and_fixture_closed' }) + '\n')
 }
 // Cleanup must run, and its failure must not erase the original failed stage.

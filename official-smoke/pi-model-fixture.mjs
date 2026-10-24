@@ -10,11 +10,12 @@ export const fixtureOutput = 'joint-fixture-complete'
 const callId = 'endpoint_fixture_write'
 
 export async function startPiModelFixture({ holdCompletion = false } = {}) {
-  let requests = 0, offeredWrites = 0
+  let requests = 0, offeredWrites = 0, received = 0, rejected = 0
   let releaseCompletion
   const completion = new Promise(resolve => { releaseCompletion = resolve })
   if (!holdCompletion) releaseCompletion()
   const server = http.createServer(async (req, res) => {
+    received++
     try {
       if (req.method !== 'POST' || req.url !== '/v1/chat/completions') throw Error('route')
       const chunks = []; let size = 0
@@ -42,6 +43,7 @@ export async function startPiModelFixture({ holdCompletion = false } = {}) {
       }
       res.end('data: [DONE]\n\n')
     } catch {
+      rejected++
       if (!res.headersSent) res.writeHead(409, { 'Content-Type': 'application/json' })
       res.end('{"error":{"message":"fixed fixture sequence rejected"}}')
     }
@@ -55,6 +57,7 @@ export async function startPiModelFixture({ holdCompletion = false } = {}) {
     // no external access and is unrelated to Agenvo OAuth or target approval.
     models: { providers: { [fixtureProvider]: { baseUrl, api: 'openai-completions', apiKey: 'fixture-no-credential', models: [{ id: fixtureModel, reasoning: false, input: ['text'], contextWindow: 32768, maxTokens: 2048 }] } } },
     snapshot: () => ({ requests, offeredWrites }),
+    diagnostics: () => ({ received, rejected }),
     releaseCompletion,
     close: () => new Promise((resolve, reject) => { releaseCompletion(); server.close(e => e ? reject(e) : resolve()); server.closeAllConnections() }),
   }

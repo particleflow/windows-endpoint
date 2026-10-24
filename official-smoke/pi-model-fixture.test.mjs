@@ -1,6 +1,53 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { startPiModelFixture, fixtureModel, fixtureFile, fixtureBytes, fixtureOutput } from './pi-model-fixture.mjs'
+import * as fs from 'node:fs/promises'
+import path from 'node:path'
+import os from 'node:os'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { piWorkloadWrapper, piWorkloadEvidence, diagnosticText } from './pi-workload-diagnostics.mjs'
+
+test('Pi fixture diagnostics distinguish an unstarted wrapper from actual child failure without exposing credentials', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pi evidence 空格 ')); t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const before = await piWorkloadEvidence(root)
+  assert.ok(Object.values(before).every(file => file.state === 'absent'))
+  const piConfig = path.join(root, 'pi')
+  const script = "require('node:fs').readFileSync(0);console.error('Error: synthetic launch failure');console.error('Authorization: Bearer fixture-secret');process.exit(7)"
+  await fs.writeFile(path.join(root, 'run.cjs'), piWorkloadWrapper(process.execPath, ['-e', script], root, piConfig))
+  await promisify(execFile)(process.execPath, ['run.cjs'], { cwd: root, env: { ...process.env, PI_CODING_AGENT_DIR: piConfig }, timeout: 10000 })
+  const evidence = await piWorkloadEvidence(root, [root])
+  assert.equal(evidence['invocations.txt'].count, 1)
+  assert.deepEqual(evidence['launch.json'].launch, { phase: 'pi_exited', cwdMatchesExpected: true, nodeMatchesExpected: true, piConfigMatchesExpected: true })
+  assert.deepEqual(evidence['exit.json'].exit, { status: 7, error: null })
+  assert.match(evidence['stderr.txt'].excerpt, /synthetic launch failure/)
+  assert.doesNotMatch(JSON.stringify(evidence), /fixture-secret|Bearer/)
+})
+
+test('Pi fixture launch diagnostics identify an unexpected shell cwd without rewriting the workload cwd', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pi cwd ')); t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const other = path.join(root, 'other'); await fs.mkdir(other)
+  const wrapper = path.join(root, 'run.cjs')
+  await fs.writeFile(wrapper, piWorkloadWrapper(process.execPath, ['-e', 'process.exit(0)'], root, root))
+  await promisify(execFile)(process.execPath, [wrapper], { cwd: other, env: { ...process.env, PI_CODING_AGENT_DIR: root }, timeout: 10000 })
+  const evidence = await piWorkloadEvidence(root)
+  assert.equal(evidence['launch.json'].launch.cwdMatchesExpected, false)
+  assert.equal(evidence['invocations.txt'].state, 'absent')
+  assert.deepEqual((await piWorkloadEvidence(other))['exit.json'].exit, { status: 0, error: null })
+})
+
+test('Pi fixture stderr reads and display are bounded and strip paths, URLs and credential-bearing lines', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pi bounded ')); t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const content = `Error at ${root}\nhttps://user:private@example.invalid/path?secret=value\napiKey=private-key\n${'x'.repeat(6000)}`
+  await fs.writeFile(path.join(root, 'stderr.txt'), content)
+  const evidence = (await piWorkloadEvidence(root, [root]))['stderr.txt']
+  assert.equal(evidence.truncated, true)
+  assert.equal(evidence.bytes, Buffer.byteLength(content))
+  assert.ok(evidence.excerpt.length <= 2048)
+  assert.doesNotMatch(evidence.excerpt, /private|example.invalid/)
+  assert.ok(!evidence.excerpt.includes(root))
+  assert.equal(diagnosticText('z '.repeat(3000)).length, 2048)
+})
 
 test('loopback model offers one real write request then a final response; reexecution is rejected', async t => {
   const fixture = await startPiModelFixture(); t.after(() => fixture.close())
@@ -24,6 +71,7 @@ test('unrelated model and non-streaming requests cannot advance the fixed worklo
     assert.equal(response.status, 409); await response.text()
   }
   assert.deepEqual(fixture.snapshot(), { requests: 0, offeredWrites: 0 })
+  assert.deepEqual(fixture.diagnostics(), { received: 2, rejected: 2 })
 })
 
 test('completion gate keeps the real-model response pending until an explicit release', async t => {
