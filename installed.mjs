@@ -6,6 +6,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { EndpointError, catalog, validateConfig, validateDirectory, programPaths, managedEnvironment, digest, transferLocations, validateTransferConfiguration } from './endpoint.mjs'
 import { readSessionHistory, observeExistingSession } from './session-diagnostics.mjs'
+import { verifySessionContinuation } from './session-continuation.mjs'
 
 const demand = (ok, code) => { if (!ok) throw new EndpointError(code) }
 const same = (a, b) => typeof a === 'string' && typeof b === 'string' && (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b)
@@ -96,7 +97,7 @@ async function capture(config, binding) {
   return { hashes, assertUnchanged }
 }
 
-export async function validateInstalledConfiguration(config, { inspectHistoryOnly = false } = {}) {
+export async function validateInstalledConfiguration(config, { inspectHistoryOnly = false, sessionContinuation = null } = {}) {
   validateConfig(config)
   demand(config.schema === 2, 'existing_installation_config_required')
   for (const key of ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir']) await validateDirectory(config[key])
@@ -121,7 +122,12 @@ export async function validateInstalledConfiguration(config, { inspectHistoryOnl
   // Existing historical panes may contain live/unknown work. Do not import or
   // resume them merely because this config names their official state root.
   const history = await readSessionHistory(config)
-  if (!inspectHistoryOnly) demand(['no_saved_history', 'no_saved_workspaces'].includes(history.startup), 'existing_herdr_session_requires_handoff')
+  if (!inspectHistoryOnly) {
+    if (sessionContinuation) {
+      try { await verifySessionContinuation(config, sessionContinuation) }
+      catch (error) { throw new EndpointError(error.code || 'session_continuation_unavailable') }
+    } else demand(['no_saved_history', 'no_saved_workspaces'].includes(history.startup), 'existing_herdr_session_requires_handoff')
+  }
   return { config: resolved, binding: { file, stamp: fingerprint(before) }, herdrSource: config.programs.herdr === undefined ? 'agenvo_instance' : 'legacy_explicit_match', history }
 }
 
@@ -134,8 +140,8 @@ export function compareProducerTarget(config, target) {
   return { state: 'configuration_matches', invocation: 'not_executed' }
 }
 
-export async function inspectInstalled(config, run = probe, { inspectHistoryOnly = false } = {}) {
-  const resolved = await validateInstalledConfiguration(config, { inspectHistoryOnly })
+export async function inspectInstalled(config, run = probe, { inspectHistoryOnly = false, sessionContinuation = null } = {}) {
+  const resolved = await validateInstalledConfiguration(config, { inspectHistoryOnly, sessionContinuation })
   config = resolved.config
   const p = programPaths(config)
   const pi = await json(path.join(config.programs.piPackage, 'package.json'))

@@ -68,9 +68,9 @@ export async function createExplicitRuntime({ config, stateDirectory, request })
   validateRuntimeRequest(request, config)
   // Resolve only local configuration here, without probing or starting a child.
   // Freeze the effective path for this runtime; official changes need a new run.
-  if (config.schema === 2) config = (await validateInstalledConfiguration(config)).config
+  if (config.schema === 2) config = (await validateInstalledConfiguration(config, { inspectHistoryOnly: true })).config
   let verified, installation, installedTransfer, driver
-  const qualify = async () => {
+  const qualify = async state => {
     try {
       requireRuntime(process.platform === 'win32' && process.arch === 'x64', 'runtime_windows_x64_required')
       if (config.schema === 2) {
@@ -78,7 +78,7 @@ export async function createExplicitRuntime({ config, stateDirectory, request })
         // A new explicit run re-detects versions without a new approval manifest.
         installation?.assertUnchanged()
         await installedTransfer?.assertUnchanged()
-        installation = await inspectInstalled(config)
+        installation = await inspectInstalled(config, undefined, { sessionContinuation: state?.phase === 'stopped' ? state.sessionContinuation : null })
         if (request.transfer === 'existing-queue') installedTransfer = await inspectInstalledTransfer(config)
         driver.herdrVersion = installation.versions.herdr
         return true

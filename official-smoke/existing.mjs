@@ -46,10 +46,10 @@ const originals = await Promise.all(officialFiles.map(f => fs.readFile(f)))
 // Keep the fixture's initial physical path locally to prepare its inputs.
 delete config.programs.herdr
 const results = [], checked = check => { results.push(check); process.stdout.write(`${JSON.stringify({ existingInstallationCheck: check, state: 'passed' })}\n`) }
-async function hostRoot(name) {
+async function hostRoot(name, selected = config) {
   const root = path.join(base, name)
   await fs.mkdir(path.join(root, 'config'), { recursive: true })
-  await fs.writeFile(path.join(root, 'config/endpoint.json'), JSON.stringify(config))
+  await fs.writeFile(path.join(root, 'config/endpoint.json'), JSON.stringify(selected))
   await fs.writeFile(path.join(root, 'config/runtime.json'), JSON.stringify({ schema: 2, mode: 'existing-installations', transfer: 'disabled' }))
   return root
 }
@@ -195,6 +195,65 @@ try {
   checked('synthetic_historical_state_refused_without_import_or_replay')
   for (let i = 0; i < officialFiles.length; i++) assert.deepEqual(await fs.readFile(officialFiles[i]), originals[i])
   checked('original_configuration_and_credential_bytes_preserved')
+
+  // A separate owned session proves program-path maintenance with a real saved
+  // workspace. Synthetic Pi/producer files are preservation sentinels only;
+  // they do not establish live task recovery or permission to resume an Agent.
+  const carryData = path.join(base, 'continuation-data'), carry = { ...config, deviceId: randomUUID(), session: 'continuation-fixture' }
+  for (const key of ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir']) {
+    carry[key] = path.join(carryData, key); await fs.mkdir(carry[key], { recursive: true })
+  }
+  const carryMappingFile = path.join(carry.agenvoConfigDir, 'config.json')
+  const carryMapping = { schema: 1, relay: `https://127.0.0.1:${relay.address().port}`, deviceId: carry.deviceId, name: 'synthetic-continuation', instances: [{ id: carry.instanceId, label: 'fixture', kind: 'herdr', binary: p.herdr, cwd: carry.sourceRoot, configRoot: carry.herdrConfigRoot }] }
+  await fs.writeFile(carryMappingFile, JSON.stringify(carryMapping))
+  await fs.writeFile(path.join(carry.herdrConfigRoot, 'config.toml'), originals[0])
+  await fs.writeFile(path.join(carry.agenvoConfigDir, 'credentials.json'), originals[2])
+  await fs.writeFile(path.join(carry.piConfigDir, 'auth.json'), '{}')
+  const carryRoot = await hostRoot('host-continuation', carry), owner = launch(carryRoot)
+  await owner.until(s => s.connection === 'online_snapshot' && s.components === 'verified_local')
+  const control = new NativeDriver((await inspectInstalled(carry)).config)
+  await fs.writeFile(path.join(carry.sourceRoot, 'once.cjs'), "require('node:fs').appendFileSync('executions.txt','once\\n')\n")
+  const workspace = JSON.parse(control.command(control.herdr, ['--session', carry.session, 'workspace', 'create', '--cwd', carry.sourceRoot])).result
+  control.command(control.herdr, ['--session', carry.session, 'pane', 'run', workspace.root_pane.pane_id, 'node once.cjs'])
+  const carrySnapshot = path.join(carry.herdrConfigRoot, 'sessions', carry.session, 'session.json')
+  const waitSaved = Date.now() + 20000
+  let saved = false
+  while (Date.now() < waitSaved) {
+    try {
+      const value = JSON.parse(await fs.readFile(carrySnapshot, 'utf8'))
+      if (value.workspaces.some(w => w.id === workspace.workspace.workspace_id) && await fs.readFile(path.join(carry.sourceRoot, 'executions.txt'), 'utf8') === 'once\n') { saved = true; break }
+    } catch (error) { if (error.code !== 'ENOENT') throw error }
+    await delay(100)
+  }
+  assert.equal(saved, true, 'Owned ordinary workspace must persist before stop')
+  const sentinels = ['.memoh-computer/sessions/synthetic/session.jsonl', '.memoh-computer/attempts/synthetic/receipt.json']
+  for (const file of sentinels) { await fs.mkdir(path.dirname(path.join(carry.sourceRoot, file)), { recursive: true }); await fs.writeFile(path.join(carry.sourceRoot, file), `SYNTHETIC ORIGINAL REFERENCE ${file}\n`) }
+  assert.equal(await owner.stop(), 0)
+  const stopJournal = JSON.parse(await fs.readFile(path.join(carryRoot, 'data/endpoint/lifecycle.json'), 'utf8'))
+  assert.equal(stopJournal.phase, 'stopped')
+  assert.equal(stopJournal.sessionContinuation?.ordinary, true, 'Confirmed owned stop must checkpoint the ordinary layout')
+  carryMapping.instances[0].binary = nextBinary
+  await fs.writeFile(carryMappingFile, JSON.stringify(carryMapping))
+  const continued = launch(carryRoot)
+  await continued.until(s => s.connection === 'online_snapshot' && s.components === 'verified_local')
+  const restored = JSON.parse(control.command(nextBinary, ['--session', carry.session, 'api', 'snapshot'])).result.snapshot
+  assert.ok(restored.workspaces.some(w => w.workspace_id === workspace.workspace.workspace_id))
+  assert.ok(restored.panes.some(pane => pane.pane_id === workspace.root_pane.pane_id && !pane.restore_error))
+  assert.equal(await fs.readFile(path.join(carry.sourceRoot, 'executions.txt'), 'utf8'), 'once\n')
+  for (const file of sentinels) assert.equal(await fs.readFile(path.join(carry.sourceRoot, file), 'utf8'), `SYNTHETIC ORIGINAL REFERENCE ${file}\n`)
+  assert.equal(await continued.stop(), 0)
+  checked('owned_ordinary_workspace_survives_program_path_change_without_command_replay_or_task_file_rewrite')
+
+  const originalWork = carry.sourceRoot
+  carry.sourceRoot = path.join(carryData, 'different-empty-work'); await fs.mkdir(carry.sourceRoot)
+  carryMapping.instances[0].cwd = carry.sourceRoot
+  await fs.writeFile(carryMappingFile, JSON.stringify(carryMapping))
+  await fs.writeFile(path.join(carryRoot, 'config/endpoint.json'), JSON.stringify(carry))
+  const displaced = launch(carryRoot)
+  await displaced.until(s => s.attention === 'session_data_identity_changed')
+  assert.equal(await displaced.stop(), 2)
+  for (const file of sentinels) assert.equal(await fs.readFile(path.join(originalWork, file), 'utf8'), `SYNTHETIC ORIGINAL REFERENCE ${file}\n`)
+  checked('changed_data_root_is_rejected_without_stranding_original_task_references')
   process.stdout.write(`${JSON.stringify({ existingInstallationChecks: results.length, realPcInstallation: false, realAgentTask: false, automaticUpdate: false, nativeScopeApproval: false, trustedTransferTLS: false })}\n`)
 } finally {
   const cleanup = await Promise.allSettled([...hosts].map(h => h.stop()))

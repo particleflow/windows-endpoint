@@ -39,6 +39,37 @@ test('starts Herdr API before connector and normal stop reverses order', async t
   assert.deepEqual(calls.slice(-2), ['stop:connector', 'stop:herdr'])
 })
 
+test('stop checkpoint is recorded after cleanup and consumed before a fresh component start', async t => {
+  const f = await fixture(t), checkpoint = { schema: 1, binding: 'a'.repeat(64), configuration: 'b'.repeat(64), snapshot: 'c'.repeat(64), ordinary: true }
+  f.driver.captureContinuation = async () => { assert.equal(f.alive.size, 0); return checkpoint }
+  await f.lifecycle.start(); await f.lifecycle.stop()
+  assert.deepEqual((await f.store.load()).sessionContinuation, checkpoint)
+  const next = f.create(), originalStart = f.driver.start
+  f.driver.validate = async state => assert.deepEqual(state.sessionContinuation, checkpoint)
+  f.driver.start = async component => { assert.equal((await f.store.load()).sessionContinuation, undefined); await originalStart(component) }
+  await next.start(); await next.stop()
+})
+
+test('failed cleanup cannot publish a continuation checkpoint or release ownership', async t => {
+  const f = await fixture(t), stop = f.driver.stop
+  f.driver.captureContinuation = async () => { assert.fail('failed cleanup must not checkpoint') }
+  await f.lifecycle.start()
+  f.driver.stop = async component => { if (component === 'herdr') throw new LifecycleError('herdr_stop_unknown'); await stop(component) }
+  await assert.rejects(f.lifecycle.stop(), { code: 'herdr_stop_unknown' })
+  assert.equal((await f.store.load()).sessionContinuation, undefined); assert.ok(f.lifecycle.release)
+  delete f.driver.captureContinuation; f.driver.stop = stop; await f.lifecycle.stop()
+})
+
+test('checkpoint read failure preserves stopped evidence and attention without claiming resumability', async t => {
+  const f = await fixture(t)
+  f.driver.captureContinuation = async () => { throw Object.assign(new Error('unreadable'), { code: 'EACCES' }) }
+  await f.lifecycle.start()
+  await assert.rejects(f.lifecycle.stop(), { code: 'session_continuation_unavailable' })
+  assert.equal(f.alive.size, 0); assert.equal(f.lifecycle.release, null)
+  const saved = await f.store.load()
+  assert.equal(saved.phase, 'stopped'); assert.equal(saved.attention, 'session_continuation_unavailable'); assert.equal(saved.sessionContinuation, undefined)
+})
+
 test('single instance protects shared identity even with another config location', async t => {
   const { lifecycle, create } = await fixture(t)
   await lifecycle.start()

@@ -7,6 +7,7 @@ import { spawn, spawnSync, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { catalog, managedEnvironment, programPaths, transferLocations } from './endpoint.mjs'
+import { validSessionContinuation, captureSessionContinuation } from './session-continuation.mjs'
 
 // Internal foreground lifecycle. No business dispatch, transfer implementation,
 // network service, OS startup registration, credential editing or second watchdog.
@@ -64,6 +65,7 @@ export class StateStore {
     if (!data) return { schema: 1, identity: this.identity, phase: 'stopped', restarts: [], attention: null }
     demand(data.schema === 1 && data.identity === this.identity && Array.isArray(data.restarts) && data.restarts.length <= 100 && data.restarts.every(t => Number.isSafeInteger(t) && t >= 0), 'lifecycle_state_mismatch')
     demand(['stopped', 'starting', 'running', 'stopping', 'needs_attention'].includes(data.phase) && (data.attention === null || /^[a-z_]{1,80}$/.test(data.attention)), 'lifecycle_state_mismatch')
+    demand(data.sessionContinuation === undefined || validSessionContinuation(data.sessionContinuation), 'lifecycle_state_mismatch')
     return data
   }
   async save(data) {
@@ -93,9 +95,9 @@ export class NativeDriver {
     this.fingerprint = null
     this.marker = config.session === 'default' ? path.join(config.herdrConfigRoot, 'herdr.sock') : path.join(config.herdrConfigRoot, 'sessions', config.session, 'herdr.sock')
   }
-  async validate() {
+  async validate(state) {
     demand(process.platform === 'win32' && process.arch === 'x64' && typeof this.qualify === 'function', 'qualified_windows_driver_required')
-    demand(await this.qualify() === true, 'component_qualification_failed')
+    demand(await this.qualify(state) === true, 'component_qualification_failed')
     let credentials
     try { credentials = await fs.lstat(path.join(this.config.agenvoConfigDir, 'credentials.json')) }
     catch (e) { throw new LifecycleError(e.code === 'ENOENT' ? 'connector_authentication_required' : 'connector_credentials_unreadable') }
@@ -266,8 +268,19 @@ export class NativeDriver {
       try {
         await Promise.race([c.done, sleep(10000, undefined, { signal: timer.signal }).then(() => { throw new LifecycleError(`${component}_stop_unknown`) })])
       } finally { timer.abort() }
+      if (component === 'herdr' && this.config.schema === 2) {
+        // Capture once at the confirmed owned exit, not on a later stop retry
+        // when another process might have changed the official snapshot.
+        try { c.sessionContinuation = await captureSessionContinuation(this.config) }
+        catch { c.continuationUnavailable = true }
+      }
     }
     if (component === 'connector') await this.recoverConnectorLock()
+  }
+  async captureContinuation() {
+    const owned = this.children.get('herdr')
+    demand(!owned?.continuationUnavailable, 'session_continuation_unavailable')
+    return owned?.sessionContinuation || null
   }
 }
 
@@ -322,9 +335,10 @@ export class EndpointLifecycle {
       if (this.state.attention && !acknowledgeAttention) throw new LifecycleError(this.state.attention)
       this.state.attention = null
       demand(!this.stopping, 'startup_cancelled')
-      await this.driver.validate()
+      await this.driver.validate(this.state)
       demand(!this.driver.hostStatus().running, 'existing_herdr_requires_handoff')
       demand(!this.stopping, 'startup_cancelled')
+      delete this.state.sessionContinuation // consume before any component start
       this.state.phase = 'starting'; await this.save()
       await this.driver.start('herdr'); await this.driver.waitReady('herdr')
       demand(!this.stopping, 'startup_cancelled')
@@ -448,6 +462,12 @@ export class EndpointLifecycle {
     } else {
       this.observedConnection = 'stopped'
       if (this.state) {
+        if (!firstError && this.driver.captureContinuation) {
+          try {
+            const checkpoint = await this.driver.captureContinuation()
+            if (checkpoint) this.state.sessionContinuation = checkpoint
+          } catch { firstError = new LifecycleError('session_continuation_unavailable') }
+        }
         this.state.phase = 'stopped'
         if (firstError) this.state.attention = code(firstError)
         try { await this.save() } catch (error) { firstError ??= error; this.state.attention = code(firstError) }

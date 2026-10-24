@@ -85,15 +85,28 @@ producer uses a distinct `--session-dir` and exact `--session-id` for batch task
 Keep those separate from a user's interactive TUI.
 
 Reference mode requires a named, non-default Herdr session. Host startup refuses
-a running server, even if its binary is selected. A persisted session with
-workspaces or an unverified schema is refused before startup; this batch does not
+a running server, even if its binary is selected. An unowned persisted session
+with workspaces or an unverified schema is refused before startup; this batch does not
 adopt or resume historical Agent tasks. This is a startup ownership/restore gate,
 not a corruption diagnosis. `doctor` separately reports saved-history structure
 and may query an existing server without obtaining stop authority; see
 [historical-session observation](session-observation.md). Other
 sessions/configuration are not migrated or deleted.
 Empty-session restart and observed owned-process recovery use the existing
-PID/generation/pipe checks and device/config leases.
+PID/generation/pipe checks and device/config leases. A confirmed normal stop of
+this host's Herdr also records a small checkpoint in the existing lifecycle
+journal. The next explicit run can restore the exact saved ordinary workspace
+layout if the data roots, device/runtime/instance/session identities, Herdr
+configuration bytes and snapshot bytes still match. Program locations may change
+through the existing official configuration. Changing a data root is refused
+even if the replacement directory is empty; no task files are moved or discarded.
+The checkpoint is consumed before starting components. Crash/uncertain exits,
+external history, Agent references/resume commands, custom launch commands and
+unrecognized pane fields never gain this continuation permission. The default
+official Agent restore setting is not changed. Pi batch session/attempt files
+stay in their original source root; this does not validate their current business
+outcome or provide native Agent task handoff. `doctor` remains a read-only history
+observation and does not grant continuation authority from a lifecycle journal.
 
 ## Official updates and rechecking
 
@@ -116,7 +129,7 @@ against a hostile writer racing metadata checks.
 
 After an explicit clean stop, the next explicit run rechecks the installation
 and may clear only that installation-change attention. Other errors, an uncertain
-previous stop and nonempty historical sessions retain their gates. The endpoint
+previous stop and history without a matching ordinary-layout checkpoint retain their gates. The endpoint
 never runs an official updater, rolls state back or kills tasks to upgrade.
 Coordinating upgrades while business tasks run is still unimplemented: no new
 producer drain API is invented by this batch.
