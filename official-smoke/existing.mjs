@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { inspectInstalled, compareProducerTarget } from '../installed.mjs'
-import { programPaths } from '../endpoint.mjs'
+import { programPaths, validateConfig } from '../endpoint.mjs'
 import { NativeDriver } from '../lifecycle.mjs'
 
 assert.equal(process.platform, 'win32')
@@ -47,6 +47,7 @@ const originals = await Promise.all(officialFiles.map(f => fs.readFile(f)))
 delete config.programs.herdr
 const results = [], checked = check => { results.push(check); process.stdout.write(`${JSON.stringify({ existingInstallationCheck: check, state: 'passed' })}\n`) }
 async function hostRoot(name, selected = config) {
+  validateConfig(selected)
   const root = path.join(base, name)
   await fs.mkdir(path.join(root, 'config'), { recursive: true })
   await fs.writeFile(path.join(root, 'config/endpoint.json'), JSON.stringify(selected))
@@ -200,8 +201,8 @@ try {
   // workspace. Synthetic Pi/producer files are preservation sentinels only;
   // they do not establish live task recovery or permission to resume an Agent.
   const carryData = path.join(base, 'continuation-data'), carry = { ...config, deviceId: randomUUID(), session: 'continuation-fixture' }
-  for (const key of ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir']) {
-    carry[key] = path.join(carryData, key); await fs.mkdir(carry[key], { recursive: true })
+  for (const [key, relative] of Object.entries({ sourceRoot: 'work', herdrConfigRoot: 'config/herdr', herdrStateRoot: 'state/herdr', agenvoConfigDir: 'config/agenvo', piConfigDir: 'pi' })) {
+    carry[key] = path.join(carryData, relative); await fs.mkdir(carry[key], { recursive: true })
   }
   const carryMappingFile = path.join(carry.agenvoConfigDir, 'config.json')
   const carryMapping = { schema: 1, relay: `https://127.0.0.1:${relay.address().port}`, deviceId: carry.deviceId, name: 'synthetic-continuation', instances: [{ id: carry.instanceId, label: 'fixture', kind: 'herdr', binary: p.herdr, cwd: carry.sourceRoot, configRoot: carry.herdrConfigRoot }] }
