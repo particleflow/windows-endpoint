@@ -10,7 +10,12 @@ param(
 $ErrorActionPreference = 'Stop'
 [Console]::Error.WriteLine('owned_helper_stage=bootstrap')
 try {
-    Add-Type -TypeDefinition @'
+    # The helper needs only the Utility module shipped with this exact Windows
+    # PowerShell. Do not make readiness/stop depend on recursive discovery of
+    # optional user/runner modules when the caller omits PSModulePath.
+    Import-Module -Name "$PSHOME\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1" -ErrorAction Stop
+    [Console]::Error.WriteLine('owned_helper_stage=module_loaded')
+    Microsoft.PowerShell.Utility\Add-Type -TypeDefinition @'
 using System;
 using System.IO;
 using System.IO.Pipes;
