@@ -47,6 +47,19 @@ state. It must not seed a completion record and label that an actual execution,
 replace the transport with a mock and label it native, or submit another task to
 recover an unknown outcome. No such joined test ran in this checkpoint.
 
+`official-smoke/pi-workload.mjs` prepares the native workload for that join using
+the already assembled CI Herdr/Pi, a disposable loopback model, and the unchanged
+`internal/agenvo/pi_result.cjs` at producer `40f0a69`. The model uses Pi 1.2.0's
+[existing compatible-endpoint configuration](https://github.com/earendil-works/pi/blob/v1.2.0/packages/coding-agent/docs/models.md#configure-a-compatible-endpoint).
+It offers one fixed `write` call and one final reply, with no external inference
+or real credential. Real Pi must create the file, persist its session and emit
+JSONL that the producer accepts; repeated native/producer reads must leave the
+single invocation and saved result unchanged. The existing CI process-tree
+supervisor bounds execution and cleanup. This fixture creates no Memoh operation
+or producer receipt, makes no Agenvo connection/grant, and does not test PG,
+connector reconnection, historical-session recovery or a phone/PC/NAS workflow.
+It is a prerequisite for the joined test, not a replacement for it.
+
 ## Build preflight blocked before compilation
 
 A bounded cloud build attempted `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build

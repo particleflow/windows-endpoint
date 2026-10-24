@@ -1,11 +1,12 @@
 # Opt-in, disposable GitHub-hosted CI ONLY. Changes only CurrentUser Root.
 # The test CA is never exported as an artifact or installed on a PC/NAS.
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$BundleRoot, [Parameter(Mandatory=$true)][string]$Root, [switch]$UntrustedOnly, [switch]$ExistingInstallations, [switch]$ReferencedTransfer)
+param([Parameter(Mandatory=$true)][string]$BundleRoot, [Parameter(Mandatory=$true)][string]$Root, [switch]$UntrustedOnly, [switch]$ExistingInstallations, [switch]$ReferencedTransfer, [switch]$PiWorkload, [string]$ProducerSource)
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows') { throw 'Disposable Windows GitHub runner required' }
 if ($ExistingInstallations -and -not $UntrustedOnly) { throw 'Installation references do not use OS trust mutation' }
 if ($ReferencedTransfer -and (-not $UntrustedOnly -or $ExistingInstallations)) { throw 'Referenced transfer requires its isolated untrusted scenario' }
+if ($PiWorkload -and (-not $UntrustedOnly -or $ExistingInstallations -or $ReferencedTransfer -or -not $ProducerSource)) { throw 'Pi workload requires only its isolated no-trust scenario and fixed producer source' }
 $temp = (Resolve-Path -LiteralPath $env:RUNNER_TEMP).Path.TrimEnd('\') + '\'
 $Root = [IO.Path]::GetFullPath($Root)
 if (-not $Root.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase) -or (Test-Path -LiteralPath $Root)) { throw 'Fresh runner temp root required' }
@@ -89,9 +90,10 @@ if ($UntrustedOnly) {
         if (-not $peer.WaitForExit(10000)) { throw 'Synthetic peer cleanup unconfirmed' }
         $peer.Dispose()
     }
-    $scenario = if ($ExistingInstallations) { 'existing.mjs' } else { 'host.mjs' }
+    $scenario = if ($PiWorkload) { 'pi-workload.mjs' } elseif ($ExistingInstallations) { 'existing.mjs' } else { 'host.mjs' }
     $scenarioArguments = @((Join-Path $PSScriptRoot $scenario),$BundleRoot,(Join-Path $Root 'data'))
     if ($ReferencedTransfer) { $scenarioArguments += '--existing-installations' }
+    if ($PiWorkload) { $scenarioArguments += (Resolve-Path -LiteralPath $ProducerSource).Path }
     Invoke-BoundedFixture -Stage 'untrusted_host' -Program $node -Arguments $scenarioArguments -Seconds 300
     return
 }
