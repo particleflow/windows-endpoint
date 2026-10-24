@@ -162,7 +162,8 @@ export class NativeDriver {
       const failure = new LifecycleError(/^herdr_(owner_mismatch|generation_changed|ownership_unverified|request_(rejected|timeout|incomplete|oversized|failed))$/.test(reason) ? reason : 'herdr_ownership_unverified')
       // Keep authority fail-closed, but retain bounded process evidence for a
       // caller's diagnostics. Never attach command text, environment or output.
-      failure.helper = { outcome: error.killed ? 'deadline' : Number.isInteger(error.code) ? 'nonzero_exit' : 'process_error', exitCode: Number.isInteger(error.code) ? error.code : null, response: typeof reason === 'string' ? 'error_response' : error.stdout ? 'unrecognized_output' : 'absent' }
+      const stage = String(error.stderr || '').match(/(?:^|\n)owned_helper_stage=(bootstrap|compiled|pipe_connected|peer_verified)(?=\r?\n|$)/g)?.at(-1)?.trim().split('=')[1] || 'not_observed'
+      failure.helper = { outcome: error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 'output_limit' : error.killed ? 'deadline' : Number.isInteger(error.code) ? 'nonzero_exit' : 'process_error', exitCode: Number.isInteger(error.code) ? error.code : null, response: typeof reason === 'string' ? 'error_response' : error.stdout ? 'unrecognized_output' : 'absent', stage }
       throw failure
     }
     demand(response.id === 'endpoint-owned' && response.result && !response.error, 'herdr_request_failed')

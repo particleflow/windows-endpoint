@@ -22,7 +22,16 @@ const programs = programPaths(config), sessions = path.join(root, 'sessions'), s
 await fs.mkdir(sessions)
 await fs.writeFile(path.join(config.herdrConfigRoot, 'config.toml'), '[update]\nversion_check = false\nmanifest_check = false\n')
 const model = await startPiModelFixture()
-const inherited = { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR, COMSPEC: process.env.COMSPEC, TEMP: root, TMP: root, USERPROFILE: root, APPDATA: root, LOCALAPPDATA: root, PI_OFFLINE: '1' }
+// Keep Windows' actual OS paths, as the product host does. Replacing the user
+// profile/AppData/Temp with an uninitialized fixture directory also changes the
+// PowerShell/.NET ownership helper's environment, not just Pi's data location.
+// Only these OS paths are inherited: no provider credentials or runner tokens.
+const inherited = { PI_OFFLINE: '1' }
+for (const key of ['SystemRoot', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432']) {
+  if (process.env[key]) inherited[key] = process.env[key]
+}
+// Herdr XDG roots and PI_CODING_AGENT_DIR still come from this fresh config;
+// explicit session paths and all no-extension/context flags remain unchanged.
 const driver = new NativeDriver(config, { inheritedEnvironment: inherited })
 let stage = 'toolchain', primaryFailure, cleanupFailure
 const reportFailure = (phase, error) => process.stdout.write(JSON.stringify({ nativePiFailure: phase, code: error.code || error.name, helper: error.helper || null }) + '\n')
