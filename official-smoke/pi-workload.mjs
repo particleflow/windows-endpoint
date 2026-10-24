@@ -11,7 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { catalog, programPaths, verifyToolchain } from '../endpoint.mjs'
 import { NativeDriver } from '../lifecycle.mjs'
 import { startPiModelFixture, fixtureProvider, fixtureModel, fixtureFile, fixtureBytes, fixtureOutput } from './pi-model-fixture.mjs'
-import { piWorkloadWrapper, piWorkloadEvidence, diagnosticText } from './pi-workload-diagnostics.mjs'
+import { piWorkloadWrapper, piWorkloadEvidence, diagnosticText, isFreshPiShellPrompt } from './pi-workload-diagnostics.mjs'
 
 assert.equal(process.platform, 'win32')
 assert.equal(process.env.GITHUB_ACTIONS, 'true')
@@ -77,10 +77,23 @@ try {
   stage = 'workspace_create'
   const created = JSON.parse(driver.command(driver.herdr, ['--session', config.session, 'workspace', 'create', '--cwd', config.sourceRoot])).result
   pane = created.root_pane.pane_id
+  // Herdr pane.run acknowledges queued terminal input, not shell readiness.
+  // The failed fixture showed the command on the prompt but no wrapper launch.
+  // Observe a fresh prompt BEFORE the single submission, without retrying input
+  // or extending the existing overall model-start budget.
+  const waitingDeadline = Date.now() + 45000
+  stage = 'pi_shell_ready'
+  let shellReady = false
+  while (Date.now() < waitingDeadline) {
+    const output = driver.command(driver.herdr, ['--session', config.session, 'pane', 'read', pane, '--source', 'recent-unwrapped', '--lines', '5'], Math.min(3000, Math.max(1, waitingDeadline - Date.now())))
+    if (isFreshPiShellPrompt(output, config.sourceRoot)) { shellReady = true; break }
+    await delay(100)
+  }
+  assert.ok(shellReady, 'Fresh fixture shell must be ready before submitting the Pi command once')
+  process.stdout.write(JSON.stringify({ nativePiShellReady: true, remainingStartBudgetMs: Math.max(0, waitingDeadline - Date.now()) }) + '\n')
   stage = 'pi_invoke'
   driver.command(driver.herdr, ['--session', config.session, 'pane', 'run', pane, 'node run-pi.cjs'])
   stage = 'pi_wait_for_model'
-  const waitingDeadline = Date.now() + 45000
   while (model.snapshot().requests !== 2 && Date.now() < waitingDeadline) await delay(100)
   assert.deepEqual(model.snapshot(), { requests: 2, offeredWrites: 1 }, 'Real Pi must reach its unfinished model response')
   await reportEvidence('model_reached')

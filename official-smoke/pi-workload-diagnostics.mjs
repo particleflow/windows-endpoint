@@ -3,6 +3,12 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 
+// A new workspace is not evidence that its interactive shell is accepting
+// commands. Match only the empty prompt in this fixture's fresh PowerShell pane.
+export function isFreshPiShellPrompt(output, work) {
+  return String(output).replace(/\r\n/g, '\n').trimEnd().split('\n').at(-1) === `PS ${work}>`
+}
+
 export function piWorkloadWrapper(node, args, work, piConfigDir) {
   return `const fs=require('node:fs'),{spawnSync}=require('node:child_process');
 const trace=${JSON.stringify(path.join(work, 'launch.json'))};

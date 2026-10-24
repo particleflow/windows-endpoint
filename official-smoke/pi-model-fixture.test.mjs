@@ -6,7 +6,15 @@ import path from 'node:path'
 import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { piWorkloadWrapper, piWorkloadEvidence, diagnosticText } from './pi-workload-diagnostics.mjs'
+import { piWorkloadWrapper, piWorkloadEvidence, diagnosticText, isFreshPiShellPrompt } from './pi-workload-diagnostics.mjs'
+
+test('Pi launch requires the empty prompt for its exact fresh workspace, never an echoed command or another directory', () => {
+  const work = 'D:\\runner temp\\fixture 空格\\work'
+  assert.equal(isFreshPiShellPrompt(`PowerShell\r\nPS ${work}> `, work), true)
+  for (const output of ['', `PS ${work}`, `PS ${work}> node run-pi.cjs`, 'PS C:\\other> ', `PS ${work}>\r\nloading`]) {
+    assert.equal(isFreshPiShellPrompt(output, work), false)
+  }
+})
 
 test('Pi fixture diagnostics distinguish an unstarted wrapper from actual child failure without exposing credentials', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pi evidence 空格 ')); t.after(() => fs.rm(root, { recursive: true, force: true }))
