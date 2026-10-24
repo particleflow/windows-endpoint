@@ -322,6 +322,8 @@ test('plan uses explicit binaries and an isolated PATH, no task/transport worker
 test('unqualified lifecycle operations cannot mutate or launch anything', async () => {
   for (const cmd of ['start', 'activate', 'update', 'rollback', 'uninstall']) await assert.rejects(main([cmd]), /qualification_required_no_runtime_or_data_changed/)
   await assert.rejects(main(['doctor', '--config', 'a', '--config', 'b']), /invalid_arguments/)
+  assert.equal((await main(['help'])).commands.some(command => command.startsWith('transfer-budget ')), false)
+  await assert.rejects(main(['transfer-budget', '--root', 'not-accessed', '--bytes', '8589934592']), /unknown_command/)
 })
 
 test('CLI diagnostics use bounded codes and a failing exit status', () => {

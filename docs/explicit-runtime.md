@@ -108,3 +108,31 @@ block automatic startup. Owned cleanup failures retain the lease/evidence;
 EOF does not magically reopen stdin. Forced host death has no new guarantee of
 official child cleanup. No active update, rollback, service, desktop, large-scale
 capacity or physical power-loss qualification is provided by this batch.
+
+## Withdrawn endpoint budget setup
+
+The user rejected a product workflow requiring total-volume budgets and manual
+migration. The endpoint command introduced in `cc0a9cc`, its policy-file writer,
+consumer projection and command-specific tests have therefore been withdrawn.
+The host fixture again invokes the original production CLI directly. This is a
+reversible removal of an unwanted feature, not a repaired permission check or a
+claim that its failed native acceptance passed. The `699a7e3` unified-path fix,
+producer source pin/tests, lifecycle/Pi checks and positive-TLS gate remain.
+
+The failures remain at [run 40091026322](https://github.com/particleflow/windows-endpoint/actions/runs/40091026322)
+(`cc0a9cc`, job `120863542863`) and
+[run 40093517205](https://github.com/particleflow/windows-endpoint/actions/runs/40093517205)
+(`699a7e3`, job `120870893631`). After the endpoint created a budget policy,
+production `enqueue-result` returned `blocked/configuration`, exit 1. Both
+fixtures confirmed zero remaining hosts; the later Pi/TLS steps did not run.
+Saved complete native-log SHA256 values, respectively:
+
+- `d3e97ab37493788929a72336f656c299930a521aadc23ae693d80804b6fdaaec`
+- `e6f61b9d9690b469914669511d6aed4164e89ebe0a9d75ee53e6be4e7798ff45`
+
+The default-owner diagnostic in those runs did not match the process user;
+the new policy file's actual owner was not captured, so that suspected cause
+was not conclusively established. No owner/ACL check was weakened. Existing
+policy files and state are left untouched. The upstream compatibility tests
+still cover the pinned producer; they are not a user setup requirement or
+evidence that the replacement metadata-queue contract is implemented.

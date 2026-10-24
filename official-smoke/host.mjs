@@ -145,22 +145,10 @@ function launch() {
   return { child, states, done, until, stop }
 }
 try {
-  const configuredBinding = await fs.readFile(path.join(config.transferConfigDir, 'transfer.json'))
-  const policy = spawnSync(node, [endpoint, 'transfer-budget', '--root', hostRoot, '--bytes', '8589934592'], { encoding: 'utf8', timeout: 10000 })
-  assert.equal(policy.status, 0, `unified budget initialization: ${policy.stderr.slice(0, 200)}`)
-  assert.equal(JSON.parse(policy.stdout).state, 'fresh_policy_created')
-  const policyBytes = await fs.readFile(path.join(config.transferConfigDir, 'queue-budget.json'))
-  assert.deepEqual(JSON.parse(policyBytes), { version: 1, bytes: 8589934592 })
-  assert.deepEqual(await fs.readFile(path.join(config.transferConfigDir, 'transfer.json')), configuredBinding)
   const admitted = await cli('enqueue-result', closed)
   assert.equal(admitted.admitted, true); assert.equal(admitted.feedback_status, 'recorded')
   assert.equal((await cli('lifecycle-summary')).state, 'due')
   const deliveryId = admitted.delivery_id
-  const budgetChange = spawnSync(node, [endpoint, 'transfer-budget', '--root', hostRoot, '--bytes', '17179869184'], { encoding: 'utf8', timeout: 10000 })
-  assert.equal(budgetChange.status, 2, 'existing queue policy must not be implicitly migrated')
-  assert.equal(JSON.parse(budgetChange.stdout).state, 'deferred')
-  assert.deepEqual(await fs.readFile(path.join(config.transferConfigDir, 'queue-budget.json')), policyBytes)
-  checked('unified_budget_config_used_by_native_cli_without_changing_binding_or_migrating_existing_queue')
   checked('production_cli_admits_seven_bytes_and_records_original_attempt_feedback')
   if (references) {
     const file = path.join(config.transferConfigDir, 'transfer.json'), original = await fs.readFile(file)
