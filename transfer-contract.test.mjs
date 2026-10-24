@@ -77,3 +77,14 @@ test('actual PR56 advance envelope projects decisions without claiming reference
   }
   assert.throws(() => parseAdvanceDecision(JSON.stringify(summary()), now))
 })
+
+test('metadata registration is a boolean envelope field, not a delivery or scheduling state', () => {
+  const value = { ...summary({ state: 'due' }), delivery_id: 'original-delivery', phase: 'queued', offset: 0, registered: true, admitted: false, associated: false, feedback_status: 'recorded' }
+  assert.deepEqual(parseAdvanceDecision(JSON.stringify(value), now), summary({ state: 'due' }))
+  assert.deepEqual(parseAdvanceDecision(JSON.stringify({ ...value, registered: false, admitted: true }), now), summary({ state: 'due' }))
+  const { registered, ...legacy } = value
+  assert.deepEqual(parseAdvanceDecision(JSON.stringify(legacy), now), summary({ state: 'due' }))
+  for (const registered of [null, 'true', 1, {}]) assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, registered }), now))
+  assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, state: 'registered' }), now))
+  assert.throws(() => parseLifecycleSummary(JSON.stringify({ ...summary(), registered: true }), now))
+})

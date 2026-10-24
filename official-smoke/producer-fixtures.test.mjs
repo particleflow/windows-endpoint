@@ -5,7 +5,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { catalog, digest } from '../endpoint.mjs'
-import { testNames, fixturePlan, completedTests, completedAPIBaseCases, completedTaskAPIBaseCases, budgetTests, cliBudgetTests, verifyProducerBundle } from './producer-fixtures.mjs'
+import { testNames, fixturePlan, completedTests, completedAPIBaseCases, completedTaskAPIBaseCases, budgetTests, cliBudgetTests, registrationTests, cliRegistrationTests, verifyProducerBundle } from './producer-fixtures.mjs'
 
 const native = ['TestWindowsNativeActiveJournal', 'TestWindowsNativePublicationBucketBudget', 'TestWindowsNativePublicationMigrationProcessCrash', 'TestWindowsNativePublicationNewCase', 'TestWindowsNativeNewCore']
 const cli = ['TestCLIPathChild', 'TestCLIPathTLSRestartAndLostResponses']
@@ -18,6 +18,16 @@ test('budget coverage requires all five library tests and the actual CLI dispatc
     assert.throws(() => completedTests(output(names.slice(1)), names))
     assert.throws(() => completedTests(output(names).replace('--- PASS:', '--- SKIP:'), names))
   }
+})
+
+test('registration coverage includes process interruption, source changes, receipt resume and actual finite CLI indexing', () => {
+  assert.equal(registrationTests.length, 4); assert.equal(cliRegistrationTests.length, 1)
+  for (const names of [registrationTests, cliRegistrationTests]) {
+    assert.deepEqual(completedTests(output(names), names), names)
+    assert.throws(() => completedTests(output(names.slice(1)), names))
+    assert.throws(() => completedTests(output(names).replace('--- PASS:', '--- SKIP:'), names))
+  }
+  assert.ok(!registrationTests.some(name => name.includes('TenThousand')), 'Linux-only scale evidence must not be claimed as Windows execution')
 })
 
 test('binary inventory partitions exactly once and selects every original subtest', () => {

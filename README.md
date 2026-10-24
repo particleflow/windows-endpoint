@@ -71,7 +71,7 @@ rollback are not implemented by the current endpoint.
 
 The finite consumer coalesces hints, honors producer deadlines and drains an
 invocation before shutdown. The current candidate source is Memoh
-`37b7464fe062714258ddea5208cce2a6f9ea5f5b` / plugin 0.8.0; CI builds it using its
+`c29253069038886c95a29807ad2a003a214c7593` / plugin 0.9.0; CI builds it using its
 unchanged source build script. The older artifact and PR56 history in
 [the original handoff](docs/transfer-integration-gap.md) are not current
 qualification evidence. No denied artifact is downloaded or substituted.
@@ -79,8 +79,12 @@ qualification evidence. No denied artifact is downloaded or substituted.
 The endpoint budget-configuration command added in `cc0a9cc` has been withdrawn:
 it is not the requested product workflow. The original finite producer calls and
 its native validation remain. No existing policy, queue or user file is deleted
-or rewritten. The pinned producer still has its existing resource limits; this
-withdrawal does not implement the planned large metadata queue. See the
+or rewritten. New uploads now register metadata through that same producer,
+without reserving total source bytes or copying payloads at enqueue. Registration
+is pending work, not delivery. Existing snapshot queues remain readable; new v5
+records require a compatible reader and must not be handed to an older binary.
+No budget edit or user migration is added. This is not large-file end-to-end
+acceptance. See the
 [retained failure evidence](docs/explicit-runtime.md#withdrawn-endpoint-budget-setup).
 
 The [offline deployment transaction batch](docs/deployment-transactions.md) reuses

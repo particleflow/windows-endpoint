@@ -38,9 +38,9 @@
       "entry": "git/bin/bash.exe"
     },
     "transfer": {
-      "version": "0.8.0",
+      "version": "0.9.0",
       "source": "https://github.com/particleflow/Memoh",
-      "revision": "37b7464fe062714258ddea5208cce2a6f9ea5f5b",
+      "revision": "c29253069038886c95a29807ad2a003a214c7593",
       "entry": "transfer/transferqueue.exe"
     }
   },

@@ -83,7 +83,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: particleflow/Memoh
-          ref: 37b7464fe062714258ddea5208cce2a6f9ea5f5b
+          ref: c29253069038886c95a29807ad2a003a214c7593
           path: producer-source
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -97,7 +97,7 @@ jobs:
         shell: pwsh
         working-directory: producer-source
         run: |
-          if ((git rev-parse HEAD) -ne '37b7464fe062714258ddea5208cce2a6f9ea5f5b') { throw 'Wrong producer source' }
+          if ((git rev-parse HEAD) -ne 'c29253069038886c95a29807ad2a003a214c7593') { throw 'Wrong producer source' }
           python scripts/build-transferqueue-bundle.py --output '${{ runner.temp }}/endpoint-transfer-source-build'
           if ($LASTEXITCODE -ne 0) { throw 'Producer source build failed' }
       - name: Verify producer native fixtures (test dispatcher has fixture-only CA injection)

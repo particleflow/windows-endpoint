@@ -56,6 +56,21 @@ test('idle polls only the existing queue and never asserts business completion',
   assert.deepEqual(calls, ['lifecycle-summary', 'lifecycle-summary'])
 })
 
+test('registered upload remains producer work across stop/restart without local delivery inference or resubmission', async () => {
+  const { transfer, calls, time } = fixture(action => action === 'lifecycle-summary' ? output(action, decision('due')) : {
+    status: 0, stdout: JSON.stringify({ ...decision('due'), delivery_id: 'original-delivery', phase: 'queued', offset: 0, registered: true, admitted: false, associated: false, feedback_status: 'recorded' }),
+  })
+  await transfer.tick()
+  assert.equal(transfer.snapshot().state, 'due')
+  assert.equal(transfer.snapshot().attention, null)
+  assert.equal(transfer.snapshot().businessCompletion, 'not_inferred')
+  await transfer.tick(); assert.equal(calls.length, 2)
+  await transfer.stop(); transfer.start(); time(1000); await transfer.tick()
+  assert.deepEqual(calls, ['lifecycle-summary', 'advance-results', 'lifecycle-summary', 'advance-results'])
+  assert.equal(transfer.snapshot().state, 'due')
+  assert.equal(transfer.snapshot().businessCompletion, 'not_inferred')
+})
+
 test('reported corruption trap: due plus nonzero advance suspends all automatic work', async () => {
   const { transfer, calls, time } = fixture(action => output(action, decision('due'), action === 'advance-results' ? 1 : 0))
   await transfer.tick()

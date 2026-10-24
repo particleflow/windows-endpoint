@@ -59,7 +59,7 @@ have not been established. There is no global READY inferred from living PIDs.
 ## Source and CI evidence boundaries
 
 CI checks out public `particleflow/Memoh` at
-`37b7464fe062714258ddea5208cce2a6f9ea5f5b` (plugin 0.8.0) and calls its unchanged
+`c29253069038886c95a29807ad2a003a214c7593` (plugin 0.9.0) and calls its unchanged
 `scripts/build-transferqueue-bundle.py`. The source is a separate build input,
 not a second Go implementation in this repository. No blocked hosted artifact is
 re-requested. The old `transfer-artifact.json` and its legacy seven-file fixture
@@ -78,13 +78,23 @@ required. Both task API-base boundary tests also run separately, requiring all
 data is not added to the runtime package.
 
 The new Windows job exercises the public host process, official Herdr/Agenvo and
-production `transferqueue.exe` with fresh isolated data. It admits one seven-byte
-synthetic result through the producer, observes finite queue progress, stops and
+production `transferqueue.exe` with fresh isolated data. It registers one seven-byte
+synthetic result without copying/indexing its payload, observes finite queue progress, stops and
 reopens the same queue/identity, and checks authorization failure persistence.
 It creates private fixture objects at creation time; it never repairs existing
 ACLs or uses a real credential/model/NAS. The original untrusted scenario changes
 no trust settings. The separately authorized positive TLS scenario below changes
 only the disposable CI account's CurrentUser root store, with exact cleanup.
+
+The advance envelope's optional boolean `registered` is validated but does not
+change the four-field scheduling projection or imply delivery. The producer owns
+registration, finite indexing, receipt recovery and v2/v3/v4 snapshot compatibility.
+New registrations use its existing journal layout with v5 records; old executables
+must not write/read those records as snapshots. No endpoint budget file, migration
+command, second queue or automatic downgrade is introduced. Windows CI runs the
+four upstream registration tests and finite CLI indexing/reopen test unchanged.
+The upstream 10,000 sparse-source test is Linux-only and is not Windows or physical
+PC/NAS throughput evidence. Pending producer pagination work is not included.
 
 The production Go CLI uses system TLS roots and has no custom-CA option. Therefore
 the host fixture's self-signed NAS endpoint must be rejected: no transfer HTTP

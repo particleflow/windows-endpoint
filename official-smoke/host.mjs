@@ -145,11 +145,24 @@ function launch() {
   return { child, states, done, until, stop }
 }
 try {
-  const admitted = await cli('enqueue-result', closed)
-  assert.equal(admitted.admitted, true); assert.equal(admitted.feedback_status, 'recorded')
+  const registered = await cli('enqueue-result', closed)
+  assert.equal(registered.registered, true); assert.equal(registered.admitted, false)
+  assert.equal(registered.associated, false); assert.equal(registered.offset, 0)
+  assert.equal(registered.reference, undefined); assert.equal(registered.feedback_status, 'recorded')
   assert.equal((await cli('lifecycle-summary')).state, 'due')
-  const deliveryId = admitted.delivery_id
-  checked('production_cli_admits_seven_bytes_and_records_original_attempt_feedback')
+  const deliveryId = registered.delivery_id
+  const reopenedRegistration = await cli('inspect', null, deliveryId)
+  assert.equal(reopenedRegistration.delivery_id, deliveryId)
+  assert.equal(reopenedRegistration.registered, true); assert.equal(reopenedRegistration.admitted, false)
+  assert.equal(reopenedRegistration.associated, false); assert.equal(reopenedRegistration.offset, 0)
+  const queueFiles = await fs.readdir(config.transferStateDir, { recursive: true })
+  assert.ok(queueFiles.some(file => file.endsWith('.journal')))
+  assert.ok(queueFiles.every(file => !/\.(snapshot|part|tree|admission)$/.test(file)), 'registration must not create a payload copy or index')
+  const registrationFeedback = JSON.parse(await fs.readFile(path.join(attempt, 'delivery-feedback.json'), 'utf8'))
+  assert.equal(registrationFeedback.task.attempt, plan.task.attempt)
+  assert.equal(registrationFeedback.files[0].delivery_id, deliveryId)
+  assert.equal(registrationFeedback.files[0].state, 'pending')
+  checked('production_cli_registers_metadata_without_payload_copy_and_records_original_attempt_feedback')
   if (references) {
     const file = path.join(config.transferConfigDir, 'transfer.json'), original = await fs.readFile(file)
     const before = await cli('inspect', null, deliveryId), configValue = JSON.parse(original)

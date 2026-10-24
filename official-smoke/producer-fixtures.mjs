@@ -47,6 +47,8 @@ export function completedAPIBaseCases(output, expected) {
 const taskAPIBaseTests = ['TestTaskAPIBaseLengthBoundary', 'TestTaskAPIBaseBoundaryPreservesChecks']
 export const budgetTests = ['TestHostBudgetConfiguration', 'TestBudgetMigrationPreservesIdentityAndUnknown', 'TestBudgetMigrationRejectsBusyMismatchAndCapacity', 'TestBudgetMigrationResumesIncompleteAdmission', 'TestBudgetMigrationProcessCrashAndTornTail']
 export const cliBudgetTests = ['TestCLIBudgetConfigurationAndOldQueueRecovery']
+export const registrationTests = ['TestRegisteredProcessExitBeforeAcknowledgement', 'TestRegisteredSourceRestartAndMissingChanges', 'TestRegisteredSourceResumesReceiptWithoutSnapshot', 'TestRegisteredSourceBlockProofRejectsUndetectedChange']
+export const cliRegistrationTests = ['TestProducerAdmissionPendingCanResumeSameDelivery']
 export function completedTaskAPIBaseCases(output) {
   completedTests(output, taskAPIBaseTests)
   const expected = [
@@ -119,12 +121,18 @@ export async function verifyFixtures(root, sourceRoot) {
   const boundaryOutput = await execute(binary, [`-test.run=^(${taskAPIBaseTests.join('|')})$`, '-test.v', '-test.timeout=30s'], remaining(40000), true, contractDirectory)
   const boundaryCases = completedTaskAPIBaseCases(boundaryOutput)
   process.stdout.write(JSON.stringify({ producerTaskAPIBaseBoundary: 'passed', sourceCommit, topLevel: taskAPIBaseTests.length, cases: boundaryCases.length, skipped: 0 }) + '\n')
-  for (const [file, names, selector] of [[binary, budgetTests, '^Test(HostBudget|BudgetMigration)'], [path.join(root, 'transferqueue-cli.test.exe'), cliBudgetTests, '^TestCLIBudget']]) {
+  const cliBinary = path.join(root, 'transferqueue-cli.test.exe')
+  for (const [file, names, selector, contractName] of [
+    [binary, budgetTests, '^Test(HostBudget|BudgetMigration)', 'producerBudgetContract'],
+    [cliBinary, cliBudgetTests, '^TestCLIBudget', 'producerBudgetContract'],
+    [binary, registrationTests, '^TestRegistered', 'producerRegistrationContract'],
+    [cliBinary, cliRegistrationTests, '^TestProducerAdmissionPending', 'producerRegistrationContract'],
+  ]) {
     const inventory = testNames(await execute(file, [`-test.list=${selector}`], remaining(30000)), 'Test')
-    requireFixture(sameSet(inventory, names), 'producer_budget_inventory_changed')
+    requireFixture(sameSet(inventory, names), `${contractName}_inventory_changed`)
     const output = await execute(file, [`-test.run=^(${names.join('|')})$`, '-test.v', '-test.timeout=2m'], remaining(130000), true)
     completedTests(output, names)
-    process.stdout.write(JSON.stringify({ producerBudgetContract: 'passed', sourceCommit, tests: names, skipped: 0, largePayloadAcceptance: false }) + '\n')
+    process.stdout.write(JSON.stringify({ [contractName]: 'passed', sourceCommit, tests: names, skipped: 0, largePayloadAcceptance: false }) + '\n')
   }
   const native = testNames(await execute(path.join(root, 'transferqueue.test.exe'), ['-test.list=^TestWindowsNative'], remaining(30000)), 'TestWindowsNative')
   const cli = testNames(await execute(path.join(root, 'transferqueue-cli.test.exe'), ['-test.list=^TestCLIPath'], remaining(30000)), 'TestCLIPath')
