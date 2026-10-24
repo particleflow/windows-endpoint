@@ -2,10 +2,11 @@
 
 This is a runnable local host entry in the existing endpoint, not an installed
 Windows service or a qualified product bundle. It owns a single foreground
-process, observes configuration and writes bounded diagnostics. Real component
-activation remains unavailable pending complete qualification and connection
-authorization. The public CLI cannot enable synthetic components or override
-qualification with a config flag, environment variable or command argument.
+process, observes configuration and writes bounded diagnostics. The default
+remains observation-only; [explicit runtime review](explicit-runtime.md) adds
+inventory-verified official component startup and an existing-queue consumer.
+Release qualification and production connection authorization remain separate.
+The public CLI cannot enable synthetic components or override verification.
 
 ## Run and observe
 
@@ -60,8 +61,8 @@ does not prove that a control channel is still reachable.
 
 The host creates only its data/log directories; it never creates credentials or
 fills in identity/configuration values. It reads `config/endpoint.json` and checks
-the same schema as the existing delivery CLI. The mutable paths must agree with
-`deployment-layout.json`, resolved under this root:
+the same schema as the existing delivery CLI. In schema 1 (bundle review), the
+mutable paths must agree with `deployment-layout.json`, resolved under this root:
 
 | Location | Purpose |
 | --- | --- |
@@ -74,25 +75,45 @@ the same schema as the existing delivery CLI. The mutable paths must agree with
 | `data/endpoint/host-status.json` | Atomic, schema-checked host observation |
 | `logs/endpoint-host/<run-id>.jsonl` | Bounded state-change log for one run |
 
-`deploymentReferences(root, existingReferences)` produces these references in code;
-it does not generate credentials or approve a bundle. The older delivery example
-with separate roots is not a host configuration. The offline package selection is
+Fill the non-path placeholders in `endpoint.example.json`, then use
+`node endpoint.mjs configure --from FILE --root DIR`. The existing root and its
+`config` directory must already exist. This writes `config/endpoint.json`
+exclusively, using `deploymentReferences` and `deployment-layout.json` for every
+schema-1 component path. The example is an input template, not a runtime config.
+Explicit paths in an existing input must match the selected root or configuration
+is refused; choosing another root does not relocate any existing state. The
+command does not generate credentials, create component directories or approve
+a bundle. The legacy `--config FILE` form still saves fully specified references.
+The offline package selection is
 not consumed by this host. Bundle verification is read-only and does not establish
 the missing component qualification.
+
+In schema 2 ([existing official installations](existing-installations-plan.md)),
+only the endpoint's own configuration, lifecycle/status journal and host logs use
+this root. Official programs, Herdr/Pi/Agenvo configuration, source exports and
+the existing transfer journal remain at their explicitly referenced locations.
+Those references must not overlap the host's config/data/log directories; the
+component data/program separation checks also remain in force. Do not copy user
+configuration or historical sessions into the schema-1 layout to use this mode.
+Reference acceptance does not grant ownership of an external process or permission
+to resume a historical task.
+The same `configure --from FILE --root DIR` command accepts full schema-2
+references, saves their existing paths unchanged and checks that they do not
+overlap the host-owned config/data/log directories.
 
 Missing config is `host_configuration_missing`; invalid config and changed config
 are distinct attention states. A config edit requires stop/restart and never hot
 reloads identities or component roots. Missing/invalid bundles remain unavailable;
-a valid inventory still remains `unavailable_unqualified`. Missing credential
+a valid inventory without an explicit request remains `unavailable_unqualified`. Missing credential
 metadata or a fresh matching 401/403 observation is `authorization_required`,
 not machine offline. Credential contents are not read. Existing credential
 metadata alone is only `authorization_unverified`, not authorization success.
 
 The status `phase` describes this host process. A running host with missing config
 is useful for diagnosis, not PC capability readiness. `componentLifecycle`, when
-present in tests, separately describes the reused coordinator. Public production
-status reports `host_process_only` evidence and
-`transfer:not_included_pending_qualification`.
+present, separately describes the reused coordinator. The observation-only mode
+reports `host_process_only` evidence and `transfer:not_included_pending_qualification`;
+the explicit native mode and its narrower readiness states are described separately.
 
 Snapshots and log events exclude configured addresses, identities, paths, credential
 contents, arbitrary component output and task payloads. State-change logs stop at
@@ -176,9 +197,10 @@ are unchanged; no lock deletion, serial test mode, skipped cases or weaker owner
 assertions are used. Synthetic identity generation is not production registration.
 
 The existing official Windows dependency/lifecycle job remains separate. Its
-coverage does not make this new host a qualified real-component launcher. Needed
-before activation: complete supported artifact handoff and qualification, approved
-official runtime paths, connection authorization and real executable integration.
+coverage alone does not qualify the public host. The new explicit runtime job
+covers that entry with native components; it still requires approved official
+runtime paths, existing credentials and local inventory verification, and does
+not confer release qualification or production connection authorization.
 Agent pending-tool recovery, automatic transfer wakes, active updates/rollback,
 desktop GUI/session behavior and physical power-loss/capacity acceptance remain
 unimplemented or unverified. No service, production PC or NAS is used by these tests.

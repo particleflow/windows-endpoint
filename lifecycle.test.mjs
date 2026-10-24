@@ -39,6 +39,37 @@ test('starts Herdr API before connector and normal stop reverses order', async t
   assert.deepEqual(calls.slice(-2), ['stop:connector', 'stop:herdr'])
 })
 
+test('stop checkpoint is recorded after cleanup and consumed before a fresh component start', async t => {
+  const f = await fixture(t), checkpoint = { schema: 1, binding: 'a'.repeat(64), configuration: 'b'.repeat(64), snapshot: 'c'.repeat(64), ordinary: true }
+  f.driver.captureContinuation = async () => { assert.equal(f.alive.size, 0); return checkpoint }
+  await f.lifecycle.start(); await f.lifecycle.stop()
+  assert.deepEqual((await f.store.load()).sessionContinuation, checkpoint)
+  const next = f.create(), originalStart = f.driver.start
+  f.driver.validate = async state => assert.deepEqual(state.sessionContinuation, checkpoint)
+  f.driver.start = async component => { assert.equal((await f.store.load()).sessionContinuation, undefined); await originalStart(component) }
+  await next.start(); await next.stop()
+})
+
+test('failed cleanup cannot publish a continuation checkpoint or release ownership', async t => {
+  const f = await fixture(t), stop = f.driver.stop
+  f.driver.captureContinuation = async () => { assert.fail('failed cleanup must not checkpoint') }
+  await f.lifecycle.start()
+  f.driver.stop = async component => { if (component === 'herdr') throw new LifecycleError('herdr_stop_unknown'); await stop(component) }
+  await assert.rejects(f.lifecycle.stop(), { code: 'herdr_stop_unknown' })
+  assert.equal((await f.store.load()).sessionContinuation, undefined); assert.ok(f.lifecycle.release)
+  delete f.driver.captureContinuation; f.driver.stop = stop; await f.lifecycle.stop()
+})
+
+test('checkpoint read failure preserves stopped evidence and attention without claiming resumability', async t => {
+  const f = await fixture(t)
+  f.driver.captureContinuation = async () => { throw Object.assign(new Error('unreadable'), { code: 'EACCES' }) }
+  await f.lifecycle.start()
+  await assert.rejects(f.lifecycle.stop(), { code: 'session_continuation_unavailable' })
+  assert.equal(f.alive.size, 0); assert.equal(f.lifecycle.release, null)
+  const saved = await f.store.load()
+  assert.equal(saved.phase, 'stopped'); assert.equal(saved.attention, 'session_continuation_unavailable'); assert.equal(saved.sessionContinuation, undefined)
+})
+
 test('single instance protects shared identity even with another config location', async t => {
   const { lifecycle, create } = await fixture(t)
   await lifecycle.start()
@@ -47,6 +78,20 @@ test('single instance protects shared identity even with another config location
   assert.equal(keys[0], 'device:device')
   await lifecycle.stop()
   const next = create(); await next.start(); await next.stop()
+})
+
+test('installation change keeps running components and persists attention until explicit stop', async t => {
+  const { lifecycle, driver, alive, calls, store } = await fixture(t)
+  await lifecycle.start(); calls.length = 0
+  driver.checkPrograms = () => { throw new LifecycleError('installation_changed_restart_required') }
+  await lifecycle.tick(); await lifecycle.tick()
+  assert.equal(lifecycle.state.attention, 'installation_changed_restart_required')
+  assert.deepEqual([...alive], ['herdr', 'connector']); assert.deepEqual(calls, [])
+  assert.equal((await store.load()).attention, 'installation_changed_restart_required')
+  await lifecycle.stop()
+  assert.deepEqual(calls, ['stop:connector', 'stop:herdr'])
+  assert.equal((await store.load()).phase, 'stopped')
+  assert.equal((await store.load()).attention, 'installation_changed_restart_required')
 })
 
 test('concurrent wake checks recover a crashed connector once without restarting host', async t => {
@@ -108,6 +153,128 @@ test('unknown host observation stops recovery without guessing from unavailable'
   await lifecycle.tick()
   assert.equal(lifecycle.state.attention, 'herdr_observation_unknown')
   assert.equal(calls.filter(c => c.startsWith('start:')).length, 2)
+})
+
+for (const reason of ['herdr_observation_unknown', 'herdr_owner_exited']) {
+  test(`confirmed owned exit racing ${reason} recovers once through the existing budget`, async t => {
+    const { lifecycle, driver, alive, calls, store } = await fixture(t)
+    await lifecycle.start()
+    // Reproduce PR5's sequence: one earlier connector restart, then Herdr dies
+    // AFTER tick's alive check and BEFORE its owned status observation settles.
+    alive.delete('connector'); await lifecycle.tick()
+    let observedExit = false, observations = 0
+    driver.confirmedExit = c => c === 'herdr' && observedExit && !alive.has(c)
+    driver.ownedHostStatus = async () => {
+      observations++; alive.delete('herdr'); observedExit = true
+      throw new LifecycleError(reason)
+    }
+    await Promise.all([lifecycle.tick(), lifecycle.tick()])
+    assert.equal(lifecycle.state.attention, null)
+    assert.equal(lifecycle.state.phase, 'running')
+    assert.equal(lifecycle.state.restarts.length, 2)
+    assert.equal((await store.load()).restarts.length, 2)
+    assert.equal(calls.filter(c => c === 'start:herdr').length, 2)
+    assert.equal(calls.filter(c => c === 'start:connector').length, 3)
+    assert.equal(observations, 1)
+    assert.equal(lifecycle.snapshot().ready, false)
+  })
+}
+
+for (const reason of ['herdr_owner_mismatch', 'herdr_generation_changed', 'herdr_ownership_unverified']) {
+  test(`owned exit does not excuse ${reason} or touch a possible external successor`, async t => {
+    const { lifecycle, driver, alive, calls, store } = await fixture(t)
+    await lifecycle.start()
+    driver.confirmedExit = () => true
+    driver.ownedHostStatus = async () => { alive.delete('herdr'); throw new LifecycleError(reason) }
+    await lifecycle.tick()
+    assert.equal(lifecycle.state.attention, reason)
+    assert.equal((await store.load()).attention, reason)
+    assert.equal(lifecycle.state.restarts.length, 0)
+    assert.equal(calls.filter(c => c.startsWith('start:')).length, 2)
+  })
+}
+
+test('missing owned-exit proof keeps an observation error terminal even if alive becomes false', async t => {
+  const { lifecycle, driver, alive, calls } = await fixture(t)
+  await lifecycle.start()
+  driver.confirmedExit = () => false
+  driver.ownedHostStatus = async () => { alive.delete('herdr'); throw new LifecycleError('herdr_observation_unknown') }
+  await lifecycle.tick()
+  assert.equal(lifecycle.state.attention, 'herdr_observation_unknown')
+  assert.equal(lifecycle.state.restarts.length, 0)
+  assert.equal(calls.filter(c => c.startsWith('start:')).length, 2)
+})
+
+test('stop crossing a confirmed owned exit drains without starting a replacement', async t => {
+  const { lifecycle, driver, alive, calls, store } = await fixture(t)
+  await lifecycle.start()
+  let finish, entered
+  const waiting = new Promise(resolve => { entered = resolve })
+  driver.confirmedExit = () => !alive.has('herdr')
+  driver.ownedHostStatus = () => new Promise((_, reject) => {
+    finish = () => { alive.delete('herdr'); reject(new LifecycleError('herdr_observation_unknown')) }; entered()
+  })
+  const tick = lifecycle.tick(); await waiting
+  const stop = lifecycle.stop(); finish(); await Promise.all([tick, stop])
+  assert.equal(lifecycle.state.phase, 'stopped'); assert.equal(lifecycle.state.attention, null)
+  assert.equal(lifecycle.state.restarts.length, 0); assert.equal(lifecycle.release, null)
+  assert.equal((await store.load()).phase, 'stopped')
+  assert.equal(calls.filter(c => c.startsWith('start:')).length, 2)
+})
+
+test('confirmed exit still respects the original recovery budget and external-server guard', async t => {
+  const f = await fixture(t)
+  await f.lifecycle.start()
+  f.driver.confirmedExit = () => !f.alive.has('herdr')
+  f.driver.ownedHostStatus = async () => { f.alive.delete('herdr'); throw new LifecycleError('herdr_observation_unknown') }
+  const start = f.driver.start
+  f.driver.start = async c => { if (c === 'herdr') throw new LifecycleError('existing_herdr_requires_handoff'); await start(c) }
+  await f.lifecycle.tick()
+  assert.equal(f.lifecycle.state.attention, 'existing_herdr_requires_handoff')
+  assert.equal(f.lifecycle.state.restarts.length, 1)
+  assert.equal(f.calls.filter(c => c === 'start:herdr').length, 1)
+  assert.equal(f.calls.includes('stop:herdr'), false)
+
+  const other = await fixture(t, { policy: { maxRestarts: 0 } })
+  await other.lifecycle.start()
+  other.driver.confirmedExit = () => true
+  other.driver.ownedHostStatus = async () => { other.alive.delete('herdr'); throw new LifecycleError('herdr_observation_unknown') }
+  await other.lifecycle.tick()
+  assert.equal(other.lifecycle.state.attention, 'restart_budget_exhausted')
+  assert.equal(other.lifecycle.state.restarts.length, 0)
+  assert.equal(other.calls.filter(c => c.startsWith('start:')).length, 2)
+})
+
+test('native exit proof needs an exit event plus a previously captured generation on that child', async t => {
+  const { directory } = await fixture(t)
+  const config = { bundleRoot: directory, sourceRoot: directory, herdrConfigRoot: directory, herdrStateRoot: directory, agenvoConfigDir: directory, piConfigDir: directory, session: 'default' }
+  const driver = new NativeDriver(config)
+  const owned = { process: { pid: 123, killed: true }, generation: '123:456', exited: false, error: false, exitObserved: false }
+  driver.children.set('herdr', owned)
+  assert.equal(driver.confirmedExit('herdr'), false, 'kill request is not exit proof')
+  owned.exited = true
+  assert.equal(driver.confirmedExit('herdr'), false, 'unattributed exit flag is not an observed exit')
+  owned.exitObserved = true
+  assert.equal(driver.confirmedExit('herdr'), true)
+  for (const changes of [{ error: true }, { generation: undefined }, { generation: '999:456' }, { exitObserved: false }]) {
+    driver.children.set('herdr', { ...owned, ...changes })
+    assert.equal(driver.confirmedExit('herdr'), false)
+  }
+  driver.children.delete('herdr')
+  assert.equal(driver.confirmedExit('herdr'), false)
+})
+
+test('native runtime status probe lets pending process events run before reporting command failure', async t => {
+  const { directory } = await fixture(t)
+  const driver = new NativeDriver({ bundleRoot: directory, sourceRoot: directory, herdrConfigRoot: directory, herdrStateRoot: directory, agenvoConfigDir: directory, piConfigDir: directory, session: 'default' })
+  // Node deliberately rejects Herdr's --session argv. This is a real finite
+  // subprocess but not a mock claim about Herdr or Windows named pipes.
+  driver.herdr = process.execPath
+  let eventLoopTurn = false
+  const pending = new Promise(resolve => setImmediate(() => { eventLoopTurn = true; resolve() }))
+  await assert.rejects(driver.observeHostStatus(), { code: 'herdr_observation_unknown' })
+  assert.equal(eventLoopTurn, true, 'status observation must not starve owned-child exit delivery')
+  await pending
 })
 
 test('preexisting host is never adopted or started over', async t => {

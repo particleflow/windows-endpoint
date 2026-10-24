@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url'
 import { spawn, spawnSync, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { catalog, managedEnvironment } from './endpoint.mjs'
+import { catalog, managedEnvironment, programPaths, transferLocations } from './endpoint.mjs'
+import { validSessionContinuation, captureSessionContinuation } from './session-continuation.mjs'
 
 // Internal foreground lifecycle. No business dispatch, transfer implementation,
 // network service, OS startup registration, credential editing or second watchdog.
@@ -64,6 +65,7 @@ export class StateStore {
     if (!data) return { schema: 1, identity: this.identity, phase: 'stopped', restarts: [], attention: null }
     demand(data.schema === 1 && data.identity === this.identity && Array.isArray(data.restarts) && data.restarts.length <= 100 && data.restarts.every(t => Number.isSafeInteger(t) && t >= 0), 'lifecycle_state_mismatch')
     demand(['stopped', 'starting', 'running', 'stopping', 'needs_attention'].includes(data.phase) && (data.attention === null || /^[a-z_]{1,80}$/.test(data.attention)), 'lifecycle_state_mismatch')
+    demand(data.sessionContinuation === undefined || validSessionContinuation(data.sessionContinuation), 'lifecycle_state_mismatch')
     return data
   }
   async save(data) {
@@ -77,22 +79,25 @@ export class StateStore {
 }
 
 export class NativeDriver {
-  constructor(config, { qualify, inheritedEnvironment = process.env } = {}) {
+  constructor(config, { qualify, inheritedEnvironment = process.env, checkPrograms = null } = {}) {
     this.config = config
     this.qualify = qualify
+    this.checkPrograms = checkPrograms
+    this.herdrVersion = catalog.components.herdr.version
     // Environment is fully cleaned by the shared product function, not the plan
     // overlay. Extra environment injection is not exposed to product callers.
     this.env = managedEnvironment(config, inheritedEnvironment)
     this.children = new Map()
-    this.node = path.join(config.bundleRoot, catalog.components.node.entry)
-    this.herdr = path.join(config.bundleRoot, catalog.components.herdr.entry)
-    this.connector = path.join(config.bundleRoot, catalog.components.connector.entry)
+    const programs = programPaths(config)
+    this.node = programs.node
+    this.herdr = programs.herdr
+    this.connector = programs.connector
     this.fingerprint = null
     this.marker = config.session === 'default' ? path.join(config.herdrConfigRoot, 'herdr.sock') : path.join(config.herdrConfigRoot, 'sessions', config.session, 'herdr.sock')
   }
-  async validate() {
+  async validate(state) {
     demand(process.platform === 'win32' && process.arch === 'x64' && typeof this.qualify === 'function', 'qualified_windows_driver_required')
-    demand(await this.qualify() === true, 'component_qualification_failed')
+    demand(await this.qualify(state) === true, 'component_qualification_failed')
     let credentials
     try { credentials = await fs.lstat(path.join(this.config.agenvoConfigDir, 'credentials.json')) }
     catch (e) { throw new LifecycleError(e.code === 'ENOENT' ? 'connector_authentication_required' : 'connector_credentials_unreadable') }
@@ -104,14 +109,32 @@ export class NativeDriver {
     this.fingerprint = sum
   }
   command(file, args, timeout = 10000) {
+    this.checkPrograms?.()
     const r = spawnSync(file, args, { env: this.env, cwd: this.config.sourceRoot, encoding: 'utf8', timeout, maxBuffer: 16384, windowsHide: true, shell: false })
     demand(!r.error && r.status === 0, 'official_command_failed')
     return r.stdout
   }
   hostStatus() {
+    this.checkPrograms?.()
     let value
     try { value = JSON.parse(this.command(this.herdr, ['--session', this.config.session, 'status', 'server', '--json'], 3000)) }
     catch { throw new LifecycleError('herdr_observation_unknown') }
+    demand(typeof value.running === 'boolean', 'herdr_observation_unknown')
+    return value
+  }
+  async observeHostStatus() {
+    this.checkPrograms?.()
+    // A runtime observation must let the event loop record an owned child's
+    // exit while the status CLI is running. spawnSync in this path held that
+    // evidence back and converted a concurrent known crash into permanent
+    // herdr_observation_unknown attention before recovery could run.
+    let value
+    try {
+      const result = await promisify(execFile)(this.herdr, ['--session', this.config.session, 'status', 'server', '--json'], {
+        env: this.env, cwd: this.config.sourceRoot, timeout: 3000, maxBuffer: 16384, windowsHide: true, shell: false,
+      })
+      value = JSON.parse(result.stdout)
+    } catch { throw new LifecycleError('herdr_observation_unknown') }
     demand(typeof value.running === 'boolean', 'herdr_observation_unknown')
     return value
   }
@@ -136,19 +159,31 @@ export class NativeDriver {
     } catch (error) {
       let reason
       try { reason = JSON.parse(error.stdout).error } catch { /* Bounded diagnostics only. */ }
-      throw new LifecycleError(/^herdr_(owner_mismatch|generation_changed|ownership_unverified|request_(rejected|timeout|incomplete|oversized|failed))$/.test(reason) ? reason : 'herdr_ownership_unverified')
+      const failure = new LifecycleError(/^herdr_(owner_mismatch|generation_changed|ownership_unverified|request_(rejected|timeout|incomplete|oversized|failed))$/.test(reason) ? reason : 'herdr_ownership_unverified')
+      // Keep authority fail-closed, but retain bounded process evidence for a
+      // caller's diagnostics. Never attach command text, environment or output.
+      const stage = String(error.stderr || '').match(/(?:^|\n)owned_helper_stage=(bootstrap|module_loaded|compiled|pipe_connected|peer_verified)(?=\r?\n|$)/g)?.at(-1)?.trim().split('=')[1] || 'not_observed'
+      failure.helper = { outcome: error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 'output_limit' : error.killed ? 'deadline' : Number.isInteger(error.code) ? 'nonzero_exit' : 'process_error', exitCode: Number.isInteger(error.code) ? error.code : null, response: typeof reason === 'string' ? 'error_response' : error.stdout ? 'unrecognized_output' : 'absent', stage }
+      throw failure
     }
     demand(response.id === 'endpoint-owned' && response.result && !response.error, 'herdr_request_failed')
     return response.result
   }
   async ownedHostStatus() {
     await this.ownedGeneration()
-    const status = this.hostStatus() // read-only; generation checked on both sides
+    const status = await this.observeHostStatus() // read-only; generation checked on both sides
     await this.ownedGeneration()
     return status
   }
   alive(component) { const c = this.children.get(component); return Boolean(c && !c.exited && !c.error) }
+  confirmedExit(component) {
+    const c = this.children.get(component)
+    // Only an exit event on the same retained child record after a verified
+    // generation qualifies. A kill request, spawn error or missing PID does not.
+    return Boolean(c && c.exitObserved === true && c.exited && !c.error && /^\d+:\d+$/.test(c.generation) && c.generation.split(':')[0] === String(c.process.pid))
+  }
   async start(component) {
+    this.checkPrograms?.()
     demand(!this.alive(component), 'component_already_owned')
     if (component === 'herdr') demand(!this.hostStatus().running, 'existing_herdr_requires_handoff')
     if (component === 'connector') {
@@ -158,9 +193,9 @@ export class NativeDriver {
     const file = component === 'herdr' ? this.herdr : this.node
     const args = component === 'herdr' ? ['--session', this.config.session, 'server'] : [this.connector, 'run']
     const processHandle = spawn(file, args, { env: this.env, cwd: this.config.sourceRoot, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], shell: false })
-    const c = { process: processHandle, startedAt: Date.now(), exited: false, error: false, lock: null }
+    const c = { process: processHandle, startedAt: Date.now(), exited: false, exitObserved: false, error: false, lock: null }
     c.done = new Promise(resolve => {
-      processHandle.once('exit', () => { c.exited = true; resolve() })
+      processHandle.once('exit', () => { c.exitObserved = true; c.exited = true; resolve() })
       processHandle.once('error', () => { c.error = true; c.exited = true; resolve() })
     })
     processHandle.stdout.resume()
@@ -189,10 +224,10 @@ export class NativeDriver {
       if (component === 'herdr') {
         try {
           const s = this.hostStatus()
-          if (s.running && s.version === '0.9.5' && s.endpoint_compatible === true) {
+          if (s.running && s.version === this.herdrVersion && s.endpoint_compatible === true) {
             await this.ownedGeneration(true)
             const owned = await this.ownedHostRequest('ping')
-            demand(owned.type === 'pong' && owned.version === '0.9.5', 'herdr_ownership_unverified')
+            demand(owned.type === 'pong' && owned.version === this.herdrVersion, 'herdr_ownership_unverified')
             return
           }
         } catch (error) {
@@ -215,6 +250,7 @@ export class NativeDriver {
     try { lock = await readJSON(path.join(this.config.agenvoConfigDir, 'run.lock')) }
     catch (e) { if (e.code === 'ENOENT') return; throw new LifecycleError('connector_lock_requires_owner') }
     demand(c?.exited && c.lock && lock.pid === c.process.pid && lock.nonce === c.lock.nonce, 'connector_lock_requires_owner')
+    this.checkPrograms?.('connector')
     // Official recovery only after this exact owned process has exited and the
     // saved lock nonce still matches. No direct unlink or PID-based termination.
     try { await promisify(execFile)(this.node, [this.connector, 'doctor', '--recover-lock'], { env: this.env, cwd: this.config.sourceRoot, timeout: 12000, maxBuffer: 16384, windowsHide: true, shell: false }) }
@@ -237,8 +273,19 @@ export class NativeDriver {
       try {
         await Promise.race([c.done, sleep(10000, undefined, { signal: timer.signal }).then(() => { throw new LifecycleError(`${component}_stop_unknown`) })])
       } finally { timer.abort() }
+      if (component === 'herdr' && this.config.schema === 2) {
+        // Capture once at the confirmed owned exit, not on a later stop retry
+        // when another process might have changed the official snapshot.
+        try { c.sessionContinuation = await captureSessionContinuation(this.config) }
+        catch { c.continuationUnavailable = true }
+      }
     }
     if (component === 'connector') await this.recoverConnectorLock()
+  }
+  async captureContinuation() {
+    const owned = this.children.get('herdr')
+    demand(!owned?.continuationUnavailable, 'session_continuation_unavailable')
+    return owned?.sessionContinuation || null
   }
 }
 
@@ -293,9 +340,10 @@ export class EndpointLifecycle {
       if (this.state.attention && !acknowledgeAttention) throw new LifecycleError(this.state.attention)
       this.state.attention = null
       demand(!this.stopping, 'startup_cancelled')
-      await this.driver.validate()
+      await this.driver.validate(this.state)
       demand(!this.driver.hostStatus().running, 'existing_herdr_requires_handoff')
       demand(!this.stopping, 'startup_cancelled')
+      delete this.state.sessionContinuation // consume before any component start
       this.state.phase = 'starting'; await this.save()
       await this.driver.start('herdr'); await this.driver.waitReady('herdr')
       demand(!this.stopping, 'startup_cancelled')
@@ -354,6 +402,7 @@ export class EndpointLifecycle {
     this.active = (async () => {
       if (this.stopping || this.state?.phase !== 'running') return this.snapshot()
       try {
+        this.driver.checkPrograms?.()
         const previousConnection = this.observedConnection
         const s = await this.driver.connectorStatus()
         this.observedConnection = s?.state === 'online' ? 'online_snapshot' : s?.state || 'unverified'
@@ -363,8 +412,17 @@ export class EndpointLifecycle {
         if (!this.driver.alive('herdr')) await this.recover('herdr')
         else if (!this.driver.alive('connector')) await this.recover('connector')
         else {
-          const host = await this.driver.ownedHostStatus()
-          demand(host.running && host.version === '0.9.5' && host.endpoint_compatible === true, 'herdr_observation_unknown')
+          try {
+            const host = await this.driver.ownedHostStatus()
+            demand(host.running && host.version === (this.driver.herdrVersion || '0.9.5') && host.endpoint_compatible === true, 'herdr_observation_unknown')
+          } catch (error) {
+            // The owner may exit AFTER the alive check. Classify only that
+            // proven transition; identity/generation/ownership errors remain
+            // terminal even if the original child has since exited.
+            const exited = error instanceof LifecycleError && ['herdr_observation_unknown', 'herdr_owner_exited'].includes(error.code) && this.driver.confirmedExit?.('herdr') === true
+            if (!exited) throw error
+            if (!this.stopping) await this.recover('herdr')
+          }
         }
         if (!this.stopping && this.state.phase === 'running' && this.transfer) {
           const transfer = await this.transfer.tick()
@@ -409,6 +467,12 @@ export class EndpointLifecycle {
     } else {
       this.observedConnection = 'stopped'
       if (this.state) {
+        if (!firstError && this.driver.captureContinuation) {
+          try {
+            const checkpoint = await this.driver.captureContinuation()
+            if (checkpoint) this.state.sessionContinuation = checkpoint
+          } catch { firstError = new LifecycleError('session_continuation_unavailable') }
+        }
         this.state.phase = 'stopped'
         if (firstError) this.state.attention = code(firstError)
         try { await this.save() } catch (error) { firstError ??= error; this.state.attention = code(firstError) }
@@ -435,5 +499,5 @@ export class EndpointLifecycle {
 
 export function leaseKeys(config) {
   return [`device:${config.deviceId}`, `herdr:${config.herdrConfigRoot}:${config.session}`, `connector:${config.agenvoConfigDir}`,
-    ...(config.transferStateDir ? [`transfer:${config.transferStateDir}`] : [])]
+    ...(config.transferStateDir || config.schema === 2 && config.transfer ? [`transfer:${config.schema === 2 ? transferLocations(config).state : config.transferStateDir}`] : [])]
 }

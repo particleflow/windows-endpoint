@@ -55,6 +55,10 @@ endpoint attention mechanism. Polling itself never replenishes this allowance.
 `advance-results` adds these four fields to its original delivery/reference
 envelope; the consumer validates that separate envelope and projects decisions
 only. A reference without confirmed association is not a delivered result.
+Plugin 0.9 adds the optional boolean `registered` to this advance envelope.
+`registered:true, admitted:false` is durable metadata awaiting finite indexing,
+not a delivered result or a new lifecycle state. Older envelopes without the
+field remain parseable; the read-only summary remains exactly four fields.
 Nonzero `due`/`idle`, unsupported exits, malformed output, timeout or signal
 suspend wakes, regardless of any optimistic state field.
 

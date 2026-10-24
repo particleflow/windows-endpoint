@@ -63,6 +63,7 @@ Node inventory (not authorization to run on an existing user machine):
 
 | Command | Implemented behavior |
 | --- | --- |
+| `configure --from FILE --root DIR` | Generate schema-1 paths from the existing deployment layout into `DIR/config/endpoint.json`; reject conflicting explicit paths. Schema 2 retains existing installation references. Create exclusively; no state relocation, directory creation or activation. |
 | `configure --from FILE --config FILE` | Strictly validate non-secret references; create endpoint config exclusively; refuse existing files and component-owned locations. Does not create directories, identities, official config or credentials. |
 | `doctor --config FILE` | Full inventory/hash check, config/identity/root agreement, native Windows-only bounded version and Git Bash probes. Credential presence is metadata only. Structured redacted checks; exit 2 while unqualified. |
 | `plan --config FILE` | Verify payload; display exact official Herdr/connector argv and controlled process environment. No process launch, pairing, plugin install, task submission or network request. |

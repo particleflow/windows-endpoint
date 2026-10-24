@@ -11,6 +11,7 @@ import { deploymentReferences } from './deployment.mjs'
 import { acquireLeases, leaseKeys } from './lifecycle.mjs'
 import { readHostStatus } from './host.mjs'
 import { deploymentFixture, syntheticBundle } from './test-support/deployment-fixture.mjs'
+import { installedFixture } from './test-support/installed-fixture.mjs'
 
 const endpoint = fileURLToPath(new URL('./endpoint.mjs', import.meta.url))
 const worker = fileURLToPath(new URL('./test-support/host-runtime.mjs', import.meta.url))
@@ -62,6 +63,33 @@ async function syntheticRunning(p) {
   assert.equal(s.componentLifecycle?.phase, 'running')
   return s
 }
+
+test('public observer accepts explicit external installation/config roots without copying or launching them', async t => {
+  const f = await installedFixture(t), root = path.join(f.base, 'host-root')
+  await fs.mkdir(path.join(root, 'config'), { recursive: true })
+  await fs.writeFile(path.join(root, 'config/endpoint.json'), JSON.stringify(f.config))
+  const p = launch(t, { root }), s = await running(p)
+  assert.equal(s.configuration, 'loaded'); assert.equal(s.attention, null)
+  assert.equal(s.componentLifecycle, null); assert.equal(s.components, 'unavailable_unqualified')
+  assert.equal(s.ready, false)
+  assert.equal(await fs.readFile(path.join(f.config.piConfigDir, 'auth.json'), 'utf8'), 'SYNTHETIC UNREAD PI CONFIG')
+  assert.equal((await stop(p)).code, 0)
+})
+test('resolved official Herdr path cannot overlap host-owned data even when the endpoint omits its path', async t => {
+  const f = await installedFixture(t), root = path.join(f.base, 'host-root')
+  await fs.mkdir(path.join(root, 'config'), { recursive: true })
+  const binary = path.join(root, 'data/program/herdr.exe')
+  await f.write(binary, 'INERT MUST NEVER RUN')
+  delete f.config.programs.herdr; f.connector.instances[0].binary = binary
+  await fs.writeFile(path.join(f.config.agenvoConfigDir, 'config.json'), JSON.stringify(f.connector))
+  await fs.writeFile(path.join(root, 'config/endpoint.json'), JSON.stringify(f.config))
+  await fs.writeFile(path.join(root, 'config/runtime.json'), JSON.stringify({ schema: 2, mode: 'existing-installations', transfer: 'disabled' }))
+  const p = launch(t, { root })
+  await attention(p, 'host_reference_overlap')
+  assert.equal(p.statuses.some(s => s.components === 'verified_local'), false)
+  assert.equal((await stop(p)).code, 2)
+  assert.equal(await fs.readFile(binary, 'utf8'), 'INERT MUST NEVER RUN')
+})
 
 test('public foreground entry stays observable with missing config, enforces one host, and stops cleanly', async t => {
   const f = await fixture(t)
@@ -121,6 +149,26 @@ test('a complete inert bundle inventory never activates unqualified public compo
   assert.equal(s.evidence, 'host_process_only'); assert.equal(s.ready, false)
   await stop(p)
   await assert.rejects(fs.lstat(path.join(f.stateDirectory, 'lifecycle.json')), { code: 'ENOENT' })
+})
+
+test('public entry rejects a malformed explicit request without starting components or rewriting it', async t => {
+  const f = await fixture(t, true), file = path.join(f.root, 'config/runtime.json')
+  const raw = JSON.stringify({ schema: 1, mode: 'explicit-review', manifestSha256: f.config.manifestSha256, transfer: 'existing-queue', qualified: true })
+  await fs.writeFile(file, raw)
+  const p = launch(t, f)
+  const s = await attention(p, 'runtime_request_invalid')
+  assert.equal(s.componentLifecycle, null); assert.equal(s.ready, false)
+  assert.equal((await stop(p)).code, 2)
+  assert.equal(await fs.readFile(file, 'utf8'), raw)
+})
+
+test('adding explicit activation to a running observer requires restart and never hot-starts', async t => {
+  const f = await fixture(t, true), p = launch(t, f)
+  await running(p)
+  await fs.writeFile(path.join(f.root, 'config/runtime.json'), JSON.stringify({ schema: 1, mode: 'explicit-review', manifestSha256: f.config.manifestSha256, transfer: 'existing-queue' }))
+  const s = await attention(p, 'host_configuration_changed')
+  assert.equal(s.configuration, 'changed_restart_required'); assert.equal(s.componentLifecycle, null)
+  assert.equal((await stop(p)).code, 2)
 })
 
 test('a linked authorization directory is rejected without observing foreign status', async t => {

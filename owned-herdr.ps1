@@ -8,8 +8,14 @@ param(
     [Parameter(Mandatory = $true)][ValidateSet('ping', 'server.stop')][string]$Action
 )
 $ErrorActionPreference = 'Stop'
+[Console]::Error.WriteLine('owned_helper_stage=bootstrap')
 try {
-    Add-Type -TypeDefinition @'
+    # The helper needs only the Utility module shipped with this exact Windows
+    # PowerShell. Do not make readiness/stop depend on recursive discovery of
+    # optional user/runner modules when the caller omits PSModulePath.
+    Import-Module -Name "$PSHOME\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1" -ErrorAction Stop
+    [Console]::Error.WriteLine('owned_helper_stage=module_loaded')
+    Microsoft.PowerShell.Utility\Add-Type -TypeDefinition @'
 using System;
 using System.IO;
 using System.IO.Pipes;
@@ -25,11 +31,13 @@ public static class MemohOwnedHerdr {
             throw new Exception("herdr_generation_changed");
         using (var pipe = new NamedPipeClientStream(".", marker, PipeDirection.InOut, PipeOptions.Asynchronous)) {
             pipe.Connect(5000);
+            Console.Error.WriteLine("owned_helper_stage=pipe_connected");
             uint peer;
             if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out peer))
                 throw new Exception("herdr_ownership_unverified");
             if (peer != owner) throw new Exception("herdr_owner_mismatch");
             if (File.ReadAllText(marker) != generation) throw new Exception("herdr_generation_changed");
+            Console.Error.WriteLine("owned_helper_stage=peer_verified");
             // The verified peer and the action use the SAME connection. Reopening
             // via a session CLI after checking the marker would introduce a race.
             byte[] request = Encoding.UTF8.GetBytes("{\"id\":\"endpoint-owned\",\"method\":\"" + action + "\",\"params\":{}}\n");
@@ -57,6 +65,7 @@ public static class MemohOwnedHerdr {
     }
 }
 '@
+    [Console]::Error.WriteLine('owned_helper_stage=compiled')
     $reply = [MemohOwnedHerdr]::Request($MarkerPath, $Generation, $OwnerProcessId, $Action)
     $parsed = $reply | ConvertFrom-Json
     if ($parsed.id -ne 'endpoint-owned' -or $null -ne $parsed.error -or $null -eq $parsed.result) { throw 'herdr_request_failed' }

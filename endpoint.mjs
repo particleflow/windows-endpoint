@@ -68,14 +68,51 @@ export async function digest(file) {
   return hash.digest('hex')
 }
 
+function validateAPIBase(value) {
+  // memoh.file-api-base.v1: inspect raw syntax before WHATWG URL can normalize
+  // dot segments, an empty authority or a default port. Never rewrite the value
+  // used by transfer.json's raw-byte HostBinding. Keep the existing error code.
+  const code = 'https_origin_required'
+  requireThat(typeof value === 'string' && Buffer.byteLength(value) <= 2048 && !/[\x00-\x20\x7f?#%\\]/.test(value), code)
+  const parts = value.match(/^https:\/\/([^/]+)(\/.*)?$/)
+  requireThat(parts && !parts[1].includes('@') && !parts[1].endsWith(':'), code)
+  const port = parts[1].match(/:(\d+)$/)
+  requireThat(!port || (Number(port[1]) >= 1 && Number(port[1]) <= 65535), code)
+  const prefix = parts[2] || ''
+  requireThat(!prefix.includes('//') && prefix.split('/').every(segment => /^[A-Za-z0-9._~-]*$/.test(segment) && segment !== '.' && segment !== '..'), code)
+  let url
+  try { url = new URL(value) } catch { throw new EndpointError(code) }
+  requireThat(url.protocol === 'https:' && url.hostname && !url.username && !url.password && !url.hostname.endsWith('.invalid'), code)
+}
+
 export function validateConfig(config) {
+  if (config?.schema === 2) {
+    const roots = ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir']
+    keys(config, ['schema', 'programs', ...roots, 'deviceId', 'runtimeId', 'instanceId', 'session'], ['transfer'])
+    // Omitted Herdr is resolved from the selected official Agenvo instance.
+    // The optional legacy value remains an explicit equality constraint.
+    keys(config.programs, ['node', 'piPackage', 'piBin', 'gitRoot', 'connectorPackage'], ['herdr'])
+    for (const value of [...roots.map(k => config[k]), ...Object.values(config.programs)]) absolute(value)
+    requireThat(uuidPattern.test(config.deviceId) && uuidPattern.test(config.runtimeId) && idPattern.test(config.instanceId) && idPattern.test(config.session) && config.session !== 'default', 'dedicated_session_required')
+    requireThat(path.basename(config.herdrConfigRoot) === 'herdr' && path.basename(config.herdrStateRoot) === 'herdr', 'herdr_root_name_required')
+    const programs = programPaths(config)
+    for (const root of roots.map(k => config[k])) {
+      for (const location of [path.dirname(programs.node), ...(programs.herdr ? [path.dirname(programs.herdr)] : []), config.programs.piPackage, config.programs.piBin, config.programs.gitRoot, config.programs.connectorPackage]) requireThat(!overlaps(root, location), 'data_program_overlap')
+    }
+    for (let i = 0; i < roots.length; i++) for (let j = i + 1; j < roots.length; j++) requireThat(!overlaps(config[roots[i]], config[roots[j]]), 'component_data_overlap')
+    if (config.transfer !== undefined) {
+      keys(config.transfer, ['pluginRoot', 'nasOrigin'])
+      absolute(config.transfer.pluginRoot)
+      validateAPIBase(config.transfer.nasOrigin)
+      for (const root of roots.map(k => config[k])) requireThat(!overlaps(root, config.transfer.pluginRoot), 'data_program_overlap')
+    }
+    return config
+  }
   keys(config, configFields)
   requireThat(config.schema === 1, 'config_version_unsupported')
   for (const field of pathFields) absolute(config[field])
   requireThat(hashPattern.test(config.manifestSha256), 'trusted_manifest_hash_required')
-  let origin
-  try { origin = new URL(config.nasOrigin) } catch { throw new EndpointError('https_origin_required') }
-  requireThat(origin.protocol === 'https:' && origin.origin === config.nasOrigin && !origin.hostname.endsWith('.invalid'), 'https_origin_required')
+  validateAPIBase(config.nasOrigin)
   requireThat(uuidPattern.test(config.deviceId) && uuidPattern.test(config.runtimeId) && idPattern.test(config.instanceId) && idPattern.test(config.session), 'existing_identity_required')
   requireThat(path.basename(config.herdrConfigRoot) === 'herdr' && path.basename(config.herdrStateRoot) === 'herdr', 'herdr_root_name_required')
   requireThat(samePath(config.transferConfigDir, path.join(config.herdrConfigRoot, 'plugins/config/memoh.delivery')), 'herdr_plugin_config_mismatch')
@@ -189,11 +226,28 @@ export async function stageBundle(source, destination, expectedHash, { checkpoin
   return { state: 'staged_review_only', manifestSha256: expectedHash }
 }
 
-export async function configure(from, to) {
+export async function configure(from, to, root) {
+  const input = await readJSON(from)
+  let config, layout
+  if (root !== undefined) {
+    const { DeploymentError, deploymentLayout, deploymentReferences } = await import('./deployment.mjs')
+    await validateDirectory(root)
+    layout = deploymentLayout(root)
+    requireThat(to === undefined, 'invalid_arguments')
+    to = path.join(layout.config, 'endpoint.json')
+    if (input?.schema === 1) {
+      try { config = deploymentReferences(root, input) }
+      catch (error) { if (error instanceof DeploymentError) throw new EndpointError(error.code); throw error }
+      // A fresh template omits paths. Explicit existing paths must agree; this
+      // command never silently relocates a queue, workspace or selected bundle.
+      for (const field of pathFields) requireThat(!Object.hasOwn(input, field) || samePath(input[field], config[field]), 'host_configuration_root_mismatch')
+    } else config = validateConfig(input)
+  } else config = validateConfig(input)
   absolute(to)
-  const config = validateConfig(await readJSON(from))
   await canonical(path.dirname(to))
-  requireThat(!pathFields.some(f => overlaps(config[f], to)), 'configuration_location_rejected')
+  const locations = config.schema === 2 ? [...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir'].map(k => config[k]), ...Object.values(config.programs), ...(config.transfer ? [config.transfer.pluginRoot] : [])] : pathFields.map(k => config[k])
+  if (layout && config.schema === 2) requireThat(locations.every(location => [layout.config, layout.data, layout.logs].every(owned => !overlaps(owned, location))), 'host_reference_overlap')
+  requireThat(!locations.some(location => overlaps(location, to)), 'configuration_location_rejected')
   // Exclusive creation; upgrading never overwrites the references or credentials.
   const handle = await fs.open(to, 'wx')
   try { await handle.writeFile(`${JSON.stringify(config, null, 2)}\n`); await handle.sync() }
@@ -201,15 +255,25 @@ export async function configure(from, to) {
   return { state: 'references_saved', credentialsRead: false, activation: 'blocked' }
 }
 
+export function programPaths(config) {
+  if (config.schema === 2) {
+    const p = config.programs
+    return { node: p.node, herdr: p.herdr, pi: path.join(p.piPackage, 'dist/bundle/cli.js'), connector: path.join(p.connectorPackage, 'dist/cli.js'),
+      git: path.join(p.gitRoot, 'bin/bash.exe'), piBin: p.piBin, gitRoot: p.gitRoot }
+  }
+  const entry = id => path.join(config.bundleRoot, catalog.components[id].entry)
+  return { node: entry('node'), herdr: entry('herdr'), pi: entry('pi'), connector: entry('connector'), git: entry('git'), piBin: path.join(config.bundleRoot, 'node_modules/.bin'), gitRoot: path.join(config.bundleRoot, 'git') }
+}
 export function managedEnvironment(config, inherited = process.env) {
-  const root = config.bundleRoot
   const env = { ...inherited }
   // Keep the caller's ordinary OS environment but remove shell/runtime injection.
   for (const k of Object.keys(env)) {
     if (/^(PATH|NODE_OPTIONS|NODE_PATH|BASH_ENV|BASH_FUNC_.*|ENV|CDPATH|SHELLOPTS|BASHOPTS|HERDR_.*|XDG_CONFIG_HOME|XDG_STATE_HOME|AGENVO_.*|PI_CODING_AGENT_DIR)$/i.test(k)) delete env[k]
   }
   const system = path.join(inherited.SystemRoot || 'C:\\Windows', 'System32')
-  env.PATH = [path.join(root, 'node'), path.join(root, 'herdr'), path.join(root, 'node_modules/.bin'), path.join(root, 'git/bin'), path.join(root, 'git/usr/bin'), path.join(root, 'git/mingw64/bin'), path.join(root, 'git/cmd'), system, path.join(system, 'WindowsPowerShell/v1.0')].join(path.delimiter)
+  const p = programPaths(config)
+  requireThat(p.herdr, 'herdr_reference_unresolved')
+  env.PATH = [path.dirname(p.node), path.dirname(p.herdr), p.piBin, path.join(p.gitRoot, 'bin'), path.join(p.gitRoot, 'usr/bin'), path.join(p.gitRoot, 'mingw64/bin'), path.join(p.gitRoot, 'cmd'), system, path.join(system, 'WindowsPowerShell/v1.0')].join(path.delimiter)
   env.HERDR_CONFIG_PATH = path.join(config.herdrConfigRoot, 'config.toml')
   env.XDG_CONFIG_HOME = path.dirname(config.herdrConfigRoot)
   env.XDG_STATE_HOME = path.dirname(config.herdrStateRoot)
@@ -220,27 +284,38 @@ export function managedEnvironment(config, inherited = process.env) {
 
 // Shared reference checks only. The producer remains responsible for native
 // storage permissions, authorization and queue integrity; never repair ACLs here.
+export function transferLocations(config) {
+  if (config.schema === 2) {
+    requireThat(config.transfer, 'transfer_reference_required')
+    return { root: config.transfer.pluginRoot, config: path.join(config.herdrConfigRoot, 'plugins/config/memoh.delivery'), state: path.join(config.herdrStateRoot, 'plugins/memoh.delivery'), origin: config.transfer.nasOrigin }
+  }
+  return { root: path.join(config.bundleRoot, 'transfer'), config: config.transferConfigDir, state: config.transferStateDir, origin: config.nasOrigin }
+}
 export async function validateTransferConfiguration(config) {
   validateConfig(config)
-  for (const field of ['sourceRoot', 'transferConfigDir', 'transferStateDir']) {
-    await canonical(config[field])
-    requireThat((await fs.stat(config[field])).isDirectory(), 'directory_required')
+  const locations = transferLocations(config)
+  for (const directory of [config.sourceRoot, locations.config, locations.state]) {
+    await canonical(directory)
+    requireThat((await fs.stat(directory)).isDirectory(), 'directory_required')
   }
-  const file = path.join(config.transferConfigDir, 'transfer.json')
+  const file = path.join(locations.config, 'transfer.json')
   const cfg = await readJSON(file, 8192)
   keys(cfg, ['version', 'origin', 'source_root'])
-  requireThat(cfg.version === 1 && cfg.origin === config.nasOrigin && samePath(cfg.source_root, config.sourceRoot), 'transfer_configuration_mismatch')
-  try { requireThat((await regular(path.join(config.transferConfigDir, 'device.credential'))).size > 0, 'transfer_credential_missing') }
+  // Exact configured spelling is intentional: even equivalent URLs must not
+  // silently change the producer's existing raw-byte binding or queue owner.
+  requireThat(cfg.version === 1 && cfg.origin === locations.origin && samePath(cfg.source_root, config.sourceRoot), 'transfer_configuration_mismatch')
+  try { requireThat((await regular(path.join(locations.config, 'device.credential'))).size > 0, 'transfer_credential_missing') }
   catch (error) { if (error.code === 'ENOENT') throw new EndpointError('transfer_credential_missing'); throw error }
 }
 
 export function transferEnvironment(config, inherited = process.env) {
+  const locations = transferLocations(config)
   return { ...managedEnvironment(config, inherited),
-    HERDR_PLUGIN_CONFIG_DIR: config.transferConfigDir,
-    HERDR_PLUGIN_STATE_DIR: config.transferStateDir }
+    HERDR_PLUGIN_CONFIG_DIR: locations.config,
+    HERDR_PLUGIN_STATE_DIR: locations.state }
 }
 export function launchPlan(config) {
-  const entry = id => path.join(config.bundleRoot, catalog.components[id].entry)
+  const entry = id => programPaths(config)[id]
   return {
     activation: 'blocked', reason: 'compatibility_qualification_pending',
     commands: [
@@ -259,6 +334,10 @@ function probe(file, args, env) {
 
 export async function doctor(config, run = probe) {
   validateConfig(config)
+  if (config.schema === 2) {
+    const { installedDoctor } = await import('./installed.mjs')
+    return installedDoctor(config)
+  }
   const checks = []
   async function check(name, action) {
     try { await action(); checks.push({ check: name, state: 'passed' }); return true }
@@ -359,15 +438,27 @@ export async function main(args) {
     requireThat(/^--[a-z-]+$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'invalid_arguments')
     options[rest[i]] = rest[i + 1]
   }
-  if (command === 'help' || !command) return { commands: ['configure --from FILE --config FILE', 'doctor --config FILE', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR'], status: 'host control available; component start/activate/update/rollback/uninstall blocked pending qualification' }
+  if (command === 'help' || !command) return { commands: ['configure --from FILE --root DIR', 'configure --from FILE --config FILE', 'doctor --config FILE', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR'], status: 'host observation and explicit verified component review available; release activation/update/rollback/uninstall blocked pending qualification' }
   if (['start', 'activate', 'update', 'rollback', 'uninstall'].includes(command)) throw new EndpointError('qualification_required_no_runtime_or_data_changed')
-  if (command === 'configure') { keys(options, ['--from', '--config']); return configure(options['--from'], options['--config']) }
+  if (command === 'configure') {
+    keys(options, ['--from'], ['--config', '--root'])
+    requireThat(Object.hasOwn(options, '--config') !== Object.hasOwn(options, '--root'), 'invalid_arguments')
+    return configure(options['--from'], options['--config'], options['--root'])
+  }
   if (command === 'stage') { keys(options, ['--source', '--destination', '--manifest-sha256']); return stageBundle(options['--source'], options['--destination'], options['--manifest-sha256']) }
   requireThat(['doctor', 'plan'].includes(command), 'unknown_command')
-  keys(options, ['--config'])
+  keys(options, ['--config'], command === 'doctor' ? ['--target'] : [])
   const config = validateConfig(await readJSON(options['--config']))
+  if (config.schema === 2 && command === 'doctor') {
+    const { installedDoctor } = await import('./installed.mjs')
+    return installedDoctor(config, options['--target'] ? await readJSON(options['--target']) : null)
+  }
+  requireThat(!options['--target'], 'existing_installation_config_required')
   if (command === 'doctor') return doctor(config)
-  await verifyBundle(config.bundleRoot, config.manifestSha256)
+  if (config.schema === 2) {
+    const { inspectInstalled } = await import('./installed.mjs')
+    return launchPlan((await inspectInstalled(config)).config)
+  } else await verifyBundle(config.bundleRoot, config.manifestSha256)
   return launchPlan(config)
 }
 

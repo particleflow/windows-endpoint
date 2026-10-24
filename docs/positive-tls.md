@@ -1,0 +1,97 @@
+# Production Windows CLI with isolated test trust
+
+Current blocker: run `39911092750` at
+`5aa2dd5eb79c4ced4b6e8707d838a4b2710c0672` completed certificate generation,
+then `Import-Certificate` exited 1 with `UI is not allowed in this operation.`
+Cleanup observed the generated fingerprint absent and the owned process tree
+empty; it did not execute removal. The legacy `removed_and_absent` label is not
+proof of import/deletion. Positive assertions below were not run. Independent
+installation-reference commits retain a failing TLS prerequisite without issuing
+another import. No alternative API, prompt suppression or larger trust scope is
+used. The test implementation remains for a separately resolved prerequisite.
+
+The prior all-green checkpoint is `aedf30f51a0aec03c05e3ef1255608c17991b9a7`,
+run `39903770625`. Its real CLI correctly rejected the self-signed fixture.
+The earlier producer test dispatcher injected a CA; that was not production CLI
+positive TLS evidence. This increment retains both existing checks unchanged in
+purpose and adds a separately authorized positive scenario in the same CI job.
+
+`host-tls.ps1` requires a GitHub-hosted Windows runner and a fresh root beneath
+its temporary directory. It generates a one-day CA and two server-auth leaves:
+one valid for localhost/127.0.0.1, one for `wrong-name.invalid`. No certificate
+or key is uploaded. The public CA certificate is imported only into
+`Cert:\CurrentUser\Root`; LocalMachine, production accounts and PC/NAS stores
+are untouched. This is account-scoped trust, not process-scoped trust. No account,
+token permission, firewall rule, system service or Agent core is changed.
+
+Before import, the generated fingerprint must be absent. Cleanup is armed before
+import so partial/uncertain success cannot escape the `finally` block. Cleanup
+removes only that exact fingerprint and checks absence. Any import, test or
+cleanup error fails the step. Logs record only the public fingerprint and scope.
+A hard VM termination cannot promise execution of `finally`; that job cannot
+pass and the disposable VM owns final destruction. Never reuse this wrapper on
+a self-hosted runner or treat it as an installation command.
+
+Runs `39907414574` (`351105a`) and `39907573571` (`a9cea73`) reached
+the job deadline in the new TLS step, before any confirmed import, trusted
+admission or cleanup marker. Their 34 native + 7 CLI tests and original six
+host checks passed. They establish neither successful import nor cleanup. The
+precise certificate preparation/import hang is unresolved from those logs;
+the separate unbounded host stop was not observed as their cause.
+
+The diagnostic revision bounds each OpenSSL and CurrentUser trust subprocess
+to 30 seconds, closes stdin (OpenSSL requests also use `-batch`), preserves
+bounded stdout/stderr and logs every phase. The trusted Node scenario has a
+420-second overall deadline; the unchanged untrusted scenario has 300 seconds.
+Node stop waits for process/stdio close for at most 20 seconds, including in
+`finally`; fixture network close has five seconds. These do not extend any
+production timeout, change trust policy or suppress a Windows consent dialog.
+
+Each stage's child supervisor joins a fresh, parent-owned Windows Job before
+starting the actual command. Parent cleanup confirms zero members; forced
+termination is a failing stage, even when cleanup succeeds. The Job cannot
+include unrelated peers. A pre-trust synthetic child/grandchild timeout checks
+that containment and confirms an independent peer remains alive. Only those
+synthetic/fixture processes can be terminated. If import times out, cleanup first
+observes the exact fingerprint and removes it if present; absence is logged even
+when no import occurred. A cleanup failure still fails the job. No production
+runtime or official process implementation is changed for these test bounds.
+
+The same production `transferqueue.exe` is built from unchanged public source
+`4c880e07ecdff1b6caadd86348779603fce9e8aa` and retains normal TLS verification:
+
+1. The original isolated host test still requires untrusted TLS rejection with
+   no transfer HTTP request, queue persistence and connector-auth failure checks.
+2. After account trust, both leaves' signatures are checked against the same CA.
+   The wrong-name leaf must be refused in the production CLI: persisted
+   waiting/queued/connection state with a future retry, recorded feedback, no
+   uploaded bytes/association, TLS failure and no HTTP request. The fixed
+   producer's `queue.go:fail` returns the durable-save result, so this recorded
+   refusal requires exit 0; it is not upload success. A killed process, timeout
+   or nonzero exit cannot satisfy the assertion. The initial fixture commit
+   `351105a` mistakenly expected exit 1; source review caught that mismatch.
+3. Switching only the served leaf to the matching name allows the real host's
+   existing finite consumer to upload the original seven bytes in two chunks.
+   The fixture checks original task/delivery namespace, synthetic authorization,
+   size, per-chunk hash/offset, whole-file hash and one original receipt.
+4. The fixture accepts commit but drops its response. The host stops with the
+   persisted association unknown, and a fresh host reopens that queue. The
+   public host status exposes no producer `decision`: only the post-drain
+   production CLI `inspect` provides the new outcome evidence. The fresh host must
+   resolve the original commit, expose `associated:true` and exactly the original
+   immutable result reference, without a second upload/complete/commit.
+5. Reopening the completed queue produces no new NAS requests. Original files,
+   official configuration and producer context survive. Local feedback remains
+   `unknown/awaiting_nas_ledger`, because local association is not the actual
+   Server's committed business ledger.
+
+`nas-fixture.mjs` is a seven-byte in-memory protocol fixture, adapted from the
+fixed producer's `cmd/transferqueue/cli_path_test.go`, not a transfer service or
+durable NAS implementation. Its Linux/Windows unit tests test the fixture's
+strictness only. Windows CI separately executes the unchanged production CLI,
+official Herdr/Agenvo and public host. No model request is sent.
+
+Even a passing isolated positive scenario leaves overall `ready:false` and
+`transferAutomaticRecovery:false`. It does not qualify real PC-to-NAS transfer,
+Server/PG grants, mobile task/result presentation, actual Agent tool recovery,
+large files, physical power loss, or release/install/update readiness.

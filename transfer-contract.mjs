@@ -54,18 +54,25 @@ export function parseAdvanceDecision(raw, now = Date.now()) {
   const value = object(raw)
   const result = decision(value, now)
   const required = ['schema', 'state', 'next_due_at', 'error_class', 'delivery_id', 'phase', 'offset', 'admitted', 'associated']
-  const optional = ['feedback_status', 'source_collection', 'payload_state', 'association_state', 'error_code', 'reference']
+  const optional = ['feedback_status', 'source_collection', 'payload_state', 'association_state', 'error_code', 'reference', 'registered']
   requireContract(required.every(k => Object.hasOwn(value, k)) && Object.keys(value).every(k => [...required, ...optional].includes(k)))
-  for (const k of ['delivery_id', 'phase', ...optional.filter(k => k !== 'reference')]) {
+  for (const k of ['delivery_id', 'phase', ...optional.filter(k => !['reference', 'registered'].includes(k))]) {
     if (Object.hasOwn(value, k)) requireContract(typeof value[k] === 'string' && value[k].length <= 256 && !/[\x00-\x1f]/.test(value[k]))
   }
   requireContract(Number.isSafeInteger(value.offset) && value.offset >= 0 && typeof value.admitted === 'boolean' && typeof value.associated === 'boolean')
+  // Plugin 0.9 adds metadata registration; older envelopes omit the field.
+  // Neither registration nor admission establishes delivery/business completion.
+  if (Object.hasOwn(value, 'registered')) requireContract(typeof value.registered === 'boolean')
   if (Object.hasOwn(value, 'reference')) {
     const ref = value.reference
     requireContract(ref && typeof ref === 'object' && !Array.isArray(ref))
     requireContract(Object.keys(ref).sort().join(',') === 'bot_id,content_hash,delivery_id,mime,operation_id,size_bytes')
     for (const k of ['bot_id', 'delivery_id', 'operation_id', 'mime']) requireContract(typeof ref[k] === 'string' && ref[k].length > 0 && ref[k].length <= 256 && !/[\x00-\x1f]/.test(ref[k]))
     requireContract(ref.delivery_id === value.delivery_id && /^[a-f0-9]{64}$/.test(ref.content_hash) && Number.isSafeInteger(ref.size_bytes) && ref.size_bytes >= 0)
+  }
+  if (Object.hasOwn(value, 'feedback_status')) {
+    requireContract(['recorded', 'unavailable'].includes(value.feedback_status))
+    requireContract(value.feedback_status === 'recorded', 'transfer_feedback_unavailable')
   }
   return result
 }
