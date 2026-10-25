@@ -14,6 +14,9 @@ function binding(config) {
   // Preserve legacy hashes exactly. A native connection reference remains part
   // of this local data binding, never an authenticated NAS identity assertion.
   if (config.schema === 3) values.push(config.connector.kind, config.connector.enrollmentFile)
+  // An explicit direct-CLI directory pair is part of the selected data identity.
+  // Keep every pre-pair binding byte unchanged when the pair is absent.
+  if (config.schema === 3 && Object.hasOwn(config, 'transferConfigDir')) values.push(config.transferConfigDir, config.transferStateDir)
   return hash(JSON.stringify(values))
 }
 function ordinary(raw) {

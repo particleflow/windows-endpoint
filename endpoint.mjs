@@ -97,14 +97,15 @@ export function connectorConfigReference(config) {
 }
 export function installationReferences(config) {
   if (config.schema === 1) return pathFields.map(key => config[key])
-  return [...componentRoots(config), ...Object.values(config.programs), ...(config.transfer ? [config.transfer.pluginRoot] : []), ...(isNativeRuntimeConfig(config) ? [connectorConfigReference(config)] : [])]
+  return [...componentRoots(config), ...Object.values(config.programs), ...(config.transfer ? [config.transfer.pluginRoot] : []), ...(isNativeRuntimeConfig(config) ? [connectorConfigReference(config),
+    ...(Object.hasOwn(config, 'transferConfigDir') ? [transferLocations(config).config, transferLocations(config).state] : [])] : [])]
 }
 
 export function validateConfig(config) {
   if ([2, 3].includes(config?.schema)) {
     const native = isNativeRuntimeConfig(config)
     const roots = ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', ...(!native ? ['agenvoConfigDir'] : []), 'piConfigDir']
-    keys(config, ['schema', 'programs', ...roots, 'deviceId', 'runtimeId', 'instanceId', 'session', ...(native ? ['connector'] : [])], ['transfer'])
+    keys(config, ['schema', 'programs', ...roots, 'deviceId', 'runtimeId', 'instanceId', 'session', ...(native ? ['connector'] : [])], ['transfer', ...(native ? ['transferConfigDir', 'transferStateDir'] : [])])
     if (native) {
       keys(config.connector, ['kind', 'enrollmentFile'])
       requireThat(config.connector.kind === 'memoh-runtime', 'connector_kind_unsupported')
@@ -130,6 +131,24 @@ export function validateConfig(config) {
       validateAPIBase(config.transfer.nasOrigin)
       for (const root of roots.map(k => config[k])) requireThat(!overlaps(root, config.transfer.pluginRoot), 'data_program_overlap')
       if (native) requireThat(!overlaps(config.connector.enrollmentFile, config.transfer.pluginRoot), 'connector_enrollment_overlap')
+    }
+    if (native && ['transferConfigDir', 'transferStateDir'].some(key => Object.hasOwn(config, key))) {
+      const locations = transferLocations(config)
+      for (const [directory, ownRoot] of [[locations.config, 'herdrConfigRoot'], [locations.state, 'herdrStateRoot']]) {
+        absolute(directory)
+        for (const program of [...programRoots, locations.root]) requireThat(!overlaps(directory, program), 'data_program_overlap')
+        requireThat(!overlaps(directory, config.connector.enrollmentFile), 'connector_enrollment_overlap')
+        for (const key of roots) {
+          if (key === ownRoot) {
+            // Existing plugin subdirectories may remain under their Herdr root;
+            // never select the entire root or an ancestor containing sessions.
+            const relative = path.relative(config[key], directory)
+            const child = relative !== '' && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`)
+            requireThat(!overlaps(directory, config[key]) || child, 'component_data_overlap')
+          } else requireThat(!overlaps(directory, config[key]), 'component_data_overlap')
+        }
+      }
+      requireThat(!overlaps(locations.config, locations.state), 'component_data_overlap')
     }
     return config
   }
@@ -318,7 +337,11 @@ export function managedEnvironment(config, inherited = process.env) {
 export function transferLocations(config) {
   if ([2, 3].includes(config.schema)) {
     requireThat(config.transfer, 'transfer_reference_required')
-    return { root: config.transfer.pluginRoot, config: path.join(config.herdrConfigRoot, 'plugins/config/memoh.delivery'), state: path.join(config.herdrStateRoot, 'plugins/memoh.delivery'), origin: config.transfer.nasOrigin }
+    const explicit = isNativeRuntimeConfig(config) && ['transferConfigDir', 'transferStateDir'].some(key => Object.hasOwn(config, key))
+    if (explicit) requireThat(['transferConfigDir', 'transferStateDir'].every(key => Object.hasOwn(config, key)), 'transfer_directory_pair_required')
+    return { root: config.transfer.pluginRoot,
+      config: explicit ? config.transferConfigDir : path.join(config.herdrConfigRoot, 'plugins/config/memoh.delivery'),
+      state: explicit ? config.transferStateDir : path.join(config.herdrStateRoot, 'plugins/memoh.delivery'), origin: config.transfer.nasOrigin }
   }
   return { root: path.join(config.bundleRoot, 'transfer'), config: config.transferConfigDir, state: config.transferStateDir, origin: config.nasOrigin }
 }

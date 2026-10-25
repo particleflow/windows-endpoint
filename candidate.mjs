@@ -27,6 +27,7 @@ export async function verifyCandidate(root, expectedHash) {
     manifest.source_repository === 'particleflow/windows-endpoint' && /^[a-f0-9]{40}$/.test(manifest.source_commit) &&
     manifest.producer_repository === 'particleflow/Memoh' && manifest.producer_commit === catalog.components.transfer.revision, 'candidate_kind_or_producer_mismatch')
   demand(manifest.state_profile === programStateProfile, 'candidate_state_profile_incompatible')
+  if (manifest.native_transfer_directory_pair !== undefined) demand(manifest.native_transfer_directory_pair === true && manifest.native_runtime, 'candidate_configuration_support_invalid')
   if (manifest.native_runtime !== undefined) {
     const n = manifest.native_runtime, pin = catalog.nativeRuntime
     demand(n && Object.keys(n).sort().join(',') === 'commit,entry,provenance,repository,version' && pin &&

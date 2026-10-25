@@ -22,5 +22,7 @@
   "transfer": {
     "pluginRoot": "<absolute candidate transfer directory or unchanged existing matching plugin root>",
     "nasOrigin": "<existing exact HTTPS API base, including /api where configured>"
-  }
+  },
+  "transferConfigDir": "<existing absolute native file configuration directory>",
+  "transferStateDir": "<existing absolute native file queue directory>"
 }

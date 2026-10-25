@@ -153,6 +153,7 @@ def build(source, commit, producer, producer_source, output, native_runtime=None
     if native:
         manifest['native_runtime'] = {'repository': 'particleflow/Memoh', 'commit': native['revision'], 'version': native['version'],
                                       'entry': native['entry'], 'provenance': 'runtime-connector/SHA256SUMS.json'}
+        manifest['native_transfer_directory_pair'] = True
     manifest_bytes = (json.dumps(manifest, indent=2) + '\n').encode()
     payload['candidate.json'] = manifest_bytes
     output.mkdir(parents=True, exist_ok=False)

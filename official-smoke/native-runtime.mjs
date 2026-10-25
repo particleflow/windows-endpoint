@@ -39,6 +39,7 @@ const config = {
   sourceRoot: path.join(external, 'work'), herdrConfigRoot: path.join(external, 'config/herdr'), herdrStateRoot: path.join(external, 'state/herdr'),
   piConfigDir: path.join(external, 'pi'), deviceId: runtimeId, runtimeId, instanceId: 'native-runtime-fixture', session: 'native-runtime-fixture',
   transfer: { pluginRoot: path.join(candidate || bundle, 'transfer'), nasOrigin: 'https://127.0.0.1:1/api' },
+  transferConfigDir: path.join(external, 'native-file/config'), transferStateDir: path.join(external, 'native-file/state'),
 }
 const transfer = transferLocations(config), credential = 'synthetic-native-runtime-empty-queue'
 const original = new Map([
@@ -48,6 +49,9 @@ const original = new Map([
   [path.join(transfer.config, 'transfer.json'), JSON.stringify({ version: 1, origin: transfer.origin, source_root: config.sourceRoot })],
   [path.join(transfer.config, 'device.credential'), credential],
   [path.join(config.piConfigDir, 'auth.json'), '{}'],
+  // These are inert preservation markers, not fabricated old task journals.
+  [path.join(config.herdrConfigRoot, 'plugins/config/memoh.delivery/unselected-fixture.txt'), 'old plugin configuration stays in place'],
+  [path.join(config.herdrStateRoot, 'plugins/memoh.delivery/unselected-fixture.txt'), 'old plugin state stays in place'],
   [path.join(config.sourceRoot, 'native-runtime-workload.cjs'), "const fs=require('node:fs'); fs.appendFileSync('invocations.txt','once\\n'); let n=0; const write=()=>fs.writeFileSync('progress.txt',String(++n)); write(); setInterval(write,200);\n"],
 ])
 const hostConfig = path.join(hostRoot, 'config/endpoint.json'), activation = path.join(hostRoot, 'config/runtime.json')

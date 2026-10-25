@@ -82,6 +82,7 @@ class CandidateTests(unittest.TestCase):
             self.assertEqual(manifest['source_commit'], self.head)
             self.assertEqual(manifest['positive_production_tls'], 'unverified')
             self.assertEqual(manifest['native_runtime']['commit'], self.pin)
+            self.assertTrue(manifest['native_transfer_directory_pair'])
             self.assertIn('runtime-connector/dist/cli.mjs', names)
             self.assertEqual(set(names), {f['path'] for f in manifest['files']} | {'candidate.json'})
             for entry in manifest['files']:

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { setupEndpoint, setupMain } from './setup.mjs'
 import { catalog, digest } from './endpoint.mjs'
 import { acquireLeases, leaseKeys } from './lifecycle.mjs'
-import { programDeployment } from './program-deployment.mjs'
+import { programDeployment, programDeploymentMain } from './program-deployment.mjs'
 import { installedFixture, nativeInstalledFixture } from './test-support/installed-fixture.mjs'
 import { programPackage } from './test-support/program-package.mjs'
 
@@ -73,6 +73,36 @@ test('native setup resolves its candidate connector for preflight, preserves omi
   assert.equal(JSON.parse(await fs.readFile(f.files.config)).programs.connectorPackage, undefined)
   assert.equal(await exists(f.config.connector.enrollmentFile), false)
   assert.equal(result.prerequisites, 'blocked'); assert.equal(result.credentialsWritten, false)
+})
+
+test('explicit native file directories reject an older candidate before creating the host root', async t => {
+  const f = await fixture(t, true)
+  Object.assign(f.config, { transfer: { pluginRoot: path.join(f.base, 'producer'), nasOrigin: 'https://example.com/api' },
+    transferConfigDir: path.join(f.base, 'native-file/config'), transferStateDir: path.join(f.base, 'native-file/state') })
+  await fs.writeFile(f.options.from, JSON.stringify(f.config))
+  await assert.rejects(setupEndpoint(f.options, { doctor: blocked }), { code: 'deployment_transfer_directories_unsupported' })
+  assert.equal(await exists(f.options.root), false)
+})
+
+test('native directory configuration refuses rollback to a candidate that cannot read the pair while retaining state', async t => {
+  const f = await fixture(t, true)
+  await setupEndpoint(f.options, { doctor: blocked })
+  const oldHash = f.candidate.hash
+  f.candidate.manifest.native_transfer_directory_pair = true
+  await fs.writeFile(path.join(f.candidate.directory, 'candidate.json'), JSON.stringify(f.candidate.manifest))
+  const hash = await digest(path.join(f.candidate.directory, 'candidate.json'))
+  // Select the capable program before introducing configuration it supports.
+  assert.equal((await programDeploymentMain(['update', '--root', f.options.root, '--source', f.candidate.directory, '--manifest-sha256', hash])).state, 'selected_review_only')
+  Object.assign(f.config, { transfer: { pluginRoot: path.join(f.base, 'producer'), nasOrigin: 'https://example.com/api' },
+    transferConfigDir: path.join(f.base, 'native-file/config'), transferStateDir: path.join(f.base, 'native-file/state') })
+  await f.write(path.join(f.config.transferConfigDir, 'keep'), 'original configuration bytes')
+  await f.write(path.join(f.config.transferStateDir, 'keep'), 'original queue bytes')
+  await fs.writeFile(f.files.config, JSON.stringify(f.config))
+  const manager = await programDeployment(f.options.root), before = await fs.readFile(manager.file)
+  await assert.rejects(programDeploymentMain(['rollback', '--root', f.options.root, '--manifest-sha256', oldHash]), { code: 'deployment_transfer_directories_unsupported' })
+  assert.deepEqual(await fs.readFile(manager.file), before)
+  assert.equal(await fs.readFile(path.join(f.config.transferConfigDir, 'keep'), 'utf8'), 'original configuration bytes')
+  assert.equal(await fs.readFile(path.join(f.config.transferStateDir, 'keep'), 'utf8'), 'original queue bytes')
 })
 
 test('matching setup retry preserves raw configuration bytes and unknown configuration files', async t => {

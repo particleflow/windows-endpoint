@@ -68,7 +68,15 @@ The optional existing PowerShell bootstrap requires an explicitly trusted Node
 hash and changes no execution policy.
 
 The transfer plugin uses the official Herdr plugin registration and its existing
-config/state roots under the selected Herdr roots. A missing registration,
+config/state roots under the selected Herdr roots. Native host direct CLI calls
+may instead select the existing `transferConfigDir` and `transferStateDir` pair
+in the same endpoint configuration. Both are required together; omitted fields
+retain the original locations. The host fixes that pair for its consumer and
+passes the producer's existing `HERDR_PLUGIN_CONFIG_DIR`/`HERDR_PLUGIN_STATE_DIR`.
+This does not redirect Herdr plugin actions: official Herdr computes its own
+plugin paths. Old actions retain old roots; task-specific direct CLI calls must
+retain their original pair. No global profile pointer, credential copy, queue
+migration or principal grant occurs. A missing registration,
 configuration or device credential is reported as an unmet prerequisite; the
 archive supplies neither credentials nor permission grants. Setup does not
 replace an active or differently bound plugin. The finite CLI remains part of

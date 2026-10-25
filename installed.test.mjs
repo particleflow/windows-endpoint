@@ -2,12 +2,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { inspectInstalled, inspectInstalledTransfer, compareProducerTarget, validateInstalledConfiguration, installedDoctor } from './installed.mjs'
-import { catalog, digest, validateConfig, managedEnvironment, programPaths, configure, main, transferLocations, transferEnvironment, componentRoots, connectorConfigReference, installationReferences, launchPlan } from './endpoint.mjs'
+import { catalog, digest, validateConfig, managedEnvironment, programPaths, configure, main, transferLocations, transferEnvironment, validateTransferConfiguration, componentRoots, connectorConfigReference, installationReferences, launchPlan } from './endpoint.mjs'
 import { validateRuntimeRequest, createExplicitRuntime } from './runtime.mjs'
 import { NativeDriver, LifecycleError, leaseKeys } from './lifecycle.mjs'
-import { transferCommand } from './transfer-lifecycle.mjs'
+import { transferCommand, NativeTransferDriver } from './transfer-lifecycle.mjs'
+import { captureSessionContinuation, verifySessionContinuation } from './session-continuation.mjs'
 import { installedFixture, nativeInstalledFixture } from './test-support/installed-fixture.mjs'
 import { deploymentReferences } from './deployment.mjs'
 
@@ -351,6 +352,81 @@ test('native connector configuration retains original transfer roots, raw API bi
   assert.equal((await inspectInstalledTransfer(f.config)).source, catalog.components.transfer.revision)
   assert.equal(transferEnvironment(f.config).HERDR_PLUGIN_STATE_DIR, f.locations.state)
   assert.deepEqual(await Promise.all(files.map(file => fs.readFile(file))), before)
+})
+test('native direct-CLI directory pair is optional and default references remain identical', async t => {
+  const f = await installedTransferFixture(t, true), original = JSON.stringify(f.config)
+  const explicit = { ...f.config, transferConfigDir: f.locations.config, transferStateDir: f.locations.state }
+  validateConfig(explicit)
+  assert.deepEqual(transferLocations(explicit), f.locations)
+  assert.deepEqual(transferEnvironment(explicit, {}), transferEnvironment(f.config, {}))
+  assert.ok(installationReferences(explicit).includes(f.locations.config))
+  assert.ok(installationReferences(explicit).includes(f.locations.state))
+  assert.equal(JSON.stringify(f.config), original)
+  const legacy = await installedTransferFixture(t)
+  assert.throws(() => validateConfig({ ...legacy.config, transferConfigDir: legacy.locations.config, transferStateDir: legacy.locations.state }), { code: 'unknown_or_missing_field' })
+})
+
+test('native direct-CLI directory pair rejects partial, unbound, overlapping and component-crossing locations', async t => {
+  const f = await installedTransferFixture(t, true)
+  const valid = { ...f.config, transferConfigDir: path.join(f.base, 'native-file-config'), transferStateDir: path.join(f.base, 'native-file-state') }
+  validateConfig(valid)
+  for (const omitted of ['transferConfigDir', 'transferStateDir']) {
+    const partial = { ...valid }; delete partial[omitted]
+    assert.throws(() => validateConfig(partial), { code: 'transfer_directory_pair_required' })
+  }
+  const unbound = { ...valid }; delete unbound.transfer
+  assert.throws(() => validateConfig(unbound), { code: 'transfer_reference_required' })
+  for (const directory of [valid.transferStateDir, path.join(valid.transferStateDir, 'nested'), f.config.sourceRoot,
+    f.config.piConfigDir, f.config.herdrConfigRoot, path.dirname(f.config.herdrConfigRoot), path.join(f.config.herdrStateRoot, 'other-config')]) {
+    assert.throws(() => validateConfig({ ...valid, transferConfigDir: directory }), { code: 'component_data_overlap' })
+  }
+  assert.throws(() => validateConfig({ ...valid, transferStateDir: path.join(f.config.herdrConfigRoot, 'other-state') }), { code: 'component_data_overlap' })
+  for (const directory of [f.config.programs.piPackage, f.config.transfer.pluginRoot]) {
+    assert.throws(() => validateConfig({ ...valid, transferConfigDir: directory }), { code: 'data_program_overlap' })
+  }
+  assert.throws(() => validateConfig({ ...valid, transferConfigDir: path.dirname(f.config.connector.enrollmentFile) }), { code: 'connector_enrollment_overlap' })
+})
+
+test('native direct-CLI driver fixes one explicit directory pair and never falls back to the old credential or queue', async t => {
+  const f = await installedTransferFixture(t, true), oldQueue = path.join(f.locations.state, 'retained-original-queue')
+  await fs.writeFile(oldQueue, 'OLD TASK RECEIPT OFFSET')
+  const oldFiles = [oldQueue, path.join(f.locations.config, 'transfer.json'), path.join(f.locations.config, 'device.credential'), f.registryFile]
+  const before = await Promise.all(oldFiles.map(file => fs.readFile(file)))
+  const selected = { ...f.config, transferConfigDir: path.join(f.base, 'native-file-config'), transferStateDir: path.join(f.base, 'native-file-state') }
+  validateConfig(selected)
+  await fs.mkdir(selected.transferConfigDir); await fs.mkdir(selected.transferStateDir)
+  await f.write(path.join(selected.transferConfigDir, 'transfer.json'), JSON.stringify({ version: 1, origin: f.locations.origin, source_root: f.config.sourceRoot }))
+  // An old credential exists, but the chosen pair must fail until its own input exists.
+  await assert.rejects(validateTransferConfiguration(selected), { code: 'transfer_credential_missing' })
+  await f.write(path.join(selected.transferConfigDir, 'device.credential'), 'SYNTHETIC SELECTED CREDENTIAL; NOT AUTHENTICATED')
+  await validateTransferConfiguration(selected)
+  const driver = new NativeTransferDriver(selected, { inheritedEnvironment: { HERDR_PLUGIN_CONFIG_DIR: f.locations.config, HERDR_PLUGIN_STATE_DIR: f.locations.state } })
+  const pair = { config: selected.transferConfigDir, state: selected.transferStateDir }
+  selected.transferConfigDir = f.locations.config; selected.transferStateDir = f.locations.state
+  assert.equal(driver.env.HERDR_PLUGIN_CONFIG_DIR, pair.config); assert.equal(driver.env.HERDR_PLUGIN_STATE_DIR, pair.state)
+  assert.equal(transferLocations(driver.config).config, pair.config)
+  assert.ok(leaseKeys(driver.config).includes(`transfer:${pair.state}`))
+  assert.equal(leaseKeys(driver.config).includes(`transfer:${f.locations.state}`), false)
+  assert.deepEqual(await Promise.all(oldFiles.map(file => fs.readFile(file))), before)
+  assert.equal(f.calls.length, 0, 'no Agent, producer CLI or Herdr plugin was started')
+})
+
+test('native direct-CLI directory pair joins continuation identity while absent-pair checkpoint bytes stay compatible', async t => {
+  const f = await installedTransferFixture(t, true), checkpoint = await captureSessionContinuation(f.config)
+  const oldKeys = ['deviceId', 'runtimeId', 'instanceId', 'session', 'sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir']
+  const prePairContract = [...oldKeys.map(key => f.config[key]), f.config.transfer, f.config.connector.kind, f.config.connector.enrollmentFile]
+  assert.equal(checkpoint.binding, createHash('sha256').update(JSON.stringify(prePairContract)).digest('hex'))
+  await verifySessionContinuation(f.config, checkpoint)
+  const selected = { ...f.config, transferConfigDir: path.join(f.base, 'native-file-config'), transferStateDir: path.join(f.base, 'native-file-state') }
+  validateConfig(selected)
+  await assert.rejects(verifySessionContinuation(selected, checkpoint), { code: 'session_data_identity_changed' })
+  const next = await captureSessionContinuation(selected)
+  await verifySessionContinuation(selected, next)
+  for (const field of ['transferConfigDir', 'transferStateDir']) {
+    await assert.rejects(verifySessionContinuation({ ...selected, [field]: `${selected[field]}-changed` }, next), { code: 'session_data_identity_changed' })
+  }
+  await assert.rejects(verifySessionContinuation(f.config, next), { code: 'session_data_identity_changed' })
+  assert.deepEqual(await captureSessionContinuation(f.config), checkpoint)
 })
 test('native doctor separates locally checked original transfer references from the unverified native file principal mapping', async t => {
   const f = await installedTransferFixture(t, true), journal = path.join(f.locations.state, 'original-queue-evidence')

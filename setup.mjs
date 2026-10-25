@@ -43,6 +43,7 @@ export async function setupEndpoint({ from, root, source, manifestSha256, transf
   const inputRaw = await boundedRead(from, 65536), config = validateConfig(parse(inputRaw))
   demand([2, 3].includes(config.schema), 'setup_reference_configuration_required')
   demand(!isNativeRuntimeConfig(config) || verified.manifest?.native_runtime, 'deployment_native_connector_missing')
+  demand(!isNativeRuntimeConfig(config) || !config.transferConfigDir || verified.manifest?.native_transfer_directory_pair === true, 'deployment_transfer_directories_unsupported')
   const request = validateRuntimeRequest({ schema: 2, mode: 'existing-installations', transfer }, config)
   demand(installationReferences(config).every(location => [layout.config, layout.data, layout.logs].every(owned => !overlaps(owned, location))), 'host_reference_overlap')
   demand(!overlaps(source, root), 'setup_source_destination_overlap')
