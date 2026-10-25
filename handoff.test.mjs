@@ -197,3 +197,15 @@ test('shared synthetic vector fixes canonical payload digest without rounding re
   assert.equal(handoffPayload(vector.payload).sha256, vector.sha256)
   assert.equal(handoffPayload(vector.payload).payload.gate.revision, '9007199254740993123')
 })
+
+
+test('existing null or scalar journal is unknown evidence, never an empty first run', async t => {
+  const f = await fixture(t)
+  for (const raw of ['null', 'false', '0', '""', '[]']) {
+    await fs.writeFile(f.store.file, raw)
+    await assert.rejects(f.store.load(), { code: 'lifecycle_state_mismatch' })
+    await assert.rejects(f.store.recordHandoff(f.payload), { code: 'lifecycle_state_mismatch' })
+    await assert.rejects(f.store.save(f.state), { code: 'lifecycle_state_mismatch' })
+    assert.equal(await fs.readFile(f.store.file, 'utf8'), raw)
+  }
+})

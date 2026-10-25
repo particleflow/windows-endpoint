@@ -69,9 +69,10 @@ export class StateStore {
   }
   async load() {
     demand(path.isAbsolute(this.directory) && await fs.realpath(this.directory) === this.directory, 'canonical_state_root_required')
-    let data
-    try { data = await readJSON(this.file) } catch (e) { if (e.code !== 'ENOENT') throw new LifecycleError('lifecycle_state_unreadable') }
-    if (!data) return { schema: 1, identity: this.identity, phase: 'stopped', restarts: [], attention: null }
+    let data, missing = false
+    try { data = await readJSON(this.file) } catch (e) { if (e.code !== 'ENOENT') throw new LifecycleError('lifecycle_state_unreadable'); missing = true }
+    if (missing) return { schema: 1, identity: this.identity, phase: 'stopped', restarts: [], attention: null }
+    demand(data && typeof data === 'object' && !Array.isArray(data), 'lifecycle_state_mismatch')
     demand([1, 2].includes(data.schema) && data.identity === this.identity && Array.isArray(data.restarts) && data.restarts.length <= 100 && data.restarts.every(t => Number.isSafeInteger(t) && t >= 0), 'lifecycle_state_mismatch')
     demand(['stopped', 'starting', 'running', 'stopping', 'needs_attention'].includes(data.phase) && (data.attention === null || /^[a-z_]{1,80}$/.test(data.attention)), 'lifecycle_state_mismatch')
     demand(data.sessionContinuation === undefined || validSessionContinuation(data.sessionContinuation), 'lifecycle_state_mismatch')

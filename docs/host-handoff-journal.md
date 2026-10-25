@@ -1,7 +1,7 @@
 # Handoff acknowledgement journal, without stop authority
 
-This increment supplies persistence and readback independently of the unresolved
-authenticated ingress. It does not add a listener, credential, CLI mutation,
+This increment supplies persistence and readback independently of automatic
+stopping, which the current official transport cannot authorize. It does not add a listener, credential, CLI mutation,
 stdin command, process stop, task replay or an authority flag callers can enable.
 The existing foreground host and lifecycle remain the only runtime.
 
@@ -109,7 +109,7 @@ Existing `task_handoff_unverified`, ownership checks, transfer attention and TLS
 qualification remain. Recording an observation does not clear those gates or
 stop a currently running task.
 
-## Isolated verification and remaining ingress
+## Isolated verification and transport boundary
 
 Tests execute real Node writer/reader/foreground processes in temporary roots,
 including termination after file sync and after publication. They cover duplicate
@@ -120,7 +120,27 @@ fixture and asserts zero starts/stops/business actions. It is not an authenticat
 Memoh-to-Windows stop or a real Herdr/Pi handoff.
 
 The fixed Memoh admission contract at `8d583a14f355630a5f4d71976c8265ec1575846c`
-remains an owner/connection/instance pause, not a host permit. Unified ownership
-code owns endpoint location and call authentication. Until that boundary is
-established, no caller can promote these records to authorization; `pane.run`
-acceptance is not durable completion. The only new public capability is readback.
+remains an owner/connection/instance pause, not a host permit. No caller can
+promote these records to authorization; `pane.run` acceptance is not durable
+completion. The only new public capability is readback.
+
+At Memoh `76f4ddad4f23699e01e13ede55c908b7fd87979c`, the
+[owner locator API](https://github.com/particleflow/Memoh/blob/76f4ddad4f23699e01e13ede55c908b7fd87979c/docs/testing/computer-admission/endpoint-location.md)
+now retains explicit `program_path`/`host_root` separately from the unchanged
+execution Target. Its `configuration_fingerprint` is the full NAS-registration
+CAS token; it is not this payload's local `host.configuration_sha256` or an
+authentication credential. Locator storage does not establish local existence,
+canonical paths, process ownership or host stop authority.
+
+Both sides have confirmed that the current native execution envelope supplies
+no independently verifiable Memoh principal to the host and no host stdin handle.
+**Automatic owner-to-host stopping is currently unsupported.** This record-only
+increment does not wait for, assume or create a missing authorization interface.
+Original task observation/result collection remain independent. No listener,
+credential, authentication file or parent-process inference is added.
+
+The existing loader also treated a present JSON `null`/scalar journal as a new
+empty state. That was reproduced at `c56269e`; it now distinguishes ENOENT from
+invalid existing content. Invalid records reject reads/mutations without replacing
+the original bytes. This is preservation of unknown evidence, not recovery or
+permission to replay work.
