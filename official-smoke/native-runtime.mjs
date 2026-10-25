@@ -9,8 +9,10 @@ import { promisify } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
-import { catalog, managedEnvironment } from '../endpoint.mjs'
+import { catalog, managedEnvironment, programPaths, transferEnvironment, transferLocations } from '../endpoint.mjs'
+import { inspectInstalled, inspectInstalledTransfer } from '../installed.mjs'
 import { createRuntimePeer } from './native-runtime-peer.mjs'
+import { isFreshPiShellPrompt } from './pi-workload-diagnostics.mjs'
 
 assert.equal(process.platform, 'win32', 'native runtime fixture requires Windows')
 assert.ok(process.argv.length === 5 || process.argv.length === 6, 'official bundle, runtime package, fresh root, optional candidate')
@@ -30,21 +32,26 @@ const config = {
   connector: { kind: 'memoh-runtime', enrollmentFile: path.join(external, 'runtime/runtime.json') },
   sourceRoot: path.join(external, 'work'), herdrConfigRoot: path.join(external, 'config/herdr'), herdrStateRoot: path.join(external, 'state/herdr'),
   piConfigDir: path.join(external, 'pi'), deviceId: randomUUID(), runtimeId: randomUUID(), instanceId: 'native-runtime-fixture', session: 'native-runtime-fixture',
+  transfer: { pluginRoot: path.join(candidate || bundle, 'transfer'), nasOrigin: 'https://127.0.0.1:1/api' },
 }
+const transfer = transferLocations(config), credential = 'synthetic-native-runtime-empty-queue'
 const original = new Map([
   [config.connector.enrollmentFile, JSON.stringify({ schemaVersion: 1, serverUrl: peer.origin, key, teamId, insecureLocalhost: true })],
   [path.join(config.herdrConfigRoot, 'config.toml'), '[update]\nversion_check = false\nmanifest_check = false\n'],
+  [path.join(config.herdrConfigRoot, 'plugins.json'), JSON.stringify([{ plugin_id: 'memoh.delivery', enabled: true, version: catalog.components.transfer.version, plugin_root: transfer.root, manifest_path: path.join(transfer.root, 'herdr-plugin.toml') }])],
+  [path.join(transfer.config, 'transfer.json'), JSON.stringify({ version: 1, origin: transfer.origin, source_root: config.sourceRoot })],
+  [path.join(transfer.config, 'device.credential'), credential],
   [path.join(config.piConfigDir, 'auth.json'), '{}'],
   [path.join(config.sourceRoot, 'native-runtime-workload.cjs'), "const fs=require('node:fs'); fs.appendFileSync('invocations.txt','once\\n'); let n=0; const write=()=>fs.writeFileSync('progress.txt',String(++n)); write(); setInterval(write,200);\n"],
 ])
 const hostConfig = path.join(hostRoot, 'config/endpoint.json'), activation = path.join(hostRoot, 'config/runtime.json')
-original.set(hostConfig, JSON.stringify(config)); original.set(activation, JSON.stringify({ schema: 2, mode: 'existing-installations', transfer: 'disabled' }))
+original.set(hostConfig, JSON.stringify(config)); original.set(activation, JSON.stringify({ schema: 2, mode: 'existing-installations', transfer: 'existing-queue' }))
 const directories = new Set()
 for (const file of original.keys()) {
   let directory = path.dirname(file)
   while (directory !== root) { directories.add(directory); directory = path.dirname(directory) }
 }
-directories.add(config.herdrStateRoot); directories.add(path.dirname(config.herdrStateRoot))
+for (let directory = transfer.state; directory !== root; directory = path.dirname(directory)) directories.add(directory)
 const input = path.join(root, 'private-native-runtime-fixture.json')
 await fs.writeFile(input, JSON.stringify({ root, items: [...[...directories].sort((a, b) => a.length - b.length).map(p => ({ kind: 'directory', path: p })), ...[...original].map(([p, content]) => ({ kind: 'file', path: p, content }))] }))
 const made = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-File', fileURLToPath(new URL('./private-fixture.ps1', import.meta.url)), '-InputFile', input], { encoding: 'utf8', timeout: 30000, maxBuffer: 65536 })
@@ -55,6 +62,28 @@ await fs.rm(input)
 const env = managedEnvironment(config), marker = path.join(config.herdrConfigRoot, 'sessions', config.session, 'herdr.sock')
 const hosts = new Set(), checks = []
 const checked = name => { checks.push(name); process.stdout.write(JSON.stringify({ nativeRuntimeCheck: name, state: 'passed' }) + '\n') }
+async function stage(name, action) {
+  const started = Date.now()
+  process.stdout.write(JSON.stringify({ nativeRuntimeStage: name, state: 'started' }) + '\n')
+  try {
+    const result = await action()
+    process.stdout.write(JSON.stringify({ nativeRuntimeStage: name, state: 'passed', elapsedMs: Date.now() - started }) + '\n')
+    return result
+  } catch (error) {
+    const code = typeof error.code === 'string' && /^[A-Za-z0-9_]{1,80}$/.test(error.code) ? error.code : 'fixture_stage_failed'
+    let input = 'not_identified'
+    // Never print raw messages, command output, credentials or arbitrary paths.
+    // A missing captured package member may be reported only beneath one of
+    // these explicitly supplied disposable fixture/code roots.
+    if (typeof error.path === 'string') for (const [label, base] of [['fixture', root], ['runtime-package', runtimePackage], ['candidate', candidate], ['official-bundle', bundle]]) {
+      if (!base) continue
+      const relative = path.relative(base, error.path)
+      if (relative && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`)) { input = `${label}/${relative.split(path.sep).join('/')}`; break }
+    }
+    process.stdout.write(JSON.stringify({ nativeRuntimeStage: name, state: 'failed', elapsedMs: Date.now() - started, code, input }) + '\n')
+    throw new Error(`native Runtime fixture ${name}: ${code}`)
+  }
+}
 async function bounded(promise, ms, reason) {
   let timer
   try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(reason)), ms) })]) }
@@ -69,7 +98,7 @@ function launch() {
   const child = spawn(node, [endpoint, 'host', 'run', '--root', hostRoot], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
   let buffer = '', bytes = 0, closed = false, stopSent = false, invalidOutput = false, secretLeaked = false
   const states = [], done = new Promise(resolve => child.once('close', code => { closed = true; resolve(code) }))
-  const inspect = chunk => { bytes += chunk.length; if (chunk.toString().includes(key)) secretLeaked = true }
+  const inspect = chunk => { bytes += chunk.length; if ([key, credential].some(secret => chunk.toString().includes(secret))) secretLeaked = true }
   child.stderr.on('data', inspect)
   child.stdout.on('data', chunk => {
     inspect(chunk); buffer += chunk
@@ -100,10 +129,20 @@ function launch() {
   }
   hosts.add(item); return item
 }
-async function herdr(args) {
+async function herdrOutput(args) {
   const result = await promisify(execFile)(config.programs.herdr, ['--session', config.session, ...args], { env, cwd: config.sourceRoot, encoding: 'utf8', timeout: 10000, maxBuffer: 65536, windowsHide: true })
+  return result.stdout
+}
+async function herdr(args) { return JSON.parse(await herdrOutput(args)) }
+async function transferCLI(action) {
+  assert.ok(['probe', 'lifecycle-summary'].includes(action), 'empty-queue fixture never admits or advances a delivery')
+  const result = await promisify(execFile)(path.join(transfer.root, 'transferqueue.exe'), ['-action', action], {
+    env: transferEnvironment(config), cwd: config.sourceRoot, encoding: 'utf8', timeout: 30000, maxBuffer: 16384, windowsHide: true,
+  })
   return JSON.parse(result.stdout)
 }
+const emptyQueue = { schema: 'memoh.delivery.lifecycle.v1', state: 'idle', next_due_at: null, error_class: 'none' }
+const idleConsumer = { state: 'idle', attention: null, active: false }
 async function ping(generation) {
   assert.match(generation, /^\d+:\d+$/)
   const result = await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-File', fileURLToPath(new URL('../owned-herdr.ps1', import.meta.url)),
@@ -112,19 +151,39 @@ async function ping(generation) {
 }
 async function progress() { try { return Number(await fs.readFile(path.join(config.sourceRoot, 'progress.txt'), 'utf8')) } catch (error) { if (error.code === 'ENOENT') return 0; throw error } }
 try {
+  await stage('required_inputs', async () => {
+    const p = programPaths(config)
+    for (const file of [...original.keys(), p.node, p.herdr, p.pi, p.connector, p.git, path.join(p.gitRoot, 'cmd/git.exe'),
+      path.join(p.piBin, 'pi'), path.join(p.piBin, 'pi.cmd'), path.join(config.programs.piPackage, 'package.json'), path.join(runtimePackage, 'package.json')]) assert.ok((await fs.stat(file)).isFile())
+    for (const directory of [config.sourceRoot, config.herdrConfigRoot, config.herdrStateRoot, config.piConfigDir, transfer.config, transfer.state]) assert.ok((await fs.stat(directory)).isDirectory())
+  })
+  const installation = await stage('official_installation_preflight', () => inspectInstalled(config))
+  process.stdout.write(JSON.stringify({ nativeRuntimePreflightVersions: installation.versions }) + '\n')
+  // Summary deliberately opens existing storage only. The native probe creates
+  // this fresh empty queue; neither action admits work or sends a NAS request.
+  assert.equal((await stage('transfer_inventory_preflight', () => inspectInstalledTransfer(config))).source, catalog.components.transfer.revision)
+  await stage('empty_queue_initialize', async () => {
+    assert.deepEqual(await transferCLI('probe'), { storage: 'available', device_configuration: 'required', profile: 'native-profile-v1' })
+    assert.deepEqual(await transferCLI('lifecycle-summary'), emptyQueue)
+  })
   const host = launch()
-  const online = await host.until(s => s.components === 'verified_local' && s.connection === 'online_snapshot')
+  const online = await host.until(s => s.components === 'verified_local' && s.connection === 'online_snapshot' && s.transfer?.state === 'idle' && !s.transfer.active)
   assert.equal(online.ready, false); assert.equal(online.agent, 'unavailable_unqualified'); assert.equal(online.transferAutomaticRecovery, false)
-  assert.equal(online.transfer, 'not_included_pending_qualification')
+  assert.deepEqual(online.transfer, idleConsumer)
   assert.equal(peer.counts.invalid, 0); assert.ok(peer.counts.connections >= 1)
   checked('public_host_runs_official_native_runtime_and_existing_herdr_without_standalone_daemon')
+  checked('same_host_finite_consumer_observes_candidate_transfer_exe_empty_queue_without_nas_work')
   const generation = await fs.readFile(marker, 'utf8'); await ping(generation)
   const created = await herdr(['workspace', 'create', '--cwd', config.sourceRoot]), paneId = created.result.root_pane.pane_id
+  // pane.run acknowledges queued input, not shell readiness. Observe this fresh
+  // fixture's empty prompt before the only workload submission; never retry it.
+  await eventually(async () => isFreshPiShellPrompt(await herdrOutput(['pane', 'read', paneId, '--source', 'recent-unwrapped', '--lines', '5']), config.sourceRoot), 'fresh native Runtime fixture shell was not ready')
   await herdr(['pane', 'run', paneId, 'node native-runtime-workload.cjs'])
   await eventually(async () => await progress() >= 2, 'ordinary Herdr workload did not start')
   const before = await progress(), connections = peer.counts.connections, cutover = Date.now()
   peer.disconnect()
-  await host.until(s => peer.counts.connections > connections && s.updatedAt > cutover && s.connection === 'online_snapshot')
+  const reconnected = await host.until(s => peer.counts.connections > connections && s.updatedAt > cutover && s.connection === 'online_snapshot' && s.transfer?.state === 'idle' && !s.transfer.active)
+  assert.deepEqual(reconnected.transfer, idleConsumer)
   assert.equal(host.states.at(-1).runId, online.runId)
   assert.equal(host.states.at(-1).componentLifecycle.restartsInWindow, 0, 'official reconnect must not spawn another component watchdog')
   assert.equal(await fs.readFile(marker, 'utf8'), generation); await ping(generation)
@@ -136,6 +195,7 @@ try {
   peer.rejectAuthorization(); peer.disconnect()
   const refused = await host.until(s => s.attention === 'connector_authentication_required')
   assert.equal(refused.connection, 'authorization_required'); assert.equal(refused.ready, false)
+  assert.deepEqual(refused.transfer, idleConsumer)
   assert.ok(peer.counts.rejected > 0)
   assert.equal(await fs.readFile(marker, 'utf8'), generation); await ping(generation)
   const refusedProgress = await progress()
@@ -147,12 +207,14 @@ try {
   assert.equal(peer.counts.attempts, attempts)
   assert.equal(await restarted.stop(), 2)
   assert.equal(await fs.readFile(path.join(config.sourceRoot, 'invocations.txt'), 'utf8'), 'once\n')
+  assert.deepEqual(await transferCLI('lifecycle-summary'), emptyQueue)
   checked('persisted_attention_restart_does_not_reconnect_or_replay_herdr_work')
   for (const [file, content] of original) assert.equal(await fs.readFile(file, 'utf8'), content)
   assert.equal(peer.counts.invalid, 0)
   checked('official_configuration_enrollment_and_original_workload_bytes_are_preserved')
   process.stdout.write(JSON.stringify({ nativeRuntimeChecks: checks.length, source: catalog.nativeRuntime.revision, connectorVersion: catalog.nativeRuntime.version,
     controlTransport: 'official_explicit_loopback_test_mode', originalWorkloadInvocations: 1, peerRPCDispatch: 'none', modelRequests: 0,
+    transferProducer: catalog.components.transfer.revision, transferVersion: catalog.components.transfer.version, transferObservation: 'actual_exe_empty_queue_idle', deliveryAdmissionsSubmitted: 0,
     serverIdentity: 'synthetic_peer_not_memoh_owner', stopAuthority: false, taskRecovery: 'not_exercised', fileTransferTLS: 'not_exercised', realPCandNAS: 'not_run' }) + '\n')
 } finally {
   const cleanup = await Promise.allSettled([...hosts].map(host => host.stop()))

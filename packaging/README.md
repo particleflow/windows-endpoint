@@ -68,6 +68,17 @@ archive supplies neither credentials nor permission grants. Setup does not
 replace an active or differently bound plugin. The finite CLI remains part of
 the one endpoint package, not a separately installed service.
 Control authorization and file-transfer authorization remain separate.
+The original file principal and HostBinding still use the existing Agenvo
+connection/device/instance. A native Runtime connection and a passing local
+`existing_transfer_reference` check do not establish a native control-to-file
+identity mapping. With native mode and a transfer reference, doctor reports
+`native_control_file_principal_mapping` as blocked with
+`native_file_principal_mapping_unverified`; setup therefore provides no start
+action until its prerequisites are resolved. This blocks claiming a new native
+file chain is connected, not finite consumption of the original authorized
+queue. Its existing credential, IDs, raw binding and references are retained.
+Do not replace the file credential with a Runtime enrollment key or rewrite its
+selector. No server-side mapping or authentication has been verified here.
 
 `configure` reports `transferConfiguration.networkPolicyFile` in that same
 Herdr private plugin config directory. The new producer reads an optional

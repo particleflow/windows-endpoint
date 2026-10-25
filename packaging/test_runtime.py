@@ -19,6 +19,10 @@ class RuntimePackageTests(unittest.TestCase):
         self.source = self.base / 'source'
         self.source.mkdir()
         subprocess.run(['git', 'init', '-q', str(self.source)], check=True)
+        # Match the fixed public checkout's LF policy. Python text writes use
+        # CRLF on Windows, unlike the real copy-proto byte copy, so create the
+        # synthetic source and build outputs with explicit bytes as well.
+        (self.source / '.gitattributes').write_bytes(b'* text=auto eol=lf\n')
         names = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.json', 'LICENSE',
                  'packages/runtime/tsconfig.json', 'packages/runtime/tsconfig.build.json',
                  'packages/runtime/src/index.ts', 'packages/runtime/scripts/build.mjs',
@@ -26,7 +30,7 @@ class RuntimePackageTests(unittest.TestCase):
         for name in names:
             target = self.source / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text('INERT SOURCE FIXTURE\n', encoding='utf-8')
+            target.write_bytes(b'INERT SOURCE FIXTURE\n')
         (self.source / 'packages/runtime/package.json').write_text(json.dumps({'name': '@memohai/runtime', 'version': '0.22.0', 'packageManager': 'pnpm@10.27.0'}), encoding='utf-8')
         subprocess.run(['git', '-C', str(self.source), 'add', '.'], check=True)
         subprocess.run(['git', '-C', str(self.source), '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'synthetic Runtime source'], check=True)
@@ -34,7 +38,7 @@ class RuntimePackageTests(unittest.TestCase):
         self.dist = self.source / 'packages/runtime/dist'
         self.dist.mkdir()
         for name in ['cli.mjs', 'index.mjs', 'index.d.ts', 'index.d.ts.map', 'bridge.proto']:
-            (self.dist / name).write_text('INERT SOURCE FIXTURE\n', encoding='utf-8')
+            (self.dist / name).write_bytes(b'INERT SOURCE FIXTURE\n')
 
     def collect(self, name='output'):
         return runtime.collect(self.source, self.commit, self.base / name)
@@ -70,6 +74,17 @@ class RuntimePackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unexpected Runtime output'):
             self.collect()
         self.assertFalse((self.base / 'output').exists())
+
+    def test_crlf_protocol_is_rejected_without_normalizing_the_built_artifact(self):
+        original = runtime.git(self.source, 'show', f'{self.commit}:internal/workspace/bridgepb/bridge.proto')
+        self.assertEqual(original, b'INERT SOURCE FIXTURE\n')
+        proto = self.dist / 'bridge.proto'
+        proto.write_bytes(original.replace(b'\n', b'\r\n'))
+        with self.assertRaisesRegex(ValueError, 'protocol differs'):
+            self.collect()
+        self.assertFalse((self.base / 'output').exists())
+        proto.write_bytes(original)
+        self.assertEqual(self.collect()['files'], 7)
 
 
 if __name__ == '__main__':

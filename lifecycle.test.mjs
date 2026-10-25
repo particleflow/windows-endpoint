@@ -358,6 +358,16 @@ test('native spawn failure without a PID remains a completed failed start', asyn
   await driver.stop('connector')
 })
 
+test('native startup preserves a classified configuration or authentication failure after the child has exited', async t => {
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'endpoint-native-start-')))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const driver = new NativeDriver({ bundleRoot: directory, sourceRoot: directory, herdrConfigRoot: directory, herdrStateRoot: directory, agenvoConfigDir: directory, piConfigDir: directory, session: 'default' })
+  for (const [lastError, expected] of [['native_configuration_invalid', 'connector_configuration_invalid'], ['handshake_403', 'connector_authentication_required'], ['native_tls_verification_failed', 'connector_tls_verification_failed']]) {
+    driver.nativeConnector = { alive: () => false, status: () => ({ state: 'needs_attention', lastError }) }
+    await assert.rejects(driver.waitReady('connector'), { code: expected })
+  }
+})
+
 test('preexisting host is never adopted or started over', async t => {
   const { lifecycle, driver, calls } = await fixture(t)
   driver.hostStatus = () => ({ running: true })

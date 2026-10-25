@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
-import { inspectInstalled, inspectInstalledTransfer, compareProducerTarget, validateInstalledConfiguration } from './installed.mjs'
+import { inspectInstalled, inspectInstalledTransfer, compareProducerTarget, validateInstalledConfiguration, installedDoctor } from './installed.mjs'
 import { catalog, digest, validateConfig, managedEnvironment, programPaths, configure, main, transferLocations, transferEnvironment, componentRoots, connectorConfigReference, installationReferences, launchPlan } from './endpoint.mjs'
 import { validateRuntimeRequest, createExplicitRuntime } from './runtime.mjs'
 import { NativeDriver, LifecycleError, leaseKeys } from './lifecycle.mjs'
@@ -327,6 +327,39 @@ test('native connector configuration retains original transfer roots, raw API bi
   assert.equal((await inspectInstalledTransfer(f.config)).source, catalog.components.transfer.revision)
   assert.equal(transferEnvironment(f.config).HERDR_PLUGIN_STATE_DIR, f.locations.state)
   assert.deepEqual(await Promise.all(files.map(file => fs.readFile(file))), before)
+})
+test('native doctor separates locally checked original transfer references from the unverified native file principal mapping', async t => {
+  const f = await installedTransferFixture(t, true), journal = path.join(f.locations.state, 'original-queue-evidence')
+  await fs.writeFile(journal, 'ORIGINAL TASK RECEIPT OFFSET')
+  const files = [journal, path.join(f.locations.config, 'transfer.json'), path.join(f.locations.config, 'device.credential'), f.registryFile, f.config.connector.enrollmentFile]
+  const before = await Promise.all(files.map(file => fs.readFile(file)))
+  const observe = async () => ({ state: 'not_running', ownership: 'not_acquired', stopAuthority: false, serverIdentity: 'not_verified' })
+  const result = await installedDoctor(f.config, null, { run: f.run, observe })
+  assert.ok(result.checks.some(c => c.check === 'existing_transfer_reference' && c.state === 'passed'))
+  assert.deepEqual(result.checks.filter(c => c.check === 'native_control_file_principal_mapping'), [
+    { check: 'native_control_file_principal_mapping', state: 'blocked', code: 'native_file_principal_mapping_unverified' },
+  ])
+  assert.equal(result.transfer, 'existing_reference_checked; original_file_credential_retained; native_control_file_principal_mapping_unverified')
+  assert.equal(result.ready, false); assert.equal(result.credentialsRead, false)
+  const runtime = await createExplicitRuntime({ config: f.config, stateDirectory: path.join(f.base, 'endpoint'), request: { schema: 2, mode: 'existing-installations', transfer: 'existing-queue' } })
+  assert.equal(runtime.transfer.state, 'stopped'); assert.equal(runtime.driver.children.size, 0)
+  assert.deepEqual(await Promise.all(files.map(file => fs.readFile(file))), before)
+  await fs.unlink(path.join(f.locations.config, 'device.credential'))
+  const missing = await installedDoctor(f.config, null, { run: f.run, observe })
+  assert.ok(missing.checks.some(c => c.check === 'installation_preflight' && c.code === 'transfer_credential_missing'))
+  assert.ok(missing.checks.some(c => c.code === 'native_file_principal_mapping_unverified'))
+})
+test('the native file mapping diagnostic does not invent a gate for legacy transfer or native control-only configuration', async t => {
+  const observe = async () => ({ state: 'not_running', ownership: 'not_acquired', stopAuthority: false, serverIdentity: 'not_verified' })
+  const legacy = await installedTransferFixture(t)
+  const checked = await installedDoctor(legacy.config, null, { run: legacy.run, observe })
+  assert.ok(checked.checks.some(c => c.check === 'existing_transfer_reference' && c.state === 'passed'))
+  assert.equal(checked.transfer, 'reference_checked; native_tls_and_authorization_unverified')
+  assert.equal(checked.checks.some(c => c.check === 'native_control_file_principal_mapping'), false)
+  const native = await nativeInstalledFixture(t)
+  const control = await installedDoctor(native.config, null, { run: native.run, observe })
+  assert.equal(control.checks.some(c => c.state === 'blocked'), false)
+  assert.equal(control.ready, false)
 })
 test('reference mode shares the registered producer paths and lease without another bundle or queue', async t => {
   const f = await installedTransferFixture(t), request = { schema: 2, mode: 'existing-installations', transfer: 'existing-queue' }

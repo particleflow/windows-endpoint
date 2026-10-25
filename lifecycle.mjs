@@ -31,6 +31,8 @@ export function connectorAttention(snapshot) {
   if (['handshake_401', 'handshake_403'].includes(snapshot?.lastError)) return 'connector_authentication_required'
   if (snapshot?.lastError === 'handshake_426') return 'connector_protocol_upgrade_required'
   if (snapshot?.lastError === 'config_changed_restart_required') return 'connector_configuration_changed'
+  if (snapshot?.lastError === 'native_configuration_invalid') return 'connector_configuration_invalid'
+  if (snapshot?.lastError === 'native_tls_verification_failed') return 'connector_tls_verification_failed'
   if (snapshot?.state === 'needs_attention') return 'connector_needs_attention'
   // Official connector also stops when its credential file is removed.
   // A published clean stop is not proof of an accidental process crash.
@@ -301,6 +303,12 @@ export class NativeDriver {
   async waitReady(component, timeout = 30000) {
     const deadline = Date.now() + timeout
     while (Date.now() < deadline) {
+      // A fast secure-loader/handshake failure may already have exited. Keep
+      // its classified reason instead of reducing it to process disappearance.
+      if (component === 'connector' && this.nativeConnector) {
+        const attention = connectorAttention(await this.connectorStatus())
+        demand(!attention, attention)
+      }
       demand(this.alive(component), `${component}_startup_exited`)
       const owned = component === 'connector' && this.nativeConnector ? this.nativeConnector.record : this.children.get(component)
       demand(!owned?.error, `${component}_process_error`)

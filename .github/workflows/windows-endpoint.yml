@@ -123,11 +123,6 @@ jobs:
           if ((git rev-parse HEAD) -ne '0894a6eb8ff69c8796e2da5450fa172d4cd5ef81') { throw 'Wrong producer source' }
           python scripts/build-transferqueue-bundle.py --output '${{ runner.temp }}/endpoint-transfer-source-build'
           if ($LASTEXITCODE -ne 0) { throw 'Producer source build failed' }
-      - name: Verify producer native fixtures (test dispatcher has fixture-only CA injection)
-        shell: pwsh
-        run: |
-          node ./official-smoke/producer-fixtures.mjs '${{ runner.temp }}/endpoint-transfer-source-build' ./producer-source
-          if ($LASTEXITCODE -ne 0) { throw 'Producer native fixtures failed' }
       - uses: actions/checkout@v4
         with:
           repository: particleflow/Memoh
@@ -175,6 +170,14 @@ jobs:
           Copy-Item -LiteralPath '${{ runner.temp }}/endpoint-transfer-source-build' -Destination (Join-Path $root 'transfer') -Recurse
           & (Join-Path $root 'node/node.exe') ./official-smoke/inventory.mjs $root
           if ($LASTEXITCODE -ne 0) { throw 'Explicit component inventory failed' }
+      - name: Exercise packaged native Runtime and independent owned Herdr across reconnect
+        shell: pwsh
+        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint native Runtime host' -UntrustedOnly -NativeRuntime -RuntimePackage '${{ runner.temp }}/endpoint extracted candidate Unicode 空格/runtime-connector' -CandidateRoot '${{ runner.temp }}/endpoint extracted candidate Unicode 空格' | Tee-Object -FilePath '${{ runner.temp }}/endpoint-candidate-output/native-runtime-host.log'
+      - name: Verify producer native fixtures (test dispatcher has fixture-only CA injection)
+        shell: pwsh
+        run: |
+          node ./official-smoke/producer-fixtures.mjs '${{ runner.temp }}/endpoint-transfer-source-build' ./producer-source
+          if ($LASTEXITCODE -ne 0) { throw 'Producer native fixtures failed' }
       - name: Exercise public host and production CLI with isolated configuration
         shell: pwsh
         run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint untrusted TLS' -UntrustedOnly
@@ -184,9 +187,6 @@ jobs:
       - name: Prepare original-task workload with real Herdr and Pi plus fixed producer projection
         shell: pwsh
         run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint native Pi workload' -UntrustedOnly -PiWorkload -ProducerSource ./producer-source
-      - name: Exercise packaged native Runtime and independent owned Herdr across reconnect
-        shell: pwsh
-        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint native Runtime host' -UntrustedOnly -NativeRuntime -RuntimePackage '${{ runner.temp }}/endpoint extracted candidate Unicode 空格/runtime-connector' -CandidateRoot '${{ runner.temp }}/endpoint extracted candidate Unicode 空格' | Tee-Object -FilePath '${{ runner.temp }}/endpoint-candidate-output/native-runtime-host.log'
       - name: Retain verified portable candidate for review only
         uses: actions/upload-artifact@v4
         with:

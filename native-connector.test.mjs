@@ -57,6 +57,23 @@ test('official status vocabulary distinguishes auth rejection, network offline a
   }
 })
 
+test('native certificate verification failures remain attention and redact certificate details', () => {
+  const expected = { state: 'needs_attention', lastError: 'native_tls_verification_failed' }
+  for (const message of [
+    'self-signed certificate',
+    'self-signed certificate in certificate chain',
+    'unable to verify the first certificate',
+    'certificate has expired',
+    "Hostname/IP does not match certificate's altnames: Host: synthetic-private.invalid. is not in the cert's altnames: DNS:synthetic-other.invalid",
+  ]) {
+    for (const state of ['disconnected', 'stopped']) assert.deepEqual(nativeConnectorObservation(`${state}: ${message}`), expected)
+    assert.deepEqual(nativeConnectorObservation(message, true), expected)
+  }
+  for (const message of ['connect ECONNREFUSED 127.0.0.1:43210', 'getaddrinfo ENOTFOUND synthetic-private.invalid', 'socket hang up']) {
+    assert.deepEqual(nativeConnectorObservation(`disconnected: ${message}`), { state: 'offline', lastError: 'connection_unavailable' })
+  }
+})
+
 test('bridge runs the original CLI arguments and graceful stop waits for actual owned exit', async t => {
   const { connector, root } = await fixture(t, normal)
   const c = connector.start(); await until(() => connector.status()?.state === 'online')

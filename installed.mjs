@@ -211,7 +211,7 @@ export async function inspectInstalled(config, run = probe, { inspectHistoryOnly
   return { ...observed, versions, config, herdrSource: resolved.herdrSource, history: resolved.history }
 }
 
-export async function installedDoctor(config, target = null) {
+export async function installedDoctor(config, target = null, { run = probe, observe = observeExistingSession } = {}) {
   const native = isNativeRuntimeConfig(config)
   const checks = [], result = { schema: 1, ready: false, mode: native ? 'native-runtime-existing-installations' : 'existing-installations', versions: null, checks,
     producer: 'not_checked', transfer: 'not_included_pending_qualification', update: 'official_owner; stop_and_recheck; task_handoff_unimplemented', credentialsRead: false,
@@ -220,18 +220,24 @@ export async function installedDoctor(config, target = null) {
   result.history = await readSessionHistory(config)
   result.sessionObservation = { state: 'not_queried', ownership: 'not_acquired', stopAuthority: false, serverIdentity: 'not_verified' }
   try {
-    const inspected = await inspectInstalled(config, probe, { inspectHistoryOnly: true })
+    const inspected = await inspectInstalled(config, run, { inspectHistoryOnly: true })
     result.versions = inspected.versions
     result.history = inspected.history
     checks.push({ check: 'installation_paths_versions_protocol', state: 'passed' })
-    result.sessionObservation = await observeExistingSession(inspected)
+    result.sessionObservation = await observe(inspected)
     if (config.transfer) {
       await inspectInstalledTransfer(config)
       checks.push({ check: 'existing_transfer_reference', state: 'passed' })
-      result.transfer = 'reference_checked; native_tls_and_authorization_unverified'
+      result.transfer = native ? 'existing_reference_checked; original_file_credential_retained; native_control_file_principal_mapping_unverified' :
+        'reference_checked; native_tls_and_authorization_unverified'
     }
     if (target) { result.producer = compareProducerTarget(inspected.config, target).state; checks.push({ check: 'producer_configuration', state: 'passed' }) }
   } catch (error) { checks.push({ check: 'installation_preflight', state: 'blocked', code: error instanceof EndpointError ? error.code : error.code === 'ENOENT' ? 'installation_input_missing' : 'installation_input_unavailable' }) }
+  // The existing file principal/binding still belongs to the original Agenvo
+  // connection. Local paths and payload checks do not authenticate a mapping
+  // from native control identity. This diagnostic never alters the authorized
+  // original queue consumer or substitutes a Runtime key for its credential.
+  if (native && config.transfer) checks.push({ check: 'native_control_file_principal_mapping', state: 'blocked', code: 'native_file_principal_mapping_unverified' })
   return result
 }
 

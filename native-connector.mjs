@@ -19,6 +19,10 @@ export function nativeConnectorObservation(line, stderr = false) {
   const error = match?.[2] || (stderr ? value : '')
   const handshake = /runtime handshake rejected with HTTP (401|403|426)(?:\b|:)/.exec(error)
   if (handshake) return { state: 'needs_attention', lastError: `handshake_${handshake[1]}` }
+  // Runtime forwards Node's verification message without its error code. Keep
+  // these known failures distinct from ordinary network disconnects, without
+  // returning the certificate details, hostname or URL contained in the text.
+  if (/^(?:self-signed certificate(?: in certificate chain)?|unable to verify the first certificate|certificate has expired|Hostname\/IP does not match certificate's altnames)(?:$|: )/i.test(error)) return { state: 'needs_attention', lastError: 'native_tls_verification_failed' }
   if (/server selected unexpected runtime protocol:/.test(error)) return { state: 'needs_attention', lastError: 'native_protocol_invalid' }
   if (stderr && /^runtime configuration (?:was not found|could not be read safely|at .+ (?:is |must |has ))/.test(value)) return { state: 'needs_attention', lastError: 'native_configuration_invalid' }
   if (match) return { state: stateMap[match[1]], lastError: error ? 'connection_unavailable' : null }
