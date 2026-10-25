@@ -249,11 +249,27 @@ export async function inspectInstalledTransfer(config) {
   const locations = transferLocations(config)
   await validateDirectory(locations.root)
   await validateTransferConfiguration(config)
-  const registryFile = path.join(config.herdrConfigRoot, 'plugins.json'), registry = await json(registryFile)
-  const registryHash = await digest(registryFile)
+  const direct = isNativeRuntimeConfig(config) && Object.hasOwn(config, 'transferConfigDir')
+  const registryFile = path.join(config.herdrConfigRoot, 'plugins.json')
+  // Direct CLI does not require a plugin registration, but an old hook must be
+  // explicitly disabled. Observe absence and original bytes without editing it.
+  async function directRegistry() {
+    await validateDirectory(config.herdrConfigRoot)
+    let before
+    try { before = await regular(registryFile) }
+    catch (error) { if (error.code === 'ENOENT') return { registry: [], hash: null }; throw error }
+    const registry = await json(registryFile), hash = await digest(registryFile)
+    demand(fingerprint(await regular(registryFile)) === fingerprint(before), 'runtime_transfer_mapping_changed')
+    return { registry, hash }
+  }
+  const observedRegistry = direct ? await directRegistry() : { registry: await json(registryFile), hash: await digest(registryFile) }
+  const { registry, hash: registryHash } = observedRegistry
   const plugins = Array.isArray(registry) ? registry.filter(p => p.plugin_id === 'memoh.delivery') : []
   const plugin = plugins[0]
-  demand(plugins.length === 1 && plugin.enabled === true && plugin.version === catalog.components.transfer.version && same(plugin.plugin_root, locations.root) && same(plugin.manifest_path, path.join(locations.root, 'herdr-plugin.toml')), 'runtime_transfer_mapping_invalid')
+  if (direct) {
+    demand(Array.isArray(registry) && plugins.length <= 1, 'runtime_transfer_mapping_invalid')
+    if (plugin) demand(plugin.enabled === false, 'runtime_legacy_plugin_must_be_disabled')
+  } else demand(plugins.length === 1 && plugin.enabled === true && plugin.version === catalog.components.transfer.version && same(plugin.plugin_root, locations.root) && same(plugin.manifest_path, path.join(locations.root, 'herdr-plugin.toml')), 'runtime_transfer_mapping_invalid')
   const proofFile = path.join(locations.root, 'SHA256SUMS.json'), proof = await json(proofFile), proofHash = await digest(proofFile)
   const names = ['README.md', 'herdr-plugin.toml', 'transfer.example.json', 'transferqueue-cli.test.exe', 'transferqueue.exe', 'transferqueue.test.exe', 'verify-fixtures.ps1']
   demand(proof.source_commit === catalog.components.transfer.revision && proof.arch === 'amd64' && Array.isArray(proof.files) && proof.files.length === names.length && proof.files.every(f => f && Object.keys(f).sort().join(',') === 'name,sha256' && names.includes(f.name) && /^[a-f0-9]{64}$/.test(f.sha256)) && new Set(proof.files.map(f => f.name)).size === names.length, 'transfer_provenance_mismatch')
@@ -265,8 +281,13 @@ export async function inspectInstalledTransfer(config) {
   }
   const tracked = new Map([['SHA256SUMS.json', proofHash], ...proof.files.filter(f => ['transferqueue.exe', 'herdr-plugin.toml'].includes(f.name)).map(f => [f.name, f.sha256])])
   const assertUnchanged = async () => {
-    await regular(registryFile)
-    demand(await digest(registryFile) === registryHash, 'runtime_transfer_mapping_changed')
+    if (direct) {
+      try { demand((await directRegistry()).hash === registryHash, 'runtime_transfer_mapping_changed') }
+      catch { throw new EndpointError('runtime_transfer_mapping_changed') }
+    } else {
+      await regular(registryFile)
+      demand(await digest(registryFile) === registryHash, 'runtime_transfer_mapping_changed')
+    }
     for (const [name, expected] of tracked) {
       const file = path.join(locations.root, name)
       await regular(file)

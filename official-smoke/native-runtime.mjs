@@ -45,7 +45,7 @@ const transfer = transferLocations(config), credential = 'synthetic-native-runti
 const original = new Map([
   [config.connector.enrollmentFile, JSON.stringify({ schemaVersion: 1, serverUrl: peer.origin, key, teamId, insecureLocalhost: true })],
   [path.join(config.herdrConfigRoot, 'config.toml'), '[update]\nversion_check = false\nmanifest_check = false\n'],
-  [path.join(config.herdrConfigRoot, 'plugins.json'), JSON.stringify([{ plugin_id: 'memoh.delivery', enabled: true, version: catalog.components.transfer.version, plugin_root: transfer.root, manifest_path: path.join(transfer.root, 'herdr-plugin.toml') }])],
+  [path.join(config.herdrConfigRoot, 'plugins.json'), JSON.stringify([{ plugin_id: 'memoh.delivery', enabled: false, version: catalog.components.transfer.version, plugin_root: transfer.root, manifest_path: path.join(transfer.root, 'herdr-plugin.toml') }])],
   [path.join(transfer.config, 'transfer.json'), JSON.stringify({ version: 1, origin: transfer.origin, source_root: config.sourceRoot })],
   [path.join(transfer.config, 'device.credential'), credential],
   [path.join(config.piConfigDir, 'auth.json'), '{}'],
@@ -152,6 +152,19 @@ async function herdrOutput(args) {
   return result.stdout
 }
 async function herdr(args) { return JSON.parse(await herdrOutput(args)) }
+async function rejectLegacyAction() {
+  // Real official handler rejects before starting a plugin command. Its fixed
+  // derived paths are never redirected to the host's explicit native pair.
+  await assert.rejects(herdrOutput(['plugin', 'action', 'invoke', 'advance-delivery', '--plugin', 'memoh.delivery']), error => {
+    if (error.killed || error.signal || error.code !== 1) return false
+    try { const response = JSON.parse(error.stderr); return response.id === 'cli:plugin' && response.error?.code === 'plugin_disabled' }
+    catch { return false }
+  })
+  assert.deepEqual(await transferCLI('lifecycle-summary'), emptyQueue)
+  for (const file of [path.join(config.herdrConfigRoot, 'plugins.json'),
+    path.join(config.herdrConfigRoot, 'plugins/config/memoh.delivery/unselected-fixture.txt'),
+    path.join(config.herdrStateRoot, 'plugins/memoh.delivery/unselected-fixture.txt')]) assert.equal(await fs.readFile(file, 'utf8'), original.get(file))
+}
 async function transferCLI(action) {
   assert.ok(['probe', 'lifecycle-summary'].includes(action), 'empty-queue fixture never admits or advances a delivery')
   const result = await promisify(execFile)(path.join(transfer.root, 'transferqueue.exe'), ['-action', action], {
@@ -212,7 +225,13 @@ try {
   assert.equal(peer.counts.invalid, 0); assert.ok(peer.counts.connections >= 1)
   checked('public_host_runs_official_native_runtime_and_existing_herdr_without_standalone_daemon')
   checked('same_host_finite_consumer_observes_candidate_transfer_exe_empty_queue_without_nas_work')
+  const attemptsBeforeDuplicate = peer.counts.attempts, duplicate = launch()
+  await duplicate.until(s => s.attention === 'endpoint_already_owned')
+  assert.equal(await duplicate.stop(), 2)
+  assert.equal(peer.counts.attempts, attemptsBeforeDuplicate)
+  checked('second_public_host_cannot_start_another_native_connector_or_consumer')
   const generation = await fs.readFile(marker, 'utf8'); await ping(generation)
+  await rejectLegacyAction()
   const created = await herdr(['workspace', 'create', '--cwd', config.sourceRoot]), paneId = created.result.root_pane.pane_id
   // pane.run acknowledges queued input, not shell readiness. Observe this fresh
   // fixture's empty prompt before the only workload submission; never retry it.
@@ -232,6 +251,8 @@ try {
   assert.equal(await fs.readFile(path.join(config.sourceRoot, 'invocations.txt'), 'utf8'), 'once\n')
   const snapshot = await herdr(['api', 'snapshot'])
   assert.ok(snapshot.result.snapshot.panes.some(pane => pane.pane_id === paneId))
+  await rejectLegacyAction()
+  checked('official_disabled_legacy_action_stays_rejected_after_reconnect_without_redirecting_or_touching_old_state')
   checked('runtime_reconnect_preserves_original_herdr_pipe_peer_pane_and_single_running_workload')
   peer.rejectAuthorization(); peer.disconnect()
   const refused = await host.until(s => s.attention === 'connector_authentication_required')

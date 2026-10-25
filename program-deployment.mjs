@@ -90,7 +90,7 @@ export async function programDeployment(root, { prepare = false, io = fs, checkp
       // Older candidates cannot consume native config. Refuse before selection
       // rather than activating an old entry and discovering it on next launch.
       if (isNativeRuntimeConfig(config)) demand(verified?.manifest?.native_runtime, 'deployment_native_connector_missing')
-      if (isNativeRuntimeConfig(config) && config.transferConfigDir) demand(verified?.manifest?.native_transfer_directory_pair === true, 'deployment_transfer_directories_unsupported')
+      if (isNativeRuntimeConfig(config) && config.transferConfigDir) demand(verified?.manifest?.native_transfer_directory_pair === true && verified.manifest.native_transfer_direct_cli === true, 'deployment_transfer_directories_unsupported')
       return { schema: 1, stateProfileSha256: programProfileHash }
     } })
   Object.assign(manager, { configFile, runtimeFile, configRaw, runtimeRaw })

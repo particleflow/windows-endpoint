@@ -86,9 +86,14 @@ test('explicit native file directories reject an older candidate before creating
 
 test('native directory configuration refuses rollback to a candidate that cannot read the pair while retaining state', async t => {
   const f = await fixture(t, true)
+  // The earlier pair-only candidate still required an enabled legacy plugin.
+  f.candidate.manifest.native_transfer_directory_pair = true
+  await fs.writeFile(path.join(f.candidate.directory, 'candidate.json'), JSON.stringify(f.candidate.manifest))
+  f.options.manifestSha256 = f.candidate.hash = await digest(path.join(f.candidate.directory, 'candidate.json'))
   await setupEndpoint(f.options, { doctor: blocked })
   const oldHash = f.candidate.hash
   f.candidate.manifest.native_transfer_directory_pair = true
+  f.candidate.manifest.native_transfer_direct_cli = true
   await fs.writeFile(path.join(f.candidate.directory, 'candidate.json'), JSON.stringify(f.candidate.manifest))
   const hash = await digest(path.join(f.candidate.directory, 'candidate.json'))
   // Select the capable program before introducing configuration it supports.

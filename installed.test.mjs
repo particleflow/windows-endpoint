@@ -428,6 +428,72 @@ test('native direct-CLI directory pair joins continuation identity while absent-
   await assert.rejects(verifySessionContinuation(f.config, next), { code: 'session_data_identity_changed' })
   assert.deepEqual(await captureSessionContinuation(f.config), checkpoint)
 })
+test('native direct-CLI hook gate rejects an enabled old registration without changing its bytes', async t => {
+  const f = await installedTransferFixture(t, true)
+  const config = { ...f.config, transferConfigDir: f.locations.config, transferStateDir: f.locations.state }
+  const before = await fs.readFile(f.registryFile)
+  await assert.rejects(inspectInstalledTransfer(config), { code: 'runtime_legacy_plugin_must_be_disabled' })
+  assert.deepEqual(await fs.readFile(f.registryFile), before)
+  assert.equal(f.calls.length, 0)
+})
+
+test('native direct-CLI hook gate accepts disabled old paths while independently checking selected producer inventory', async t => {
+  const f = await installedTransferFixture(t, true)
+  const config = { ...f.config, transferConfigDir: f.locations.config, transferStateDir: f.locations.state }
+  const disabled = [{ ...f.registry[0], enabled: false, version: 'old-version', plugin_root: path.join(f.base, 'retained-old-plugin'), manifest_path: path.join(f.base, 'retained-old-plugin/herdr-plugin.toml') }]
+  const raw = `${JSON.stringify(disabled, null, 3)}\n`
+  await fs.writeFile(f.registryFile, raw)
+  const checked = await inspectInstalledTransfer(config)
+  assert.equal(checked.source, catalog.components.transfer.revision)
+  await checked.assertUnchanged()
+  assert.equal(await fs.readFile(f.registryFile, 'utf8'), raw)
+  const diagnostic = await installedDoctor(config, null, { run: f.run, observe: async () => ({ state: 'not_running', stopAuthority: false }) })
+  assert.ok(diagnostic.checks.some(c => c.check === 'existing_transfer_reference' && c.state === 'passed'))
+  assert.ok(diagnostic.checks.some(c => c.code === 'native_file_principal_mapping_unverified' && c.state === 'blocked'))
+  await fs.appendFile(path.join(f.locations.root, 'transferqueue.exe'), 'CHANGED')
+  await assert.rejects(checked.assertUnchanged(), { code: 'transfer_payload_changed' })
+  await assert.rejects(inspectInstalledTransfer(config), { code: 'transfer_payload_changed' })
+})
+
+test('native direct-CLI hook gate permits absent registration and freezes both registry absence and unrelated original bytes', async t => {
+  for (const registry of [null, [], [{ plugin_id: 'other.fixture', enabled: true }]]) {
+    const f = await installedTransferFixture(t, true)
+    const config = { ...f.config, transferConfigDir: f.locations.config, transferStateDir: f.locations.state }
+    if (registry === null) await fs.unlink(f.registryFile)
+    else await fs.writeFile(f.registryFile, JSON.stringify(registry))
+    const checked = await inspectInstalledTransfer(config)
+    assert.equal(checked.source, catalog.components.transfer.revision)
+    await checked.assertUnchanged()
+    if (registry === null) {
+      await assert.rejects(fs.lstat(f.registryFile), { code: 'ENOENT' })
+      await fs.writeFile(f.registryFile, '[]')
+    } else await fs.appendFile(f.registryFile, '\n')
+    await assert.rejects(checked.assertUnchanged(), { code: 'runtime_transfer_mapping_changed' })
+  }
+})
+
+test('native direct-CLI hook gate rejects registration removal or re-enabling during a checked run', async t => {
+  for (const change of ['remove', 'enable']) {
+    const f = await installedTransferFixture(t, true)
+    const config = { ...f.config, transferConfigDir: f.locations.config, transferStateDir: f.locations.state }
+    await fs.writeFile(f.registryFile, JSON.stringify([{ ...f.registry[0], enabled: false }]))
+    const checked = await inspectInstalledTransfer(config)
+    if (change === 'remove') await fs.unlink(f.registryFile)
+    else await fs.writeFile(f.registryFile, JSON.stringify(f.registry))
+    await assert.rejects(checked.assertUnchanged(), { code: 'runtime_transfer_mapping_changed' })
+  }
+})
+
+test('default native and legacy transfer references still require their original enabled matching registration', async t => {
+  for (const native of [false, true]) {
+    const f = await installedTransferFixture(t, native)
+    assert.equal((await inspectInstalledTransfer(f.config)).source, catalog.components.transfer.revision)
+    await fs.writeFile(f.registryFile, JSON.stringify([{ ...f.registry[0], enabled: false }]))
+    await assert.rejects(inspectInstalledTransfer(f.config), { code: 'runtime_transfer_mapping_invalid' })
+    await fs.unlink(f.registryFile)
+    await assert.rejects(inspectInstalledTransfer(f.config), { code: 'ENOENT' })
+  }
+})
 test('native doctor separates locally checked original transfer references from the unverified native file principal mapping', async t => {
   const f = await installedTransferFixture(t, true), journal = path.join(f.locations.state, 'original-queue-evidence')
   await fs.writeFile(journal, 'ORIGINAL TASK RECEIPT OFFSET')

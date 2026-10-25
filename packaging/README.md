@@ -74,7 +74,13 @@ in the same endpoint configuration. Both are required together; omitted fields
 retain the original locations. The host fixes that pair for its consumer and
 passes the producer's existing `HERDR_PLUGIN_CONFIG_DIR`/`HERDR_PLUGIN_STATE_DIR`.
 This does not redirect Herdr plugin actions: official Herdr computes its own
-plugin paths. Old actions retain old roots; task-specific direct CLI calls must
+plugin paths. With an explicit directory pair, a registered legacy delivery
+plugin must already be disabled through its existing native configuration (for
+example `herdr --session SESSION plugin disable memoh.delivery`); an absent
+registration is also valid. Preflight observes this setting without changing it,
+and rejects a change during the host run. It neither kills a previously issued
+plugin command nor claims that disabling grants stop permission. Old actions
+retain old roots; task-specific direct CLI calls must
 retain their original pair. No global profile pointer, credential copy, queue
 migration or principal grant occurs. A missing registration,
 configuration or device credential is reported as an unmet prerequisite; the
