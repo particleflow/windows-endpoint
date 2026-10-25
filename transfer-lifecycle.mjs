@@ -84,7 +84,9 @@ export class TransferLifecycle {
     if (![0, 1].includes(status) || (status !== 0 && ['due', 'idle'].includes(decision.state))) {
       this.suspend('transfer_command_outcome_unknown'); return
     }
-    if (['authentication', 'permission', 'configuration', 'capacity'].includes(decision.error_class)) {
+    // Real disk pressure can carry a persisted producer wake. Capacity without
+    // that waiting deadline still requires attention; never invent a retry.
+    if (['authentication', 'permission', 'configuration'].includes(decision.error_class) || decision.error_class === 'capacity' && decision.state !== 'waiting') {
       this.suspend(`transfer_${decision.error_class}`); return
     }
     if (decision.state === 'unknown' && ['transient', 'busy'].includes(decision.error_class) && !this.retryUsed) {
@@ -115,7 +117,7 @@ export class TransferLifecycle {
   }
   async tickOnce() {
     if (this.stopping || this.attention || (!this.pendingHint && this.clock() < this.nextCheck)) return this.snapshot()
-    if (this.state === 'retry_hint' && this.clock() < this.nextCheck) return this.snapshot()
+    if ((this.state === 'retry_hint' || this.state === 'waiting' && this.decision?.error_class === 'capacity') && this.clock() < this.nextCheck) return this.snapshot()
     // Coalesce hints already received. Hints arriving during a finite invocation
     // stay pending for the next endpoint tick, never start a parallel command.
     if (this.pendingHint) { this.pendingHint = false; this.retryUsed = false }

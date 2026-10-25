@@ -69,11 +69,24 @@ transfer.json. Explicit IPs are tried in order; only TCP connection failure fall
 back to the original authority's IPv6. Certificate/auth failures never select
 another route. An invalid policy or conflicting proxy fails visibly.
 
-This candidate pins producer a51ddcb1cab8e246ee32fe50762e633f221ef271, plugin
-0.10.0. The prior c292 candidate remains a separate checkpoint. Endpoint program
+This candidate pins producer 648e4511f35fe2ce187509e9823d03c1d2e1d341, plugin
+0.10.0. The prior a51/c292 candidates remain separate checkpoints. Endpoint program
 update does not replace/relink an external producer, and cross-producer candidate
 switches remain rejected by the existing compatibility profile. Do not present
 this new build as an automatic upgrade of a running old plugin.
+
+This producer registers downloads as metadata and empty parts, without a total
+payload-size/backlog allowance. Existing streaming/worker bounds and actual disk
+space checks remain. `waiting` / `capacity` with a persisted `next_due_at` causes
+the endpoint to re-read the original queue at that deadline; no new delivery or
+network retry policy is created. Capacity without that deadline still pauses.
+No budget file or user migration is needed: queue/locator formats, HostBinding
+and existing configuration bytes are unchanged. The corrected publication
+migration retains old receipts and objects. Older executables still reject
+large retained states: cross-producer program update/rollback stays blocked,
+never deletes state or switches an active external plugin to make rollback fit.
+The fixed-source native tests and packaged EXE metadata check do not replace the
+outstanding production-EXE positive TLS gate or PC/NAS acceptance.
 
 
 The host's stdin accepts `{"action":"status"}` and `{"action":"stop"}`.

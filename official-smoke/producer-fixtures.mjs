@@ -47,6 +47,9 @@ export function completedAPIBaseCases(output, expected) {
 
 const taskAPIBaseTests = ['TestTaskAPIBaseLengthBoundary', 'TestTaskAPIBaseBoundaryPreservesChecks']
 export const networkTests = ['TestHostNetworkPolicyKeepsOriginalQueueBinding', 'TestHostNetworkPolicyValidation', 'TestHostNetworkPolicyRejectsProxyConflict']
+export const downloadTests = ['TestDownloadMetadataDoesNotReservePayloadOrBacklog', 'TestDownloadDiskPressureRetainsCheckpointAndWorkerBound', 'TestDownloadDiskPressureKeepsUnknownAssociation']
+export const cliDownloadTests = ['TestCLIDefaultDownloadDoesNotCapSourceSize']
+export const publicationMigrationTests = ['TestPublicationMetadataMigrationPreservesCompleteHistory']
 export const budgetTests = ['TestHostBudgetConfiguration', 'TestBudgetMigrationPreservesIdentityAndUnknown', 'TestBudgetMigrationRejectsBusyMismatchAndCapacity', 'TestBudgetMigrationResumesIncompleteAdmission', 'TestBudgetMigrationProcessCrashAndTornTail']
 export const cliBudgetTests = ['TestCLIBudgetConfigurationAndOldQueueRecovery']
 export const registrationTests = ['TestRegisteredProcessExitBeforeAcknowledgement', 'TestRegisteredSourceRestartAndMissingChanges', 'TestRegisteredSourceResumesReceiptWithoutSnapshot', 'TestRegisteredSourceBlockProofRejectsUndetectedChange']
@@ -126,6 +129,9 @@ export async function verifyFixtures(root, sourceRoot) {
   const cliBinary = path.join(root, 'transferqueue-cli.test.exe')
   for (const [file, names, selector, contractName] of [
     [binary, networkTests, '^TestHostNetwork', 'producerNetworkContract'],
+    [binary, downloadTests, '^TestDownload(Metadata|DiskPressure)', 'producerDownloadContract'],
+    [cliBinary, cliDownloadTests, '^TestCLIDefaultDownload', 'producerDownloadContract'],
+    [binary, publicationMigrationTests, '^TestPublicationMetadataMigrationPreservesCompleteHistory$', 'producerPublicationMigrationContract'],
     [binary, budgetTests, '^Test(HostBudget|BudgetMigration)', 'producerBudgetContract'],
     [cliBinary, cliBudgetTests, '^TestCLIBudget', 'producerBudgetContract'],
     [binary, registrationTests, '^TestRegistered', 'producerRegistrationContract'],

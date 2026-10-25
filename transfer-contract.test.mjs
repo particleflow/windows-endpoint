@@ -88,3 +88,11 @@ test('metadata registration is a boolean envelope field, not a delivery or sched
   assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, state: 'registered' }), now))
   assert.throws(() => parseLifecycleSummary(JSON.stringify({ ...summary(), registered: true }), now))
 })
+
+test('disk capacity wait requires the producer deadline without weakening other failure classes', () => {
+  const waiting = summary({ state: 'waiting', error_class: 'capacity', next_due_at: '2026-10-22T18:05:00Z' })
+  assert.deepEqual(parse(waiting), waiting)
+  assert.deepEqual(parseAdvanceDecision(JSON.stringify({ ...waiting, delivery_id: 'original-download', phase: 'queued', offset: 8388608, admitted: true, associated: false }), now), waiting)
+  for (const next_due_at of [null, '2026-10-22T18:00:00Z']) assert.throws(() => parse({ ...waiting, next_due_at }))
+  for (const error_class of ['authentication', 'permission', 'configuration', 'unknown']) assert.throws(() => parse({ ...waiting, error_class }))
+})

@@ -36,7 +36,7 @@ function decision(value, now) {
   if (value.state === 'waiting') requireContract(dueAt !== null && dueAt > now)
   else requireContract(dueAt === null)
   if (['idle', 'due'].includes(value.state)) requireContract(value.error_class === 'none')
-  if (value.state === 'waiting') requireContract(['none', 'transient', 'busy'].includes(value.error_class))
+  if (value.state === 'waiting') requireContract(['none', 'transient', 'busy', 'capacity'].includes(value.error_class))
   if (['transient', 'busy'].includes(value.error_class)) requireContract(['waiting', 'unknown'].includes(value.state))
   return Object.freeze({ schema: value.schema, state: value.state, next_due_at: value.next_due_at, error_class: value.error_class })
 }

@@ -315,6 +315,37 @@ try {
   assert.equal(feedback.files.length, 1); assert.equal(feedback.files[0].delivery_id, deliveryId)
   assert.equal(feedback.files[0].state, 'pending')
   checked('existing_config_source_and_pending_producer_feedback_are_preserved')
+  if (candidate) {
+    // Actual packaged EXE, installed defaults, metadata only. All host writers
+    // above have stopped; no transfer is advanced or trusted TLS claimed here.
+    assert.equal(children.size, 0)
+    await assert.rejects(fs.stat(path.join(config.transferConfigDir, 'queue-budget.json')), { code: 'ENOENT' })
+    const configuration = await fs.readFile(path.join(config.transferConfigDir, 'transfer.json'))
+    const prior = await cli('inspect', null, deliveryId), requestsBefore = nasRequests, tlsBefore = tlsFailures
+    const names = await fs.readdir(config.transferStateDir, { recursive: true })
+    const locators = new Map(await Promise.all(names.filter(name => path.basename(name) === 'locator').map(async name => [name, await fs.readFile(path.join(config.transferStateDir, name))])))
+    assert.ok(locators.size > 0)
+    const device_task = Object.fromEntries(['user_id', 'session_id', 'target_id', 'run_id', 'attempt', 'generation'].map(key => [key, plan.task[key]]))
+    for (let i = 0; i < 9; i++) {
+      const id = `synthetic-large-metadata-${i}`
+      const job = { version: 1, delivery_id: id, snapshot_id: id, bot_id: plan.task.bot_id, operation_id: plan.task.operation_id,
+        locator_revision: 'native-profile-v1', phase: 'queued', device_task, spec: { size_bytes: 1024 ** 3, sha256: '1'.repeat(64), mime: 'application/octet-stream' } }
+      const admitted = await cli('enqueue-download', { job })
+      assert.equal(admitted.delivery_id, id); assert.equal(admitted.admitted, true)
+      assert.equal(admitted.associated, false); assert.equal(admitted.offset, 0); assert.equal(admitted.reference, undefined)
+      assert.deepEqual(await cli('inspect', null, id), admitted)
+      assert.deepEqual(await cli('enqueue-download', { job }), admitted)
+    }
+    const parts = (await fs.readdir(config.transferStateDir, { recursive: true })).filter(name => name.endsWith('.part'))
+    assert.equal(parts.length, 9)
+    for (const name of parts) assert.equal((await fs.stat(path.join(config.transferStateDir, name))).size, 0)
+    for (const [name, bytes] of locators) assert.deepEqual(await fs.readFile(path.join(config.transferStateDir, name)), bytes)
+    assert.deepEqual(await cli('inspect', null, deliveryId), prior)
+    assert.deepEqual(await fs.readFile(path.join(config.transferConfigDir, 'transfer.json')), configuration)
+    assert.deepEqual(JSON.parse(await fs.readFile(path.join(attempt, 'delivery-feedback.json'), 'utf8')), feedback)
+    assert.equal(nasRequests, requestsBefore); assert.equal(tlsFailures, tlsBefore)
+    checked('packaged_default_cli_registers_nine_1gib_downloads_without_payload_allocation_network_or_rebinding')
+  }
   process.stdout.write(JSON.stringify({ explicitHostChecks: result, mode: references ? 'existing-installations' : 'explicit-review', producer: catalog.components.transfer.revision, apiBasePrefix: references ? '/api/' : '/', ready: false, positiveProductionTLS: 'unverified', realPCandNAS: 'not_run', modelRequests: 0 }) + '\n')
   }
 } finally {

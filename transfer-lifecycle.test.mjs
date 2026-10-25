@@ -56,6 +56,40 @@ test('idle polls only the existing queue and never asserts business completion',
   assert.deepEqual(calls, ['lifecycle-summary', 'lifecycle-summary'])
 })
 
+test('capacity waits survive hints and restart; only a fresh due summary permits another finite advance', async () => {
+  const due = '2026-10-22T18:05:00.000000001Z'
+  const waiting = decision('waiting', { error_class: 'capacity', next_due_at: due })
+  const { transfer, calls, time } = fixture(action => output(action, calls.length === 1 ? decision('due') : waiting))
+  await transfer.tick()
+  assert.equal(transfer.snapshot().state, 'waiting'); assert.equal(transfer.snapshot().attention, null)
+  for (let i = 1; i <= 20; i++) { time(i * 1000); transfer.hint('network'); await transfer.tick() }
+  assert.deepEqual(calls, ['lifecycle-summary', 'advance-results'])
+  await transfer.stop(); transfer.start(); await transfer.tick()
+  assert.deepEqual(calls, ['lifecycle-summary', 'advance-results', 'lifecycle-summary'])
+  time(300000); transfer.hint('completion'); await transfer.tick(); assert.equal(calls.length, 3)
+  transfer.driver.invoke = async action => { calls.push(action); return output(action, decision(action === 'lifecycle-summary' ? 'due' : 'idle')) }
+  time(300001); await transfer.tick()
+  assert.deepEqual(calls.slice(3), ['lifecycle-summary', 'advance-results'])
+  assert.equal(transfer.snapshot().businessCompletion, 'not_inferred')
+})
+
+for (const action of ['lifecycle-summary', 'advance-results']) for (const status of [0, 1]) {
+  test(`stop drains ${action} capacity wait exit ${status}; restart observes the original deadline`, async () => {
+    let finish, entered
+    const ready = new Promise(resolve => { entered = resolve })
+    const waiting = decision('waiting', { error_class: 'capacity', next_due_at: '2026-10-22T18:05:00Z' })
+    const { transfer, calls, time } = fixture(current => current === action ? new Promise(resolve => { finish = () => resolve(output(current, waiting, status)); entered() }) : output(current, decision('due')))
+    const tick = transfer.tick(); await ready
+    const stop = transfer.stop(); finish(); await Promise.all([tick, stop])
+    assert.equal(transfer.snapshot().attention, null)
+    assert.deepEqual(transfer.snapshot().decision, waiting)
+    const before = calls.length
+    transfer.driver.invoke = async current => { calls.push(current); return output(current, waiting) }
+    transfer.start(); await transfer.tick(); time(299999); await transfer.tick()
+    assert.deepEqual(calls.slice(before), ['lifecycle-summary'])
+  })
+}
+
 test('registered upload remains producer work across stop/restart without local delivery inference or resubmission', async () => {
   const { transfer, calls, time } = fixture(action => action === 'lifecycle-summary' ? output(action, decision('due')) : {
     status: 0, stdout: JSON.stringify({ ...decision('due'), delivery_id: 'original-delivery', phase: 'queued', offset: 0, registered: true, admitted: false, associated: false, feedback_status: 'recorded' }),

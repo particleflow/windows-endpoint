@@ -5,7 +5,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { catalog, digest } from '../endpoint.mjs'
-import { testNames, fixturePlan, completedTests, completedAPIBaseCases, completedTaskAPIBaseCases, networkTests, budgetTests, cliBudgetTests, registrationTests, cliRegistrationTests, verifyProducerBundle } from './producer-fixtures.mjs'
+import { testNames, fixturePlan, completedTests, completedAPIBaseCases, completedTaskAPIBaseCases, networkTests, downloadTests, cliDownloadTests, publicationMigrationTests, budgetTests, cliBudgetTests, registrationTests, cliRegistrationTests, verifyProducerBundle } from './producer-fixtures.mjs'
 
 const native = ['TestWindowsNativeActiveJournal', 'TestWindowsNativePublicationBucketBudget', 'TestWindowsNativePublicationMigrationProcessCrash', 'TestWindowsNativePublicationNewCase', 'TestWindowsNativeNewCore']
 const cli = ['TestCLIPathChild', 'TestCLIPathTLSRestartAndLostResponses']
@@ -17,6 +17,15 @@ test('native network configuration coverage requires the three shared tests, wit
   assert.throws(() => completedTests(output(networkTests.slice(1)), networkTests))
   assert.throws(() => completedTests(output(networkTests).replace('--- PASS:', '--- SKIP:'), networkTests))
   assert.ok(networkTests.every(name => name.startsWith('TestHostNetwork')))
+})
+
+test('default download and old publication recovery require the fixed producer cases without skips', () => {
+  assert.equal(downloadTests.length, 3); assert.equal(cliDownloadTests.length, 1); assert.equal(publicationMigrationTests.length, 1)
+  for (const names of [downloadTests, cliDownloadTests, publicationMigrationTests]) {
+    assert.deepEqual(completedTests(output(names), names), names)
+    assert.throws(() => completedTests(output(names.slice(1)), names))
+    assert.throws(() => completedTests(output(names).replace('--- PASS:', '--- SKIP:'), names))
+  }
 })
 
 test('budget coverage requires all five library tests and the actual CLI dispatcher test', () => {
