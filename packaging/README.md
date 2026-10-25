@@ -87,6 +87,11 @@ large retained states: cross-producer program update/rollback stays blocked,
 never deletes state or switches an active external plugin to make rollback fit.
 The fixed-source native tests and packaged EXE metadata check do not replace the
 outstanding production-EXE positive TLS gate or PC/NAS acceptance.
+Inbound downloads without a matching outbound producer context still report
+`feedback_status:unavailable`; the endpoint consumer retains its feedback guard.
+Metadata registration does not qualify automatic inbound task advancement.
+That distinction needs the original producer's explicit feedback contract; no
+local receipt, fabricated producer context or relaxed unavailable check is used.
 
 
 The host's stdin accepts `{"action":"status"}` and `{"action":"stop"}`.

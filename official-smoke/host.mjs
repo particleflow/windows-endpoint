@@ -322,6 +322,10 @@ try {
     await assert.rejects(fs.stat(path.join(config.transferConfigDir, 'queue-budget.json')), { code: 'ENOENT' })
     const configuration = await fs.readFile(path.join(config.transferConfigDir, 'transfer.json'))
     const prior = await cli('inspect', null, deliveryId), requestsBefore = nasRequests, tlsBefore = tlsFailures
+    // inspect also republishes advisory feedback using its invocation clock.
+    // Freeze evidence after that call, and compare before the final inspect;
+    // crossing its retry deadline legitimately refreshes retry_backoff to queued.
+    const feedbackBytes = await fs.readFile(path.join(attempt, 'delivery-feedback.json'))
     const names = await fs.readdir(config.transferStateDir, { recursive: true })
     const locators = new Map(await Promise.all(names.filter(name => path.basename(name) === 'locator').map(async name => [name, await fs.readFile(path.join(config.transferStateDir, name))])))
     assert.ok(locators.size > 0)
@@ -333,6 +337,7 @@ try {
       const admitted = await cli('enqueue-download', { job })
       assert.equal(admitted.delivery_id, id); assert.equal(admitted.admitted, true)
       assert.equal(admitted.associated, false); assert.equal(admitted.offset, 0); assert.equal(admitted.reference, undefined)
+      assert.equal(admitted.feedback_status, 'unavailable', 'inbound metadata has no matching outbound producer plan; do not infer automatic consumer qualification')
       assert.deepEqual(await cli('inspect', null, id), admitted)
       assert.deepEqual(await cli('enqueue-download', { job }), admitted)
     }
@@ -340,11 +345,12 @@ try {
     assert.equal(parts.length, 9)
     for (const name of parts) assert.equal((await fs.stat(path.join(config.transferStateDir, name))).size, 0)
     for (const [name, bytes] of locators) assert.deepEqual(await fs.readFile(path.join(config.transferStateDir, name)), bytes)
+    assert.deepEqual(await fs.readFile(path.join(attempt, 'delivery-feedback.json')), feedbackBytes)
     assert.deepEqual(await cli('inspect', null, deliveryId), prior)
     assert.deepEqual(await fs.readFile(path.join(config.transferConfigDir, 'transfer.json')), configuration)
-    assert.deepEqual(JSON.parse(await fs.readFile(path.join(attempt, 'delivery-feedback.json'), 'utf8')), feedback)
     assert.equal(nasRequests, requestsBefore); assert.equal(tlsFailures, tlsBefore)
     checked('packaged_default_cli_registers_nine_1gib_downloads_without_payload_allocation_network_or_rebinding')
+    process.stdout.write(JSON.stringify({ downloadMetadata: { jobs: 9, declaredBytesEach: 1024 ** 3, payloadBytes: 0, networkRequests: 0, feedbackStatus: 'unavailable', reason: 'no_matching_outbound_producer_context', automaticInboundConsumer: 'not_qualified' } }) + '\n')
   }
   process.stdout.write(JSON.stringify({ explicitHostChecks: result, mode: references ? 'existing-installations' : 'explicit-review', producer: catalog.components.transfer.revision, apiBasePrefix: references ? '/api/' : '/', ready: false, positiveProductionTLS: 'unverified', realPCandNAS: 'not_run', modelRequests: 0 }) + '\n')
   }
