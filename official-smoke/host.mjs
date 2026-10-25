@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { catalog, digest, transferEnvironment, transferLocations } from '../endpoint.mjs'
 import { deploymentReferences } from '../deployment.mjs'
 import { readHostStatus } from '../host.mjs'
+import { validateInstalledConfiguration } from '../installed.mjs'
 import { transferFixture } from './nas-fixture.mjs'
 
 assert.equal(process.platform, 'win32')
@@ -101,10 +102,13 @@ const hostConfig = references ? {
 assert.deepEqual(transferLocations(hostConfig), { ...transferLocations(config), root: transferRoot }, 'Public host and producer must use identical existing roots')
 await fs.writeFile(path.join(hostRoot, 'config/endpoint.json'), JSON.stringify(hostConfig))
 await fs.writeFile(path.join(hostRoot, 'config/runtime.json'), JSON.stringify(references ? { schema: 2, mode: 'existing-installations', transfer: 'existing-queue' } : { schema: 1, mode: 'explicit-review', manifestSha256: config.manifestSha256, transfer: 'existing-queue' }))
+// Like the host, resolve Herdr from the selected official instance before
+// constructing PATH. Keep the on-disk endpoint configuration single-source.
+const cliConfig = references ? (await validateInstalledConfiguration(hostConfig)).config : hostConfig
 async function cli(action, input, id, expectedExit = 0) {
   // Keep the loopback server responsive while the real CLI performs TLS/I/O.
   return new Promise((resolve, reject) => {
-    const child = execFile(path.join(transferRoot, 'transferqueue.exe'), ['-action', action, ...(id ? ['-delivery', id] : [])], { env: transferEnvironment(hostConfig), cwd: config.sourceRoot, encoding: 'utf8', timeout: 125000, maxBuffer: 16384, windowsHide: true }, (error, stdout) => {
+    const child = execFile(path.join(transferRoot, 'transferqueue.exe'), ['-action', action, ...(id ? ['-delivery', id] : [])], { env: transferEnvironment(cliConfig), cwd: config.sourceRoot, encoding: 'utf8', timeout: 125000, maxBuffer: 16384, windowsHide: true }, (error, stdout) => {
       try {
         assert.equal(error?.killed ?? false, false, 'CLI timeout is not a TLS rejection')
         assert.equal(error?.code ?? 0, expectedExit, `production CLI ${action}: ${stdout.slice(0, 500)}`)

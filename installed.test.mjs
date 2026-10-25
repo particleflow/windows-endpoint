@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
-import { inspectInstalled, inspectInstalledTransfer, compareProducerTarget } from './installed.mjs'
+import { inspectInstalled, inspectInstalledTransfer, compareProducerTarget, validateInstalledConfiguration } from './installed.mjs'
 import { catalog, digest, validateConfig, managedEnvironment, programPaths, configure, main, transferLocations, transferEnvironment } from './endpoint.mjs'
 import { validateRuntimeRequest, createExplicitRuntime } from './runtime.mjs'
 import { NativeDriver, LifecycleError, leaseKeys } from './lifecycle.mjs'
@@ -221,12 +221,18 @@ async function installedTransferFixture(t) {
 }
 test('reference mode shares the registered producer paths and lease without another bundle or queue', async t => {
   const f = await installedTransferFixture(t), request = { schema: 2, mode: 'existing-installations', transfer: 'existing-queue' }
+  delete f.config.programs.herdr
+  const original = JSON.stringify(f.config)
   const journal = path.join(f.locations.state, 'untouched-user-journal')
   await fs.writeFile(journal, 'KEEP EXISTING QUEUE EVIDENCE')
   const checked = await inspectInstalledTransfer(f.config)
   assert.equal(checked.source, catalog.components.transfer.revision)
   assert.deepEqual(transferCommand(f.config, 'advance-results'), { file: path.join(f.locations.root, 'transferqueue.exe'), args: ['-action', 'advance-results'] })
-  const env = transferEnvironment(f.config)
+  assert.throws(() => transferEnvironment(f.config), { code: 'herdr_reference_unresolved' })
+  const resolved = (await validateInstalledConfiguration(f.config)).config
+  const env = transferEnvironment(resolved)
+  assert.ok(env.PATH.split(path.delimiter).includes(path.dirname(f.p.herdr)))
+  assert.equal(JSON.stringify(f.config), original)
   assert.equal(env.HERDR_PLUGIN_CONFIG_DIR, f.locations.config); assert.equal(env.HERDR_PLUGIN_STATE_DIR, f.locations.state)
   assert.ok(leaseKeys(f.config).includes(`transfer:${f.locations.state}`))
   const runtime = await createExplicitRuntime({ config: f.config, stateDirectory: path.join(f.base, 'endpoint'), request })
