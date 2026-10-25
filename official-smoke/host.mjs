@@ -12,6 +12,7 @@ import { readHostStatus } from '../host.mjs'
 import { validateInstalledConfiguration } from '../installed.mjs'
 import { transferFixture } from './nas-fixture.mjs'
 import { connectorCalls, exerciseOwnerControl } from './owner-control-fixture.mjs'
+import { exerciseFeedbackBoundary } from './feedback-fixture.mjs'
 
 assert.equal(process.platform, 'win32')
 const bundle = await fs.realpath(process.argv[2])
@@ -351,6 +352,8 @@ try {
     assert.equal(nasRequests, requestsBefore); assert.equal(tlsFailures, tlsBefore)
     checked('packaged_default_cli_registers_nine_1gib_downloads_without_payload_allocation_network_or_rebinding')
     process.stdout.write(JSON.stringify({ downloadMetadata: { jobs: 9, declaredBytesEach: 1024 ** 3, payloadBytes: 0, networkRequests: 0, feedbackStatus: 'unavailable', reason: 'no_matching_outbound_producer_context', automaticInboundConsumer: 'not_qualified' } }) + '\n')
+    await exerciseFeedbackBoundary({ root, candidate, transferRoot, config: cliConfig, plan, payload, createPrivateFixture, network: () => ({ requests: nasRequests, tlsFailures }) })
+    checked('packaged_advance_feedback_refuses_inbound_missing_context_and_real_outbound_write_failure')
   }
   process.stdout.write(JSON.stringify({ explicitHostChecks: result, mode: references ? 'existing-installations' : 'explicit-review', producer: catalog.components.transfer.revision, apiBasePrefix: references ? '/api/' : '/', ready: false, positiveProductionTLS: 'unverified', realPCandNAS: 'not_run', modelRequests: 0 }) + '\n')
   }

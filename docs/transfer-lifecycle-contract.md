@@ -1,9 +1,9 @@
 # Finite transfer lifecycle interface
 
-This contract is prewired in the internal endpoint lifecycle and tested with
-mock command results. The real producer executable is not yet qualified; public
-activation remains blocked. There is no second queue or legacy compatibility
-translation.
+The existing finite consumer uses this contract in explicit review mode. Its
+production-EXE positive TLS gate and real PC/NAS acceptance remain incomplete.
+There is no second queue or legacy compatibility translation. Historical PR56
+notes below are source history, not the current producer qualification.
 
 The producer exposes one finite **read-only summary** (CLI action
 `-action lifecycle-summary`) and the same decision fields on the result of the
@@ -43,9 +43,12 @@ The component still selects the due job, owns concurrency/leases and persists
 backoff. The coordinator coalesces startup/event/network/timer hints, invokes at
 most one finite existing action, and honors the next due time. A periodic idle
 summary covers missed events without a new task queue. `blocked`/`unknown` and
-authentication/permission/configuration/capacity stop automatic advancement;
+authentication/permission/configuration stop automatic advancement;
 restore through the existing owner before explicit resume. `transient`/`busy`
 must carry a bounded next due or a documented finite retry hint, never a reset.
+At producer `648e4511f35fe2ce187509e9823d03c1d2e1d341`, persisted
+`waiting/capacity/next_due_at` reuses that deadline without consuming network
+retries. Other capacity outcomes still pause. Hints do not shorten its wake.
 
 PR56 at `5e4b883df9e4e8e734722ba3f59abcb3708d56de` documents
 `unknown` + `transient`/`busy` + `null` as allowing at most one read-only host
@@ -61,6 +64,29 @@ not a delivered result or a new lifecycle state. Older envelopes without the
 field remain parseable; the read-only summary remains exactly four fields.
 Nonzero `due`/`idle`, unsupported exits, malformed output, timeout or signal
 suspend wakes, regardless of any optimistic state field.
+
+The advance envelope must also state `feedback_status`. `recorded` satisfies
+the existing advisory-feedback gate but is not business success. `unavailable`
+fails with `transfer_feedback_unavailable`; missing/empty feedback fails with
+`transfer_feedback_unknown`. Unknown values reject as an unsupported contract.
+No not-applicable value is accepted until the producer defines it explicitly.
+
+At the fixed producer above, an inbound job without a matching outbound
+producer-context and a real outbound feedback publication failure both become
+`unavailable`. The consumer cannot safely distinguish them from that field.
+The source contract must separate those cases, including the no-work/empty-job
+case, before automatic inbound advancement is qualified. Preserve original
+delivery/reference fields and the four lifecycle fields; do not infer success
+from `admitted`, `registered`, phase, exit zero or an absent feedback field.
+
+`official-smoke/feedback-fixture.mjs` executes the packaged EXE with separate
+fresh private roots. The existing untrusted TLS fixture yields durable backoff;
+it then feeds the real advance stdout to the packaged parser. Inbound missing
+context and an outbound feedback target replaced by a fixture-owned directory
+must both reject, with two non-advancing process reopens and the outbound file
+restored byte-for-byte. This is a negative reproduction, not positive TLS or
+successful inbound delivery. `inspect` can refresh advisory feedback with its
+invocation clock; only `lifecycle-summary` is the non-mutating summary contract.
 
 This is source-level interface alignment only. PR56's first head has a reviewed
 corruption/advance failure and failed native CLI test. It is not an accepted

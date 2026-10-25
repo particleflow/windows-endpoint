@@ -68,7 +68,7 @@ test('Go RFC3339Nano is retained exactly and rounded up for consumer wakes', () 
 })
 
 test('actual PR56 advance envelope projects decisions without claiming reference association', () => {
-  const value = { ...summary(), delivery_id: 'existing-delivery', phase: 'ready', offset: 7, admitted: true, associated: false,
+  const value = { ...summary(), delivery_id: 'existing-delivery', phase: 'ready', offset: 7, admitted: true, associated: false, feedback_status: 'recorded',
     reference: { delivery_id: 'existing-delivery', operation_id: 'existing-operation', bot_id: 'existing-bot', content_hash: 'a'.repeat(64), size_bytes: 7, mime: 'text/plain' } }
   assert.deepEqual(parseAdvanceDecision(JSON.stringify(value), now), summary())
   assert.throws(() => parseLifecycleSummary(JSON.stringify(value), now))
@@ -92,7 +92,16 @@ test('metadata registration is a boolean envelope field, not a delivery or sched
 test('disk capacity wait requires the producer deadline without weakening other failure classes', () => {
   const waiting = summary({ state: 'waiting', error_class: 'capacity', next_due_at: '2026-10-22T18:05:00Z' })
   assert.deepEqual(parse(waiting), waiting)
-  assert.deepEqual(parseAdvanceDecision(JSON.stringify({ ...waiting, delivery_id: 'original-download', phase: 'queued', offset: 8388608, admitted: true, associated: false }), now), waiting)
+  assert.deepEqual(parseAdvanceDecision(JSON.stringify({ ...waiting, delivery_id: 'original-download', phase: 'queued', offset: 8388608, admitted: true, associated: false, feedback_status: 'recorded' }), now), waiting)
   for (const next_due_at of [null, '2026-10-22T18:00:00Z']) assert.throws(() => parse({ ...waiting, next_due_at }))
   for (const error_class of ['authentication', 'permission', 'configuration', 'unknown']) assert.throws(() => parse({ ...waiting, error_class }))
+})
+
+test('missing legacy feedback is unknown and cannot imply recorded or not-applicable', () => {
+  const value = { ...summary({ state: 'due' }), delivery_id: 'original', phase: 'queued', offset: 0, admitted: true, associated: false }
+  for (const patch of [{}, { feedback_status: '' }]) assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, ...patch }), now), { code: 'transfer_feedback_unknown' })
+  assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, feedback_status: 'unavailable' }), now), { code: 'transfer_feedback_unavailable' })
+  // No producer not-applicable contract has been adopted. A proposed/new value
+  // cannot relax the unavailable gate merely by spelling a reassuring label.
+  assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, feedback_status: 'not_applicable' }), now), { code: 'transfer_lifecycle_contract_invalid' })
 })

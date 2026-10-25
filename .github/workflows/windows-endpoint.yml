@@ -39,7 +39,10 @@ jobs:
         working-directory: producer-source
         run: go test -v -race -count=1 -timeout=90s -run 'Test(HostNetwork|ConfiguredLAN)' ./internal/transferclient
       - name: Validate transfer fixture JavaScript syntax
-        run: node --check official-smoke/transfer.mjs
+        run: |
+          node --check official-smoke/transfer.mjs
+          node --check official-smoke/feedback-fixture.mjs
+          node --check official-smoke/host.mjs
       - name: Verify portable candidate packaging and extracted entry
         run: python -m unittest discover -s packaging -p 'test_*.py' -v
       - name: Validate transfer fixture PowerShell syntax

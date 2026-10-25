@@ -71,7 +71,7 @@ const code = await runForeground({ root, tickMs: 100, createTestRuntime: async (
       result.state = 'due'
       if (action === 'advance-results') {
         await new Promise(resolve => { releaseAdvance = resolve; notify({ event: 'advance_waiting' }) })
-        return { status: 1, stdout: JSON.stringify({ ...result, delivery_id: 'original-delivery', phase: 'uploading', offset: 3, admitted: true, associated: false }) }
+        return { status: 1, stdout: JSON.stringify({ ...result, delivery_id: 'original-delivery', phase: 'uploading', offset: 3, admitted: true, associated: false, feedback_status: 'recorded' }) }
       }
     }
     return { status: 0, stdout: JSON.stringify(result) }

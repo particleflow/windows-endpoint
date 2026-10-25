@@ -575,7 +575,7 @@ test('shared transfer state gets one endpoint lease even across devices and sess
 
 const transferDecision = (state, error_class = 'none') => ({ schema: 'memoh.delivery.lifecycle.v1', state, next_due_at: null, error_class })
 const transferResult = (action, value, status = 0) => ({ status, stdout: JSON.stringify(action === 'advance-results' ?
-  { ...value, delivery_id: 'original-delivery', phase: 'uploading', offset: 3, admitted: true, associated: false } : value) })
+  { ...value, delivery_id: 'original-delivery', phase: 'uploading', offset: 3, admitted: true, associated: false, feedback_status: 'recorded' } : value) })
 
 for (const action of ['lifecycle-summary', 'advance-results']) {
   for (const failure of [

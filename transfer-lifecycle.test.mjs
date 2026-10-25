@@ -7,7 +7,7 @@ import { transferEnvironment } from './endpoint.mjs'
 const start = Date.parse('2026-10-22T18:00:00Z')
 const decision = (state, extras = {}) => ({ schema: 'memoh.delivery.lifecycle.v1', state, next_due_at: null, error_class: 'none', ...extras })
 const output = (action, value, status = 0) => ({ status, stdout: JSON.stringify(action === 'advance-results' ?
-  { ...value, delivery_id: 'original-delivery', phase: 'uploading', offset: 3, admitted: true, associated: false } : value) })
+  { ...value, delivery_id: 'original-delivery', phase: 'uploading', offset: 3, admitted: true, associated: false, feedback_status: 'recorded' } : value) })
 function fixture(respond) {
   let now = start
   const calls = []
@@ -112,6 +112,24 @@ test('reported corruption trap: due plus nonzero advance suspends all automatic 
   assert.equal(transfer.snapshot().attention, 'transfer_command_outcome_unknown')
   assert.deepEqual(calls, ['lifecycle-summary', 'advance-results'])
 })
+
+for (const [feedback, expected] of [[undefined, 'transfer_feedback_unknown'], ['unavailable', 'transfer_feedback_unavailable'], ['not_applicable', 'transfer_lifecycle_contract_invalid']]) {
+  test(`unverified feedback ${String(feedback)} suspends advance and remains rejected after restart`, async () => {
+    const { transfer, calls, time } = fixture(action => {
+      if (action === 'lifecycle-summary') return output(action, decision('due'))
+      const value = { ...decision('waiting', { error_class: 'transient', next_due_at: '2026-10-22T18:05:00Z' }), delivery_id: 'original', phase: 'queued', offset: 0, admitted: true, associated: false }
+      if (feedback !== undefined) value.feedback_status = feedback
+      return { status: 0, stdout: JSON.stringify(value) }
+    })
+    await transfer.tick(); assert.equal(transfer.snapshot().attention, expected)
+    for (let i = 1; i < 10; i++) { time(i * 1000); transfer.hint('network'); await transfer.tick() }
+    assert.deepEqual(calls, ['lifecycle-summary', 'advance-results'])
+    await transfer.stop(); transfer.start(); await transfer.tick()
+    assert.equal(transfer.snapshot().attention, expected)
+    assert.equal(transfer.snapshot().businessCompletion, 'not_inferred')
+    assert.ok(calls.every(action => ['lifecycle-summary', 'advance-results'].includes(action)), 'consumer never admits/replays a task')
+  })
+}
 
 for (const error_class of ['busy', 'transient']) {
   test(`${error_class} with no persisted deadline gets one read-only hint retry after 30 seconds`, async () => {
