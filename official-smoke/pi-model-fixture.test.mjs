@@ -100,3 +100,19 @@ test('completion gate keeps the real-model response pending until an explicit re
   fixture.releaseCompletion()
   assert.deepEqual(fixture.snapshot(), { requests: 2, offeredWrites: 1 })
 })
+
+test('write gate cannot offer a tool before the controlled disconnect point', async t => {
+  const fixture = await startPiModelFixture({ holdWrite: true }); t.after(() => fixture.close())
+  let received = false
+  const pending = fetch(`${fixture.baseUrl}/chat/completions`, { method: 'POST',
+    body: JSON.stringify({ model: fixtureModel, stream: true, messages: [{ role: 'user', content: 'synthetic task' }], tools: [{ type: 'function', function: { name: 'write' } }] }),
+    signal: AbortSignal.timeout(3000),
+  }).then(async response => { received = true; assert.equal(response.status, 200); return response.text() })
+  const deadline = Date.now() + 1000
+  while (fixture.snapshot().requests !== 1 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.deepEqual(fixture.snapshot(), { requests: 1, offeredWrites: 0 })
+  await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(received, false)
+  fixture.releaseWrite()
+  assert.match(await pending, /endpoint_fixture_write/)
+  assert.deepEqual(fixture.snapshot(), { requests: 1, offeredWrites: 1 })
+})

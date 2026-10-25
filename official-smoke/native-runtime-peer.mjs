@@ -28,10 +28,11 @@ export function validateRuntimeHandshake(request, expected) {
 export async function createRuntimePeer({ WebSocket, ...expected }) {
   const server = http.createServer((_request, response) => { response.writeHead(404); response.end() })
   const websocket = new WebSocket.Server({ noServer: true, handleProtocols: values => values.has(runtimeProtocol) ? runtimeProtocol : false })
-  const sockets = new Set(), counts = { attempts: 0, connections: 0, rejected: 0, invalid: 0 }
-  let rejectAuthorization = false, closing = false
+  const sockets = new Set(), counts = { attempts: 0, connections: 0, rejected: 0, invalid: 0, networkRefused: 0 }
+  let rejectAuthorization = false, closing = false, networkAvailable = true
   server.on('upgrade', (request, socket, head) => {
     counts.attempts++
+    if (!networkAvailable) { counts.networkRefused++; socket.destroy(); return }
     try { validateRuntimeHandshake(request, expected) }
     catch {
       counts.invalid++; socket.end('HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n'); return
@@ -50,6 +51,12 @@ export async function createRuntimePeer({ WebSocket, ...expected }) {
   return {
     origin: `http://127.0.0.1:${server.address().port}/api`,
     counts,
+    activeConnections: () => sockets.size,
+    setNetworkAvailable(value) {
+      assert.equal(typeof value, 'boolean')
+      networkAvailable = value
+      if (!value) for (const socket of sockets) socket.terminate()
+    },
     rejectAuthorization() { rejectAuthorization = true },
     disconnect() { for (const socket of sockets) socket.terminate() },
     async close() {

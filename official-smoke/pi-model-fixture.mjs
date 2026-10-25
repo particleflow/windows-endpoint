@@ -9,11 +9,13 @@ export const fixtureBytes = '42\n'
 export const fixtureOutput = 'joint-fixture-complete'
 const callId = 'endpoint_fixture_write'
 
-export async function startPiModelFixture({ holdCompletion = false } = {}) {
+export async function startPiModelFixture({ holdCompletion = false, holdWrite = false } = {}) {
   let requests = 0, offeredWrites = 0, received = 0, rejected = 0
-  let releaseCompletion
+  let releaseCompletion, releaseWrite
   const completion = new Promise(resolve => { releaseCompletion = resolve })
+  const write = new Promise(resolve => { releaseWrite = resolve })
   if (!holdCompletion) releaseCompletion()
+  if (!holdWrite) releaseWrite()
   const server = http.createServer(async (req, res) => {
     received++
     try {
@@ -30,6 +32,7 @@ export async function startPiModelFixture({ holdCompletion = false } = {}) {
       let delta, finish
       if (requests === 1) {
         if (body.messages.at(-1)?.role !== 'user' || !body.tools?.some(t => t.function?.name === 'write')) throw Error('initial_request')
+        await write
         offeredWrites++
         delta = { role: 'assistant', content: null, tool_calls: [{ index: 0, id: callId, type: 'function', function: { name: 'write', arguments: JSON.stringify({ path: fixtureFile, content: fixtureBytes }) } }] }
         finish = 'tool_calls'
@@ -58,7 +61,7 @@ export async function startPiModelFixture({ holdCompletion = false } = {}) {
     models: { providers: { [fixtureProvider]: { baseUrl, api: 'openai-completions', apiKey: 'fixture-no-credential', models: [{ id: fixtureModel, reasoning: false, input: ['text'], contextWindow: 32768, maxTokens: 2048 }] } } },
     snapshot: () => ({ requests, offeredWrites }),
     diagnostics: () => ({ received, rejected }),
-    releaseCompletion,
-    close: () => new Promise((resolve, reject) => { releaseCompletion(); server.close(e => e ? reject(e) : resolve()); server.closeAllConnections() }),
+    releaseCompletion, releaseWrite,
+    close: () => new Promise((resolve, reject) => { releaseWrite(); releaseCompletion(); server.close(e => e ? reject(e) : resolve()); server.closeAllConnections() }),
   }
 }

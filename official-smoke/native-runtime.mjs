@@ -1,18 +1,19 @@
 // Actual official Runtime CLI + Herdr, controlled by the public endpoint host.
-// Synthetic loopback control peer only; no TLS/file-transfer/model acceptance.
+// Synthetic loopback control/model peers; no production TLS, NAS or model grant.
 import assert from 'node:assert/strict'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { spawn, spawnSync, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { catalog, managedEnvironment, programPaths, transferEnvironment, transferLocations } from '../endpoint.mjs'
 import { inspectInstalled, inspectInstalledTransfer } from '../installed.mjs'
 import { createRuntimePeer } from './native-runtime-peer.mjs'
-import { isFreshPiShellPrompt } from './pi-workload-diagnostics.mjs'
+import { isFreshPiShellPrompt, piWorkloadWrapper, piWorkloadEvidence } from './pi-workload-diagnostics.mjs'
+import { startPiModelFixture, fixtureProvider, fixtureModel, fixtureFile, fixtureBytes, fixtureOutput } from './pi-model-fixture.mjs'
 
 assert.equal(process.platform, 'win32', 'native runtime fixture requires Windows')
 assert.ok(process.argv.length >= 5 && process.argv.length <= 7, 'official bundle, runtime package, fresh root, optional candidate and source file probe')
@@ -33,6 +34,7 @@ const { default: WebSocket } = await import(pathToFileURL(path.join(bundle, 'nod
 const sourceRoot = path.join(external, 'work')
 assert.notEqual(sourceRoot, await fs.realpath(os.homedir()), 'project root must not be the user home')
 const peer = await createRuntimePeer({ WebSocket, key, teamId, version: catalog.nativeRuntime.version, workspaceBase: sourceRoot })
+const model = await startPiModelFixture({ holdWrite: true, holdCompletion: true })
 const config = {
   schema: 3,
   programs: { node, herdr: path.join(bundle, 'herdr/herdr.exe'), piPackage: path.join(bundle, 'node_modules/@earendil-works/pi-coding-agent'),
@@ -44,6 +46,9 @@ const config = {
   transferConfigDir: path.join(external, 'native-file/config'), transferStateDir: path.join(external, 'native-file/state'),
 }
 const transfer = transferLocations(config), credential = 'synthetic-native-runtime-empty-queue'
+const piWork = path.join(sourceRoot, 'pi-reconnect'), piSessions = path.join(piWork, 'sessions'), piSession = randomBytes(32).toString('hex')
+const piArgs = [programPaths(config).pi, '--mode', 'json', '--provider', fixtureProvider, '--model', fixtureModel,
+  '--session-dir', piSessions, '--session-id', piSession, '--tools', 'write', '--no-extensions', '--no-mcp', '--no-skills', '--no-prompt-templates', '--no-context-files']
 const original = new Map([
   [config.connector.enrollmentFile, JSON.stringify({ schemaVersion: 1, serverUrl: peer.origin, key, teamId, insecureLocalhost: true })],
   [path.join(config.herdrConfigRoot, 'config.toml'), '[update]\nversion_check = false\nmanifest_check = false\n'],
@@ -53,6 +58,8 @@ const original = new Map([
   [path.join(transfer.config, 'transfer.json'), JSON.stringify({ version: 1, origin: transfer.origin, source_root: config.sourceRoot })],
   [path.join(transfer.config, 'device.credential'), credential],
   [path.join(config.piConfigDir, 'auth.json'), '{}'],
+  [path.join(config.piConfigDir, 'models.json'), JSON.stringify(model.models)],
+  [path.join(piWork, 'run-pi.cjs'), "process.env.PI_OFFLINE='1';\n" + piWorkloadWrapper(node, piArgs, piWork, config.piConfigDir)],
   // These are inert preservation markers, not fabricated old task journals.
   [path.join(config.herdrConfigRoot, 'plugins/config/memoh.delivery/unselected-fixture.txt'), 'old plugin configuration stays in place'],
   [path.join(config.herdrStateRoot, 'plugins/memoh.delivery/unselected-fixture.txt'), 'old plugin state stays in place'],
@@ -67,6 +74,7 @@ for (const file of original.keys()) {
   while (directory !== root) { directories.add(directory); directory = path.dirname(directory) }
 }
 for (let directory = transfer.state; directory !== root; directory = path.dirname(directory)) directories.add(directory)
+directories.add(piSessions)
 const input = path.join(root, 'private-native-runtime-fixture.json')
 await fs.writeFile(input, JSON.stringify({ root, items: [...[...directories].sort((a, b) => a.length - b.length).map(p => ({ kind: 'directory', path: p })), ...[...original].filter(([p]) => p !== config.connector.enrollmentFile).map(([p, content]) => ({ kind: 'file', path: p, content }))] }))
 const made = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-File', fileURLToPath(new URL('./private-fixture.ps1', import.meta.url)), '-InputFile', input], { encoding: 'utf8', timeout: 30000, maxBuffer: 65536 })
@@ -185,7 +193,7 @@ async function ping(generation) {
   assert.equal(JSON.parse(result.stdout).result.type, 'pong')
 }
 async function progress() { try { return Number(await fs.readFile(path.join(config.sourceRoot, 'progress.txt'), 'utf8')) } catch (error) { if (error.code === 'ENOENT') return 0; throw error } }
-let primaryError = null
+let primaryError = null, piReconnectPhase = 'not_started'
 try {
   await stage('required_inputs', async () => {
     for (const [file, content] of original) assert.deepEqual(await fs.readFile(file), Buffer.from(content), 'private fixture must preserve every original configuration byte')
@@ -258,6 +266,74 @@ try {
   await rejectLegacyAction()
   checked('official_disabled_legacy_action_stays_rejected_after_reconnect_without_redirecting_or_touching_old_state')
   checked('runtime_reconnect_preserves_original_herdr_pipe_peer_pane_and_single_running_workload')
+  await stage('active_pi_control_disconnect', async () => {
+    piReconnectPhase = 'create_workspace'
+    const piCreated = (await herdr(['workspace', 'create', '--cwd', piWork])).result
+    const piPane = piCreated.root_pane.pane_id, workspaceId = piCreated.workspace.workspace_id
+    const paneIdentity = async () => {
+      const state = (await herdr(['api', 'snapshot'])).result.snapshot
+      const pane = state.panes.find(p => p.pane_id === piPane)
+      assert.ok(pane?.terminal_id)
+      assert.equal(pane.workspace_id, workspaceId)
+      return { workspaceId, paneId: piPane, terminalId: pane.terminal_id }
+    }
+    await eventually(async () => isFreshPiShellPrompt(await herdrOutput(['pane', 'read', piPane, '--source', 'recent-unwrapped', '--lines', '5']), piWork), 'fresh Pi reconnect shell not ready')
+    const identity = await paneIdentity()
+    piReconnectPhase = 'single_pi_submission'
+    await herdrOutput(['pane', 'run', piPane, 'node run-pi.cjs']) // Exactly one submission.
+    await eventually(() => model.snapshot().requests === 1, 'official Pi did not reach the gated local model')
+    assert.deepEqual(model.snapshot(), { requests: 1, offeredWrites: 0 })
+    await assert.rejects(fs.access(path.join(piWork, fixtureFile)), { code: 'ENOENT' })
+    await assert.rejects(fs.access(path.join(piWork, 'exit.json')), { code: 'ENOENT' })
+    const connectionCount = peer.counts.connections, offlineAt = Date.now()
+    piReconnectPhase = 'control_disconnect'
+    peer.setNetworkAvailable(false)
+    await host.until(s => peer.activeConnections() === 0 && s.updatedAt > offlineAt && ['offline', 'connecting'].includes(s.connection))
+    await eventually(() => peer.counts.networkRefused > 0, 'control outage must include a refused reconnect')
+    assert.equal(peer.counts.connections, connectionCount)
+    assert.equal(await fs.readFile(marker, 'utf8'), generation); await ping(generation)
+    assert.deepEqual(await paneIdentity(), identity)
+    // Release the real Pi write tool only AFTER control is unavailable. File
+    // creation now proves progress during the outage, not before disconnect.
+    piReconnectPhase = 'offline_pi_write'; model.releaseWrite()
+    await eventually(() => model.snapshot().requests === 2, 'Pi did not execute its write while control was offline')
+    assert.equal(await fs.readFile(path.join(piWork, fixtureFile), 'utf8'), fixtureBytes)
+    assert.equal(await fs.readFile(path.join(piWork, 'invocations.txt'), 'utf8'), 'once\n')
+    await assert.rejects(fs.access(path.join(piWork, 'exit.json')), { code: 'ENOENT' })
+    assert.equal(peer.counts.connections, connectionCount); assert.equal(peer.activeConnections(), 0)
+    assert.deepEqual(await paneIdentity(), identity)
+    const history = (await fs.readdir(piSessions)).filter(f => f.endsWith('.jsonl'))
+    assert.equal(history.length, 1)
+    const saved = await fs.readFile(path.join(piSessions, history[0]), 'utf8')
+    assert.equal(JSON.parse(saved.split('\n')[0]).id, piSession)
+    const reconnectAt = Date.now()
+    piReconnectPhase = 'control_reconnect'
+    peer.setNetworkAvailable(true)
+    const again = await host.until(s => peer.counts.connections > connectionCount && s.updatedAt > reconnectAt && s.connection === 'online_snapshot')
+    assert.equal(again.runId, online.runId); assert.equal(again.componentLifecycle.restartsInWindow, 0)
+    assert.equal(await fs.readFile(marker, 'utf8'), generation); await ping(generation)
+    assert.deepEqual(await paneIdentity(), identity)
+    assert.equal(await fs.readFile(path.join(piWork, 'invocations.txt'), 'utf8'), 'once\n')
+    assert.deepEqual(model.snapshot(), { requests: 2, offeredWrites: 1 })
+    piReconnectPhase = 'pi_completion'; model.releaseCompletion()
+    await eventually(async () => {
+      try { assert.deepEqual(JSON.parse(await fs.readFile(path.join(piWork, 'exit.json'), 'utf8')), { status: 0, error: null }); return true }
+      catch (error) { if (error.code === 'ENOENT') return false; throw error }
+    }, 'official Pi did not complete after control reconnect')
+    const output = await fs.readFile(path.join(piWork, 'stdout.jsonl'), 'utf8')
+    assert.ok(output.trim().split('\n').map(line => JSON.parse(line)).some(event => event.type === 'message_end' && event.message?.role === 'assistant' && event.message.content?.some(part => part.type === 'text' && part.text === fixtureOutput)))
+    const completed = await fs.readFile(path.join(piSessions, history[0]), 'utf8')
+    assert.ok(completed.startsWith(saved)); assert.equal(JSON.parse(completed.split('\n')[0]).id, piSession)
+    assert.equal(await fs.readFile(path.join(piWork, fixtureFile), 'utf8'), fixtureBytes)
+    assert.equal(await fs.readFile(path.join(piWork, 'invocations.txt'), 'utf8'), 'once\n')
+    assert.deepEqual(model.snapshot(), { requests: 2, offeredWrites: 1 }); assert.equal(model.diagnostics().rejected, 0)
+    assert.deepEqual(await paneIdentity(), identity); await ping(generation)
+    piReconnectPhase = 'passed'
+    process.stdout.write(JSON.stringify({ activePiReconnect: 'passed', officialPi: catalog.components.pi.version, invocationCount: 1,
+      localFileCreatedWhileControlOffline: true, samePiSession: true, samePaneTerminal: true, sameOwnedHerdrGeneration: true,
+      historyPrefixPreserved: true, modelRequests: 2, model: 'synthetic_loopback', memohOperationReceipt: 'not_exercised', realPcNas: false }) + '\n')
+  })
+  checked('active_official_pi_writes_while_control_offline_and_reconnect_preserves_identity_without_replay')
   peer.rejectAuthorization(); peer.disconnect()
   const refused = await host.until(s => s.attention === 'connector_authentication_required')
   assert.equal(refused.connection, 'authorization_required'); assert.equal(refused.ready, false)
@@ -279,12 +355,14 @@ try {
   assert.equal(peer.counts.invalid, 0)
   checked('official_configuration_enrollment_and_original_workload_bytes_are_preserved')
   process.stdout.write(JSON.stringify({ nativeRuntimeChecks: checks.length, source: catalog.nativeRuntime.revision, connectorVersion: catalog.nativeRuntime.version,
-    controlTransport: 'official_explicit_loopback_test_mode', originalWorkloadInvocations: 1, peerRPCDispatch: 'none', modelRequests: 0,
+    controlTransport: 'official_explicit_loopback_test_mode', originalWorkloadInvocations: 1, peerRPCDispatch: 'none', modelRequests: model.snapshot().requests, model: 'synthetic_loopback',
     transferProducer: catalog.components.transfer.revision, transferVersion: catalog.components.transfer.version, transferObservation: 'actual_exe_empty_queue_idle', deliveryAdmissionsSubmitted: 0,
     serverIdentity: 'synthetic_peer_not_memoh_owner', stopAuthority: false, taskRecovery: 'not_exercised', fileTransferTLS: 'not_exercised', realPCandNAS: 'not_run' }) + '\n')
 } catch (error) {
   primaryError = error
+  process.stdout.write(JSON.stringify({ activePiReconnectEvidence: await piWorkloadEvidence(piWork, [root, bundle]), phase: piReconnectPhase, model: model.snapshot() }) + '\n')
 } finally {
+  const [modelCleanup] = await Promise.allSettled([bounded(model.close(), 5000, 'Pi model fixture close deadline')])
   const cleanup = await Promise.allSettled([...hosts].map(host => host.stop()))
   const [peerCleanup] = await Promise.allSettled([Promise.resolve().then(() => bounded(peer.close(), 5000, 'native Runtime fixture peer close deadline'))])
   // Only the exclusive fresh fixture child above is ours to remove. Do not
@@ -297,11 +375,12 @@ try {
   })])
   process.stdout.write(JSON.stringify({ nativeRuntimeFixtureCleanup: 'observed', remainingHosts: hosts.size,
     stopFailures: cleanup.filter(r => r.status === 'rejected').length, peer: peerCleanup.status === 'fulfilled' ? 'closed' : 'close_failed',
-    enrollment: enrollmentCleanup.status === 'fulfilled' ? 'fresh_child_removed' : 'retained_or_cleanup_failed' }) + '\n')
+    enrollment: enrollmentCleanup.status === 'fulfilled' ? 'fresh_child_removed' : 'retained_or_cleanup_failed', model: modelCleanup.status === 'fulfilled' ? 'closed' : 'close_failed' }) + '\n')
   try {
     assert.equal(cleanup.filter(r => r.status === 'rejected').length, 0)
     assert.equal(hosts.size, 0)
     assert.equal(peerCleanup.status, 'fulfilled', 'native Runtime fixture peer cleanup failed')
+    assert.equal(modelCleanup.status, 'fulfilled', 'Pi model fixture cleanup failed')
     assert.equal(enrollmentCleanup.status, 'fulfilled', 'native Runtime fixture enrollment cleanup failed')
   } catch (error) { primaryError ??= error }
 }

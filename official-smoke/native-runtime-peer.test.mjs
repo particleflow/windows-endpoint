@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { runtimeProtocol, validateRuntimeHandshake } from './native-runtime-peer.mjs'
+import http from 'node:http'
+import { runtimeProtocol, validateRuntimeHandshake, createRuntimePeer } from './native-runtime-peer.mjs'
 
 const expected = { key: `mrk_${'a'.repeat(64)}`, teamId: '11111111-1111-4111-8111-111111111111', version: '0.22.0', workspaceBase: 'C:\\Users\\fixture' }
 const metadata = { version: 1, hostname: 'synthetic', os: 'win32', arch: 'x64', client_version: expected.version, workspace_base: expected.workspaceBase, capabilities: ['fs', 'exec', 'host_fs'] }
@@ -23,4 +24,25 @@ test('native control fixture rejects missing, oversized or private-extra metadat
     const changed = request(); changed.headers['x-memoh-runtime-metadata'] = value
     assert.throws(() => validateRuntimeHandshake(changed, expected))
   }
+})
+
+test('fixture network outage breaks transport without fabricating an authorization refusal', async t => {
+  // These two rejection paths must never reach WebSocket acceptance. The real
+  // official Runtime/WebSocket reconnect is exercised by Windows CI separately.
+  const peer = await createRuntimePeer({ ...expected, WebSocket: { Server: class {
+    handleUpgrade() { assert.fail('rejected transport must not accept a WebSocket') }
+    close(done) { done() }
+  } } })
+  t.after(() => peer.close())
+  const connect = () => new Promise(resolve => {
+    const req = http.request(`${peer.origin}/runtimes/connect`, { headers: { ...request().headers, Connection: 'Upgrade', Upgrade: 'websocket' } }, response => { response.resume(); resolve(response.statusCode) })
+    req.on('error', error => resolve(error.code || 'unexpected_error'))
+    req.setTimeout(2000, () => req.destroy(new Error('fixture deadline'))); req.end()
+  })
+  peer.setNetworkAvailable(false)
+  assert.equal(await connect(), 'ECONNRESET')
+  assert.equal(peer.counts.networkRefused, 1); assert.equal(peer.counts.rejected, 0)
+  peer.setNetworkAvailable(true); peer.rejectAuthorization()
+  assert.equal(await connect(), 401)
+  assert.equal(peer.counts.rejected, 1); assert.equal(peer.counts.connections, 0); assert.equal(peer.counts.invalid, 0)
 })
