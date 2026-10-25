@@ -6,7 +6,8 @@ import {createHash,randomUUID} from 'node:crypto'
 import {recoverHost,recoveryConfigurationHash,nativeRecoveryEvidence} from './host-recovery.mjs'
 import {nativeInstalledFixture} from './test-support/installed-fixture.mjs'
 import {acquireLeases,leaseKeys} from './lifecycle.mjs'
-import {spawn} from 'node:child_process'
+import {spawn,spawnSync} from 'node:child_process'
+import {fileURLToPath} from 'node:url'
 const hash = v=>createHash('sha256').update(v).digest('hex')
 async function fixture(t) {
   const f=await nativeInstalledFixture(t),root=path.join(f.base,'host'),dir=path.join(root,'data/endpoint')
@@ -78,6 +79,19 @@ if (process.platform === 'win32') test('native read-only owner/process probe acc
  // command is invoked: first prove the helper itself under the production wrapper.
  const config={...f.config,programs:{...f.config.programs,node:process.execPath}}
  const files={root:f.root,state:f.stateFile,config:path.join(f.root,'config/endpoint.json'),runtime:path.join(f.root,'config/runtime.json'),status:f.statusFile}
+ // Use the existing creator for fresh private fixtures; do not alter a preexisting
+ // file's ACL/owner just to pass the recovery probe.
+ const audit=path.join(f.base,'private-audit'),input=path.join(f.base,'private-audit-input.json')
+ const items=[{kind:'directory',path:audit}]
+ for(const key of ['state','config','runtime','status']) {
+   const content=await fs.readFile(files[key],'utf8')
+   files[key]=path.join(audit,key+'.json');items.push({kind:'file',path:files[key],content})
+ }
+ await fs.writeFile(input,JSON.stringify({root:f.base,items}))
+ const ps=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe')
+ const made=spawnSync(ps,['-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./official-smoke/private-fixture.ps1',import.meta.url)),'-InputFile',input],{encoding:'utf8',timeout:15000,maxBuffer:4096})
+ assert.equal(made.status,0,'create only fresh private probe files')
+
  // Helper succeeds, then the inert Herdr command fails; this is not real Herdr qualification.
  await assert.rejects(nativeRecoveryEvidence({config,status:f.status,files}),{code:'herdr_observation_unknown'})
  await assert.rejects(nativeRecoveryEvidence({config,status:{...f.status,pid:process.pid},files}),{code:'host_recovery_process_evidence_unavailable'})

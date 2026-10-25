@@ -245,8 +245,10 @@ recheck, not a task resume, process stop or journal reset. Only the exact
 Use the original reviewed configuration and run; do not infer identity from a
 label, a missing PID or an idle queue. The configuration hash is SHA256 of UTF-8
 `JSON.stringify([rawEndpointJson, rawRuntimeJson])`; the state hash covers the exact
-original lifecycle bytes. The original normal Windows identity must own the
-configuration, runtime request, lifecycle and status files. Permission failures
+original lifecycle bytes. The original normal Windows identity is used to inspect the configuration,
+runtime request, lifecycle and status files. File-owner principals follow the
+fixed official Runtime's Windows policy (current user, SYSTEM, Administrators,
+TrustedInstaller); untrusted file writers are rejected. Permission failures
 remain failures; this command changes no ACL and does not bypass a denied read.
 
 The command holds the existing host/component/deployment leases, rechecks official

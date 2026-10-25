@@ -30,8 +30,9 @@ export async function attemptEvidence(config) {
       const name = prefix + entry.name, file = path.join(directory,entry.name)
       if (entry.isDirectory()) await walk(file,name+'/')
       else {
-        const raw = await boundedRead(file, 1024*1024)
-        bytes += Buffer.byteLength(raw); demand(bytes <= 16*1024*1024 && files.length < 10000,'host_recovery_attempt_evidence_too_large')
+        const text = await boundedRead(file, 1024*1024), raw = await fs.readFile(file)
+        demand(raw.toString('utf8') === text && raw.length <= 1024*1024,'host_recovery_attempt_changed')
+        bytes += raw.length; demand(bytes <= 16*1024*1024 && files.length < 10000,'host_recovery_attempt_evidence_too_large')
         files.push([name,hash(raw)])
       }
     }
@@ -52,7 +53,11 @@ export async function nativeRecoveryEvidence({config,status,files}) {
       '-PiEntry',p.pi,'-EnrollmentFile',connectorConfigReference(config),'-HostRoot',files.root],
     {cwd:config.sourceRoot,env:managedEnvironment(config),windowsHide:true,shell:false,timeout:15000,maxBuffer:4096,encoding:'utf8'})
     evidence = JSON.parse(result.stdout)
-  } catch { throw Object.assign(new Error('host_recovery_process_evidence_unavailable'),{code:'host_recovery_process_evidence_unavailable'}) }
+  } catch(error) {
+    let stage = 'not_observed'
+    try { const value = JSON.parse(error.stderr); if (['file_owner','process_inventory','process_absence'].includes(value.stage)) stage = value.stage } catch {}
+    throw Object.assign(new Error('host_recovery_process_evidence_unavailable'),{code:'host_recovery_process_evidence_unavailable',evidenceStage:stage})
+  }
   demand(evidence.ownerVerified === true && evidence.oldHostAbsent === true && evidence.referencedProcessesAbsent === true,'host_recovery_process_evidence_unavailable')
   const driver = new NativeDriver(config)
   demand(driver.hostStatus().running === false,'host_recovery_herdr_present')
@@ -79,7 +84,7 @@ export async function recoverHost({root,expectedRun,expectedState,expectedConfig
     // A lost response can be queried again without dispatch or another mutation.
     if (state.infrastructureRecovery?.fromState === expectedState && state.infrastructureRecovery?.run === expectedRun) {
       demand(state.infrastructureRecovery.configuration === expectedConfiguration,'host_recovery_configuration_changed')
-      return {state:'already_rechecked',ready:false,started:false,businessReplayed:false,stopAuthority:false}
+      return {state:'already_rechecked',lifecyclePhase:state.phase,attention:state.attention,ready:false,started:false,businessReplayed:false,stopAuthority:false}
     }
     demand(hash(stateRaw) === expectedState,'host_recovery_state_changed')
     demand(state.phase === 'needs_attention' && state.attention === 'herdr_observation_unknown' && !state.handoff,'host_recovery_state_not_eligible')
