@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
+import { once } from 'node:events'
 import { inspectInstalled, inspectInstalledTransfer, compareProducerTarget, validateInstalledConfiguration, installedDoctor } from './installed.mjs'
 import { catalog, digest, validateConfig, managedEnvironment, programPaths, configure, main, transferLocations, transferEnvironment, validateTransferConfiguration, componentRoots, connectorConfigReference, installationReferences, launchPlan } from './endpoint.mjs'
 import { validateRuntimeRequest, createExplicitRuntime } from './runtime.mjs'
@@ -11,6 +12,25 @@ import { transferCommand, NativeTransferDriver } from './transfer-lifecycle.mjs'
 import { captureSessionContinuation, verifySessionContinuation } from './session-continuation.mjs'
 import { installedFixture, nativeInstalledFixture } from './test-support/installed-fixture.mjs'
 import { deploymentReferences } from './deployment.mjs'
+
+test('owned component exit and stderr byte evidence survives replacement without recording private stderr', async t => {
+  const f = await installedFixture(t)
+  f.config.programs.node = process.execPath
+  await f.write(f.p.connector, "process.stderr.write('SYNTHETIC-PRIVATE-COMPONENT-TEXT'); process.exitCode = 7\n")
+  const driver = new NativeDriver(f.config)
+  await driver.start('connector')
+  const first = driver.children.get('connector')
+  await once(first.process, 'close')
+  const recorded = driver.diagnostics()[0]
+  assert.equal(recorded.exitCode, 7); assert.equal(recorded.exitObserved, true)
+  assert.equal(recorded.stderrBytes, Buffer.byteLength('SYNTHETIC-PRIVATE-COMPONENT-TEXT'))
+  assert.equal(recorded.stderrCode, 'unclassified_stderr')
+  await driver.start('connector'); await once(driver.children.get('connector').process, 'close')
+  const second = driver.diagnostics()[0]
+  const { previousExit, ...prior } = recorded
+  assert.equal(previousExit, null); assert.notEqual(second.pid, recorded.pid); assert.deepEqual(second.previousExit, prior)
+  assert.equal(JSON.stringify(second).includes('SYNTHETIC-PRIVATE'), false)
+})
 
 test('native declarations require one registered Runtime UUID without rewriting an identity mismatch', async t => {
   const f = await nativeInstalledFixture(t)

@@ -57,6 +57,14 @@ Even a fresh snapshot always has `ready:false`, `desktop:unavailable`,
 older schema-1 snapshots report `unverified`. Like the phase/PID, this cached field
 does not prove that a control channel is still reachable.
 
+Use the existing `endpoint.ps1` in a visible foreground PowerShell session and
+keep that session open. It inherits stdin/stdout/stderr and returns the actual
+Node exit code; it does not detach a process or install a service. After it returns,
+retain `$LASTEXITCODE` in that same session. A temporary caller that closes its
+pipes or discards its process result can still lose its own exit evidence.
+Do not pipe a one-shot input into a host intended to remain running: EOF is a
+graceful stop request. While it runs, stdin accepts only the two JSON actions above.
+
 ## One root and explicit unavailable states
 
 The host creates only its data/log directories; it never creates credentials or
@@ -121,6 +129,29 @@ contents, arbitrary component output and task payloads. State-change logs stop a
 cleanup, so cumulative retention requires a future owned-file policy. Unknown or
 linked status files are preserved and cause failure. Leftover atomic-write temporary
 files are retained. This is not a physical power-loss durability guarantee.
+
+The same run log now records `stopTrigger` (command, EOF, signal, invalid input,
+observer failure or lifecycle/observation failure). A `foreground_result` records
+the controlled return code before closing the log, separately from the launcher's
+actual OS exit code. An unexpected JavaScript process exit while the log is open
+records `process_exit`, its exit code and an allowlisted exception type/origin.
+This observer does not intercept the exception, release ownership or restart work.
+The last 2 KiB of the existing 64-KiB per-run cap is reserved for terminal evidence.
+
+Owned component diagnostics contain PID, observed exit code/signal, process-error
+flag, stderr byte count and a fixed classification where supported. One previous
+generation per component is retained so replacement cannot erase its exit summary.
+Herdr/legacy stderr is deliberately `unclassified_stderr`: arbitrary child text,
+error messages/stacks, arguments, environment, addresses and credentials are not
+copied to the host log. These summaries are diagnostic evidence, never stop or
+replay authority. Windows TerminateProcess, SIGKILL, power loss and an unwritable
+log cannot guarantee a final record. Missing final evidence remains unknown;
+this patch cannot reconstruct an earlier launcher's discarded output/ExitCode.
+Logs and status remain in the existing host root, created by the foreground
+account under that root's current permissions. Read them using the same authorized
+identity; the endpoint does not impersonate another user, change ACLs or provide an
+alternate privileged reader. An OS access denial still blocks that observation
+and cannot be treated as permission to restart, clear the journal or take ownership.
 
 ## Drain and restart boundaries
 

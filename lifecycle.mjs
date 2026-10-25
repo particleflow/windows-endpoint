@@ -156,6 +156,7 @@ export class NativeDriver {
     // overlay. Extra environment injection is not exposed to product callers.
     this.env = managedEnvironment(config, inheritedEnvironment)
     this.children = new Map()
+    this.previousChildren = new Map() // At most one previous owned generation per component, diagnostics only.
     const programs = programPaths(config)
     this.node = programs.node
     this.herdr = programs.herdr
@@ -178,6 +179,15 @@ export class NativeDriver {
     const sum = createHash('sha256').update(host).update('\0').update(connector).digest('hex')
     demand(!this.fingerprint || this.fingerprint === sum, 'official_configuration_changed')
     this.fingerprint = sum
+  }
+  diagnostics() {
+    const project = (component, c) => c ? { component, pid: c.process.pid || null,
+      exitObserved: c.exitObserved, exitCode: c.exitCode ?? null, signal: c.signal ?? null,
+      processError: c.error, stderrBytes: c.stderrBytes || 0, stderrCode: c.stderrBytes ? 'unclassified_stderr' : null } : null
+    const records = [...this.children].map(([component, c]) => ({ ...project(component, c), previousExit: project(component, this.previousChildren.get(component)) }))
+    const native = this.nativeConnector?.diagnostics()
+    if (native) records.push(native)
+    return records
   }
   command(file, args, timeout = 10000) {
     this.checkPrograms?.()
@@ -270,9 +280,9 @@ export class NativeDriver {
     const file = component === 'herdr' ? this.herdr : this.node
     const args = component === 'herdr' ? ['--session', this.config.session, 'server'] : [this.connector, 'run']
     const processHandle = spawn(file, args, { env: this.env, cwd: this.config.sourceRoot, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], shell: false })
-    const c = { process: processHandle, startedAt: Date.now(), exited: false, exitObserved: false, error: false, lock: null }
+    const c = { process: processHandle, startedAt: Date.now(), exited: false, exitObserved: false, error: false, lock: null, exitCode: null, signal: null, stderrBytes: 0 }
     c.done = new Promise(resolve => {
-      processHandle.once('exit', () => { c.exitObserved = true; c.exited = true; resolve() })
+      processHandle.once('exit', (exitCode, signal) => { c.exitObserved = true; c.exited = true; c.exitCode = exitCode; c.signal = signal; resolve() })
       processHandle.on('error', () => {
         c.error = true
         // Failed spawn has no PID and no later exit event. A post-spawn error
@@ -281,8 +291,10 @@ export class NativeDriver {
       })
     })
     processHandle.stdout.resume()
-    processHandle.stderr.resume()
-    this.children.set(component, c)
+    // Drain without retaining arbitrary child text (which can contain keys or
+    // task content). Persist only byte count and actual exit metadata via host.
+    processHandle.stderr.on('data', chunk => { c.stderrBytes = Math.min(Number.MAX_SAFE_INTEGER, c.stderrBytes + chunk.length) })
+    this.previousChildren.set(component, this.children.get(component)); this.children.set(component, c)
   }
   async connectorStatus() {
     if (this.nativeConnector) return this.nativeConnector.status()

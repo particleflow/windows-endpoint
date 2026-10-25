@@ -9,7 +9,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { deploymentReferences } from './deployment.mjs'
 import { acquireLeases, leaseKeys } from './lifecycle.mjs'
-import { readHostStatus } from './host.mjs'
+import { readHostStatus, ForegroundHost } from './host.mjs'
 import { deploymentFixture, syntheticBundle } from './test-support/deployment-fixture.mjs'
 import { installedFixture } from './test-support/installed-fixture.mjs'
 
@@ -238,6 +238,56 @@ test('inherited input closure drains host instead of leaving an orphan foregroun
   p.child.stdin.end()
   assert.equal((await p.done).code, 0)
   assert.equal((await readHostStatus(f.root)).phase, 'stopped')
+})
+
+for (const trigger of ['stdin_eof', 'stop_command', 'invalid_input']) test(`same-run persistent diagnostic distinguishes ${trigger} without storing input`, async t => {
+  const f = await fixture(t, true), p = launch(t, f, 'normal'), s = await syntheticRunning(p)
+  if (trigger === 'stdin_eof') p.child.stdin.end()
+  else if (trigger === 'stop_command') p.command('stop')
+  else p.child.stdin.write('SYNTHETIC-PRIVATE-INPUT\n')
+  const result = await p.done
+  assert.equal(result.code, trigger === 'invalid_input' ? 2 : 0)
+  const raw = await fs.readFile(path.join(f.root, 'logs/endpoint-host', `${s.runId}.jsonl`), 'utf8')
+  const records = raw.trim().split('\n').map(line => JSON.parse(line))
+  const final = records.find(x => x.event === 'foreground_result')
+  assert.equal(final.returnCode, result.code); assert.equal(final.stopTrigger, trigger)
+  assert.equal(records.every(r => r.runId === s.runId), true)
+  assert.equal(raw.includes('SYNTHETIC-PRIVATE-INPUT'), false)
+  assert.ok(Buffer.byteLength(raw) <= 65536)
+})
+
+test('closing the foreground output is recorded separately from a clean stdin stop', async t => {
+  const f = await fixture(t, true), p = launch(t, f, 'normal'), s = await syntheticRunning(p)
+  p.child.stdout.destroy(); p.command('status')
+  assert.equal((await p.done).code, 2)
+  const raw = await fs.readFile(path.join(f.root, 'logs/endpoint-host', `${s.runId}.jsonl`), 'utf8')
+  const final = raw.trim().split('\n').map(line => JSON.parse(line)).find(x => x.event === 'foreground_result')
+  assert.equal(final.stopTrigger, 'observer_disconnected'); assert.equal(final.attention, 'host_observer_disconnected')
+})
+
+test('the bounded per-run log retains room for its final foreground result', async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'endpoint-log-capacity-')))
+  const host = new ForegroundHost({ root })
+  t.after(async () => { if (host.release) await host.stop(); await fs.rm(root, { recursive: true, force: true }) })
+  await host.start()
+  for (let i = 0; i < 150; i++) await host.logEvent({ event: 'synthetic_capacity_fixture', content: 'x'.repeat(512) })
+  assert.equal(host.logState, 'capacity_reached')
+  await host.stop()
+  const raw = await fs.readFile(path.join(root, 'logs/endpoint-host', `${host.runId}.jsonl`), 'utf8')
+  assert.ok(Buffer.byteLength(raw) <= 65536)
+  assert.equal(JSON.parse(raw.trim().split('\n').at(-1)).event, 'foreground_result')
+})
+
+test('uncaught host error preserves a bounded same-run exit observation without claiming cleanup or storing its message', async t => {
+  const f = await fixture(t, true), p = launch(t, f, 'fatal-error'), s = await syntheticRunning(p)
+  p.fixture('uncaught_exception'); assert.equal((await p.done).code, 1)
+  const raw = await fs.readFile(path.join(f.root, 'logs/endpoint-host', `${s.runId}.jsonl`), 'utf8')
+  const final = raw.trim().split('\n').map(line => JSON.parse(line)).find(x => x.event === 'process_exit')
+  assert.equal(final.exitCode, 1); assert.equal(final.fatalOrigin, 'uncaught_exception'); assert.equal(final.fatalType, 'TypeError')
+  assert.equal(final.cleanup, 'not_confirmed_by_process_exit')
+  assert.equal(raw.includes('SYNTHETIC-SECRET'), false)
+  assert.equal(JSON.parse(await fs.readFile(path.join(f.stateDirectory, 'lifecycle.json'))).phase, 'running')
+  // Fixture children exit on IPC disconnect; this makes no real Herdr claim.
 })
 
 test('unknown or linked status files are preserved instead of overwritten or exposed', async t => {

@@ -101,6 +101,8 @@ test('bridge runs the original CLI arguments and graceful stop waits for actual 
   assert.equal(c.stoppedObserved, true); assert.equal(c.closed, true); assert.equal(c.exitCode, 0)
   assert.equal(connector.confirmedExit(), true); assert.equal(connector.alive(), false)
   const next = connector.start(); assert.notEqual(next.process.pid, c.process.pid)
+  assert.equal(connector.diagnostics().previousExit.pid, c.process.pid)
+  assert.equal(connector.diagnostics().previousExit.exitCode, 0)
   await until(() => connector.status()?.state === 'online'); await connector.stop()
 })
 
@@ -183,6 +185,10 @@ test('unsafe startup or unknown command output never becomes an online identity'
   assert.equal(connector.status().lastError, 'native_configuration_invalid')
   assert.equal(JSON.stringify(connector.status()).includes('SYNTHETIC-PRIVATE'), false)
   assert.equal(c.exitCode, 1); assert.equal(connector.confirmedExit(), true)
+  const diagnostics = connector.diagnostics()
+  assert.equal(diagnostics.exitCode, 1); assert.equal(diagnostics.exitObserved, true)
+  assert.ok(diagnostics.stderrBytes > 0); assert.equal(diagnostics.stderrCode, 'native_configuration_invalid')
+  assert.equal(JSON.stringify(diagnostics).includes('SYNTHETIC-PRIVATE'), false)
   await connector.stop()
 })
 

@@ -9,6 +9,7 @@ const notify = value => { if (process.connected) process.send({ fixture: value }
 let driver, releaseAdvance, releaseReady, releaseConfig
 let failStop = scenario === 'stop-failure'
 const control = message => {
+  if (scenario === 'fatal-error' && message.fixture === 'uncaught_exception') throw new TypeError('SYNTHETIC-SECRET-MUST-NOT-ENTER-HOST-LOG')
   if (message.fixture === 'crash_connector') driver?.children.get('connector')?.child.send({ action: 'crash' })
   if (message.fixture === 'authentication_failure') driver?.children.get('connector')?.child.send({ action: 'auth_failure' })
   if (message.fixture === 'release_advance') releaseAdvance?.()

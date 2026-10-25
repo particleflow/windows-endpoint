@@ -1,4 +1,5 @@
 import * as fs from 'node:fs/promises'
+import { writeSync, fsyncSync } from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
@@ -57,10 +58,42 @@ export class ForegroundHost {
     this.inheritedHostLease = inheritedHostLease
     this.runId = randomUUID(); this.phase = 'starting'; this.attention = null
     this.stopReason = null; this.control = 'unverified'
+    this.stopTrigger = null; this.fatalOrigin = null; this.fatalType = null
     this.configuration = 'unverified'; this.components = 'unavailable_unqualified'; this.connection = 'unverified'
     this.release = null; this.runtime = null; this.stopRequested = false
     this.active = null; this.starting = null; this.closing = null; this.publishing = null
     this.logBytes = 0; this.logState = 'unverified'; this.lastEvent = null; this.initialized = false
+  }
+  logLine(event) { return `${JSON.stringify({ schema: 1, runId: this.runId, at: Date.now(), ...event })}\n` }
+  componentDiagnostics() { return this.runtime?.driver?.diagnostics?.() || [] }
+  async logEvent(event, terminal = false) {
+    const line = this.logLine(event), bytes = Buffer.byteLength(line)
+    // Keep room for the final result even when ordinary state-change logging
+    // reaches its existing per-run cap. No deletion or retention policy added.
+    if (this.logBytes + bytes > 65536 - (terminal ? 0 : 2048)) { this.logState = 'capacity_reached'; return }
+    await this.logHandle.writeFile(line); await this.logHandle.sync(); this.logBytes += bytes
+  }
+  attachProcessDiagnostics() {
+    this.onFatal = (_error, origin) => {
+      this.fatalOrigin = origin === 'unhandledRejection' ? 'unhandled_rejection' : 'uncaught_exception'
+      this.fatalType = 'Error'
+      try { if (['TypeError', 'RangeError', 'SyntaxError', 'ReferenceError'].includes(_error?.name)) this.fatalType = _error.name } catch { /* Inspecting a thrown value must not replace the original failure. */ }
+    }
+    this.onProcessExit = exitCode => {
+      // Observation only: no catch/restart, lease release or component stop.
+      // TerminateProcess/SIGKILL/power loss cannot run this hook.
+      try {
+        const line = this.logLine({ event: 'process_exit', exitCode, stopTrigger: this.stopTrigger,
+          fatalOrigin: this.fatalOrigin, fatalType: this.fatalType, cleanup: 'not_confirmed_by_process_exit', components: this.componentDiagnostics() })
+        if (this.logBytes + Buffer.byteLength(line) > 65536) return
+        writeSync(this.logHandle.fd, line); fsyncSync(this.logHandle.fd)
+      } catch { /* Diagnostic failure must not change the original exit. */ }
+    }
+    process.on('uncaughtExceptionMonitor', this.onFatal); process.on('exit', this.onProcessExit)
+  }
+  async closeLog() {
+    process.off('uncaughtExceptionMonitor', this.onFatal); process.off('exit', this.onProcessExit)
+    await this.logHandle?.close()
   }
   snapshot() {
     const runtime = this.runtime?.snapshot()
@@ -94,13 +127,10 @@ export class ForegroundHost {
       try { await handle.writeFile(`${JSON.stringify(snapshot)}\n`); await handle.sync() } finally { await handle.close() }
       await fs.rename(temporary, this.statusFile)
       const event = JSON.stringify({ phase: snapshot.phase, control: snapshot.control, health: snapshot.health, attention: snapshot.attention, configuration: snapshot.configuration, components: snapshot.components, connection: snapshot.connection,
-        componentPhase: snapshot.componentLifecycle?.phase || null, restarts: snapshot.componentLifecycle?.restartsInWindow || 0, transferState: snapshot.transfer?.state || null })
+        componentPhase: snapshot.componentLifecycle?.phase || null, restarts: snapshot.componentLifecycle?.restartsInWindow || 0, transferState: snapshot.transfer?.state || null,
+        stopTrigger: this.stopTrigger, componentDiagnostics: this.componentDiagnostics() })
       if (event !== this.lastEvent) {
-        const line = `${JSON.stringify({ schema: 1, runId: this.runId, at: snapshot.updatedAt, ...JSON.parse(event) })}\n`
-        if (this.logBytes + Buffer.byteLength(line) <= 65536) {
-          await this.logHandle.writeFile(line); await this.logHandle.sync()
-          this.logBytes += Buffer.byteLength(line); this.logState = 'recording'
-        } else this.logState = 'capacity_reached'
+        await this.logEvent(JSON.parse(event))
         this.lastEvent = event
         this.emit(this.snapshot())
       }
@@ -118,7 +148,8 @@ export class ForegroundHost {
     await ensureDirectory(this.layout.data); await ensureDirectory(this.stateDirectory)
     await ensureDirectory(this.layout.logs); await ensureDirectory(this.logDirectory)
     this.release = this.inheritedHostLease || await acquireLeases([`host:${this.root}`], this.stateDirectory)
-    this.logHandle = await fs.open(path.join(this.logDirectory, `${this.runId}.jsonl`), 'wx')
+    this.logHandle = await fs.open(path.join(this.logDirectory, `${this.runId}.jsonl`), 'ax')
+    this.attachProcessDiagnostics()
     this.logState = 'recording'; this.initialized = true
     await this.publish()
     try {
@@ -241,7 +272,14 @@ export class ForegroundHost {
     let publicationFailure
     if (this.publishing) await this.publishing.catch(() => {})
     try { await this.publish() } catch (error) { publicationFailure = error; this.attention ||= 'host_observation_write_failed'; this.emit(this.snapshot()) }
-    try { await this.logHandle?.close() } finally { if (this.release) { await this.release(); this.release = null } }
+    try {
+      if (this.logHandle) {
+        const attention = this.snapshot().attention
+        try { await this.logEvent({ event: 'foreground_result', returnCode: publicationFailure || attention && attention !== 'host_configuration_missing' ? 2 : 0,
+          stopTrigger: this.stopTrigger, phase: this.phase, attention, components: this.componentDiagnostics() }, true) }
+        finally { await this.closeLog() }
+      }
+    } finally { if (this.release) { await this.release(); this.release = null } }
     if (publicationFailure) throw new HostError('host_observation_write_failed')
     return true
   }
@@ -262,12 +300,13 @@ export async function runForeground({ root, input = process.stdin, output = proc
   let resolveDone, stopping = false, timer, buffer = '', commandBusy = false
   const done = new Promise(resolve => { resolveDone = resolve })
   const emit = value => {
-    if (output.writableLength > 65536) { if (!host.stopRequested) void stop('host_observer_backpressure'); return }
+    if (output.writableLength > 65536) { if (!host.stopRequested) void stop('host_observer_backpressure', 'observer_backpressure'); return }
     if (!output.destroyed && output.writable) output.write(`${JSON.stringify(value)}\n`)
   }
   const host = new ForegroundHost({ root, emit, createTestRuntime, inheritedHostLease })
   host.control = input.readableEnded || input.destroyed ? 'stdin_closed' : 'stdin_open'
-  const stop = async reason => {
+  const stop = async (reason, trigger = 'stop_command') => {
+    host.stopTrigger ||= trigger
     // Capture an error even when an earlier clean stop is already draining.
     if (reason) host.stopReason ||= reason
     if (stopping) return
@@ -281,30 +320,30 @@ export async function runForeground({ root, input = process.stdin, output = proc
       else { clearInterval(timer); resolveDone(2) }
     }
   }
-  const signal = () => { void stop() }
+  const sigint = () => { void stop(null, 'sigint') }, sigterm = () => { void stop(null, 'sigterm') }
   const onData = chunk => {
     buffer += chunk.toString('utf8')
-    if (Buffer.byteLength(buffer) > 1024) { buffer = ''; void stop('host_control_input_invalid'); return }
+    if (Buffer.byteLength(buffer) > 1024) { buffer = ''; void stop('host_control_input_invalid', 'invalid_input'); return }
     const lines = buffer.split('\n'); buffer = lines.pop()
     for (const line of lines) {
       let value
-      try { value = JSON.parse(line) } catch { void stop('host_control_input_invalid'); return }
-      if (!value || Object.keys(value).length !== 1 || !['status', 'stop'].includes(value.action)) { void stop('host_control_input_invalid'); return }
+      try { value = JSON.parse(line) } catch { void stop('host_control_input_invalid', 'invalid_input'); return }
+      if (!value || Object.keys(value).length !== 1 || !['status', 'stop'].includes(value.action)) { void stop('host_control_input_invalid', 'invalid_input'); return }
       if (value.action === 'stop') void stop()
       else if (!commandBusy) { commandBusy = true; emit(host.snapshot()); setImmediate(() => { commandBusy = false }) }
     }
   }
-  const onEnd = () => { host.control = 'stdin_closed'; void stop(buffer.trim() ? 'host_control_input_invalid' : null) }
-  const onOutputError = () => { if (!host.stopRequested) void stop('host_observer_disconnected') }
+  const onEnd = () => { host.control = 'stdin_closed'; void stop(buffer.trim() ? 'host_control_input_invalid' : null, 'stdin_eof') }
+  const onOutputError = () => { if (!host.stopRequested) void stop('host_observer_disconnected', 'observer_disconnected') }
   input.on('data', onData); input.once('end', onEnd); output.on('error', onOutputError)
-  process.on('SIGINT', signal); process.on('SIGTERM', signal)
+  process.on('SIGINT', sigint); process.on('SIGTERM', sigterm)
   try {
     try { await host.start() }
-    catch (error) { await stop(safeCode(error)) }
+    catch (error) { await stop(safeCode(error), 'startup_failed') }
     if (!host.stopRequested) {
       timer = setInterval(() => {
-        void host.tick().catch(() => stop('host_lifecycle_failed'))
-        void host.publish().catch(() => { if (!host.stopRequested) return stop('host_observation_write_failed') })
+        void host.tick().catch(() => stop('host_lifecycle_failed', 'tick_failed'))
+        void host.publish().catch(() => { if (!host.stopRequested) return stop('host_observation_write_failed', 'status_write_failed') })
       }, tickMs)
     }
     return await done
@@ -312,7 +351,7 @@ export async function runForeground({ root, input = process.stdin, output = proc
     clearInterval(timer)
     input.off('data', onData); input.off('end', onEnd); input.pause()
     output.off('error', onOutputError)
-    process.off('SIGINT', signal); process.off('SIGTERM', signal)
+    process.off('SIGINT', sigint); process.off('SIGTERM', sigterm)
   }
 }
 

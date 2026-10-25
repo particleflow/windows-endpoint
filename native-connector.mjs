@@ -8,6 +8,9 @@ const protocol = 'memoh.endpoint.native-runtime.v1'
 const bridge = fileURLToPath(new URL('./native-connector-child.mjs', import.meta.url))
 const fail = code => { throw Object.assign(new Error(code), { code }) }
 const stateMap = { connecting: 'connecting', connected: 'online', disconnected: 'offline', stopped: 'stopped' }
+const processDiagnostic = c => c ? { component: 'connector', pid: c.process.pid || null, exitObserved: c.exitObserved,
+  exitCode: c.exitCode ?? null, signal: c.signal ?? null, processError: c.error,
+  stderrBytes: c.stderrBytes, stderrCode: c.stderrCode } : null
 
 // Never return raw stderr, enrollment, URLs or keys. The HTTP classifications
 // match the official Runtime's own fixed handshake diagnostic, not a guessed
@@ -36,8 +39,13 @@ export class NativeRuntimeConnector {
     this.options = { node, entry, enrollmentFile, cwd, env: { ...env }, deviceId, runtimeId, version }
     for (const name of Object.keys(this.options.env)) if (/^(NODE_OPTIONS|NODE_PATH|MEMOH_RUNTIME_(SERVER|KEY|CONFIG|TEAM_ID|INSECURE_LOCALHOST|HOME))$/i.test(name)) delete this.options.env[name]
     this.record = null
+    this.previousRecord = null // Diagnostic evidence only; never cleanup authority.
   }
   alive() { return Boolean(this.record && !this.record.exited) }
+  diagnostics() {
+    const c = this.record
+    return c ? { ...processDiagnostic(c), previousExit: processDiagnostic(this.previousRecord) } : null
+  }
   confirmedExit() {
     const c = this.record
     return Boolean(c && c.exitObserved && Number.isSafeInteger(c.process.pid) && this.cleanupConfirmed())
@@ -65,8 +73,9 @@ export class NativeRuntimeConnector {
     const { node, entry, enrollmentFile, cwd, env } = this.options
     const child = spawn(node, [bridge, entry, enrollmentFile], { cwd, env, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] })
     const c = { process: child, startedAt: Date.now(), updatedAt: Date.now(), exited: false, exitObserved: false, closed: false, error: false,
-      stopRequested: false, stopSent: false, loaded: false, observation: null, exitCode: null, signal: null, stoppedObserved: false, sessionStarted: false, spawnFailed: false }
-    this.record = c
+      stopRequested: false, stopSent: false, loaded: false, observation: null, exitCode: null, signal: null, stoppedObserved: false, sessionStarted: false, spawnFailed: false,
+      stderrBytes: 0, stderrCode: null }
+    this.previousRecord = this.record; this.record = c
     const observe = (value, line = '') => {
       if (!value) return
       const event = /^(connecting|connected|disconnected|stopped)(?:: .*)?$/.exec(line.trim())?.[1]
@@ -93,16 +102,25 @@ export class NativeRuntimeConnector {
     const consume = (stream, stderr) => {
       let pending = '', discarding = false
       stream.on('data', chunk => {
+        if (stderr) { c.stderrBytes = Math.min(Number.MAX_SAFE_INTEGER, c.stderrBytes + chunk.length); c.stderrCode ||= 'unclassified_stderr' }
         for (const part of chunk.toString('utf8').split(/(?<=\n)/)) {
           if (!discarding) pending += part
           if (Buffer.byteLength(pending) > 4096) { pending = ''; discarding = true; observe({ state: 'needs_attention', lastError: 'native_output_invalid' }); c.requestStop() }
           if (part.endsWith('\n')) {
-            if (!discarding) observe(nativeConnectorObservation(pending, stderr), pending)
+            if (!discarding) {
+              const observation = nativeConnectorObservation(pending, stderr)
+              if (stderr && observation?.lastError) c.stderrCode = observation.lastError
+              observe(observation, pending)
+            }
             pending = ''; discarding = false
           }
         }
       })
-      stream.once('end', () => { if (pending && !discarding) observe(nativeConnectorObservation(pending, stderr), pending) })
+      stream.once('end', () => { if (pending && !discarding) {
+        const observation = nativeConnectorObservation(pending, stderr)
+        if (stderr && observation?.lastError) c.stderrCode = observation.lastError
+        observe(observation, pending)
+      } })
     }
     consume(child.stdout, false); consume(child.stderr, true)
     c.done = new Promise(resolve => {
