@@ -44,6 +44,16 @@ function command(args, expected) {
   return r.stdout
 }
 try {
+  if (manifest.native_runtime) {
+    const native = manifest.native_runtime
+    assert.equal(native.commit, summary.native_runtime_commit)
+    const proof = JSON.parse(await fs.readFile(path.join(candidate, native.provenance), 'utf8'))
+    assert.equal(proof.source_commit, native.commit); assert.equal(proof.package_version, native.version)
+    const version = spawnSync(process.execPath, [path.join(candidate, native.entry), 'version'], { cwd: sandbox, encoding: 'utf8', timeout: 10000, maxBuffer: 4096, shell: false })
+    assert.equal(version.error, undefined); assert.equal(version.status, 0)
+    assert.equal(version.stdout.trim(), native.version)
+    checks.push('bundled_runtime_version_without_enrollment_or_service_registration')
+  }
   assert.ok(JSON.parse(command(['help'], 0)).commands.includes('host run --root DIR'))
   command(['update'], 2)
   checks.push('extracted_public_entry_and_unchanged_update_gate')

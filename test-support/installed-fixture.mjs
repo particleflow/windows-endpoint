@@ -35,3 +35,25 @@ export async function installedFixture(t) {
   const target = { device_id: config.deviceId, instance_id: config.instanceId, session: config.session, work_dir: config.sourceRoot, bash_path: p.git, agent: { execution_mode: 'pi-json-v1', provider: 'synthetic', model: 'synthetic', config_dir: config.piConfigDir } }
   return { base, config, p, connector, write, versions, calls, run, target }
 }
+
+// Inert package/config bytes only. Native Runtime secure enrollment loading and
+// live connection semantics require their separate actual-process fixture.
+export async function nativeInstalledFixture(t) {
+  const f = await installedFixture(t), config = f.config
+  config.schema = 3
+  delete config.agenvoConfigDir
+  config.connector = { kind: 'memoh-runtime', enrollmentFile: path.join(f.base, 'native-enrollment/runtime.json') }
+  const legacyRun = f.run
+  f.p.connector = programPaths(config).connector
+  await f.write(f.p.connector, 'INERT NATIVE RUNTIME; NEVER EXECUTE')
+  await f.write(path.join(config.programs.connectorPackage, 'package.json'), JSON.stringify({ name: '@memohai/runtime', version: '0.22.0' }))
+  await f.write(config.connector.enrollmentFile, 'SYNTHETIC UNREAD ENROLLMENT')
+  f.run = (file, args, env) => {
+    if (file === f.p.node && args[0] === f.p.connector) {
+      f.calls.push({ file, args, env })
+      return args[1] === 'version' ? '0.22.0' : 'Usage: memoh-runtime run --config --log'
+    }
+    return legacyRun(file, args, env)
+  }
+  return f
+}

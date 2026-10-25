@@ -27,6 +27,12 @@ export async function verifyCandidate(root, expectedHash) {
     manifest.source_repository === 'particleflow/windows-endpoint' && /^[a-f0-9]{40}$/.test(manifest.source_commit) &&
     manifest.producer_repository === 'particleflow/Memoh' && manifest.producer_commit === catalog.components.transfer.revision, 'candidate_kind_or_producer_mismatch')
   demand(manifest.state_profile === programStateProfile, 'candidate_state_profile_incompatible')
+  if (manifest.native_runtime !== undefined) {
+    const n = manifest.native_runtime, pin = catalog.nativeRuntime
+    demand(n && Object.keys(n).sort().join(',') === 'commit,entry,provenance,repository,version' && pin &&
+      n.repository === 'particleflow/Memoh' && n.commit === pin.revision && n.version === pin.version && n.entry === pin.entry &&
+      n.provenance === 'runtime-connector/SHA256SUMS.json', 'candidate_native_runtime_mismatch')
+  }
   demand(Array.isArray(manifest.files) && manifest.files.length > 0 && manifest.files.length <= 256, 'candidate_inventory_invalid')
   const seen = new Set(); let totalBytes = 0
   for (const f of manifest.files) {
@@ -34,7 +40,7 @@ export async function verifyCandidate(root, expectedHash) {
       f.path.length <= 240 && f.path.split('/').every(p => /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(p) && !/[.]$/.test(p) && !/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(p)) &&
       f.path !== 'candidate.json' && !seen.has(f.path.toLowerCase()) && Number.isSafeInteger(f.size) && f.size >= 0 && hash(f.sha256), 'candidate_inventory_invalid')
     // No installed official component tree or mutable data can become payload.
-    demand(!f.path.includes('/') || /^(examples|licenses|transfer)\//.test(f.path), 'candidate_payload_scope_invalid')
+    demand(!f.path.includes('/') || /^(examples|licenses|transfer)\//.test(f.path) || manifest.native_runtime && /^runtime-connector\//.test(f.path), 'candidate_payload_scope_invalid')
     seen.add(f.path.toLowerCase()); totalBytes += f.size
     demand(totalBytes <= 4 * 1024 ** 3, 'candidate_package_too_large')
   }
@@ -57,6 +63,24 @@ export async function verifyCandidate(root, expectedHash) {
   }
   const dependencies = JSON.parse(await boundedRead(path.join(root, 'dependencies.json'), 65536))
   demand(dependencies.components?.transfer?.revision === manifest.producer_commit, 'candidate_producer_mismatch')
+  if (manifest.native_runtime) {
+    const n = manifest.native_runtime
+    demand(dependencies.nativeRuntime?.revision === n.commit && dependencies.nativeRuntime.version === n.version, 'candidate_native_runtime_mismatch')
+    for (const name of ['native-connector.mjs', 'native-connector-child.mjs', n.entry, n.provenance, 'runtime-connector/package.json', 'runtime-connector/dist/index.mjs', 'runtime-connector/dist/bridge.proto']) {
+      demand(seen.has(name.toLowerCase()), 'candidate_native_runtime_missing')
+    }
+    const proof = JSON.parse(await boundedRead(path.join(root, n.provenance), 262144))
+    demand(proof.schema === 1 && proof.kind === 'memoh-runtime-source-build' && proof.source_repository === n.repository &&
+      proof.source_commit === n.commit && proof.package_name === '@memohai/runtime' && proof.package_version === n.version && Array.isArray(proof.files), 'candidate_native_runtime_provenance')
+    const payload = manifest.files.filter(f => f.path.startsWith('runtime-connector/') && f.path !== n.provenance)
+    demand(proof.files.length === payload.length && new Set(proof.files.map(f => f.path)).size === payload.length, 'candidate_native_runtime_inventory')
+    for (const file of proof.files) {
+      const expected = payload.find(f => f.path === `runtime-connector/${file.path}`)
+      demand(expected && expected.sha256 === file.sha256 && expected.size === file.size, 'candidate_native_runtime_inventory')
+    }
+    const metadata = JSON.parse(await boundedRead(path.join(root, 'runtime-connector/package.json'), 65536))
+    demand(metadata.name === '@memohai/runtime' && metadata.version === n.version, 'candidate_native_runtime_package')
+  }
   return { manifest, totalBytes }
 }
 

@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { stageBundle, validateConfig, validateDirectory, verifyBundle, transferLocations } from './endpoint.mjs'
+import { stageBundle, validateConfig, validateDirectory, verifyBundle, transferLocations, componentRoots } from './endpoint.mjs'
 import { acquireLeases, leaseKeys, StateStore } from './lifecycle.mjs'
 
 // Internal offline transaction engine. No public activation command consumes
@@ -50,7 +50,7 @@ export class DeploymentTransactions {
   async locked(operation) {
     validateConfig(this.config)
     const transfer = this.config.schema === 1 || this.config.transfer ? transferLocations(this.config) : null
-    for (const target of [this.lifecycleDirectory, ...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir'].map(key => this.config[key]), ...(transfer ? [transfer.config, transfer.state] : [])]) {
+    for (const target of [this.lifecycleDirectory, ...componentRoots(this.config), ...(transfer ? [transfer.config, transfer.state] : [])]) {
       demand([this.layout.packages, this.layout.control].every(root => !contains(root, target) && !contains(target, root)), 'deployment_mutable_root_overlap')
     }
     await validateDirectory(this.root)
@@ -123,7 +123,7 @@ export class DeploymentTransactions {
   async proof(directory, expectedHash) {
     const verified = await this.verify(directory, expectedHash)
     demand(typeof this.qualify === 'function', 'deployment_component_qualification_missing')
-    const value = await this.qualify(directory, expectedHash)
+    const value = await this.qualify(directory, expectedHash, verified)
     demand(exact(value, ['schema', 'stateProfileSha256']) && value.schema === 1 && hash(value.stateProfileSha256), 'deployment_state_profile_unknown')
     return { profile: value.stateProfileSha256, totalBytes: verified.totalBytes }
   }

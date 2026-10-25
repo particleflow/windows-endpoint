@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url'
 import { spawn, spawnSync, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { catalog, managedEnvironment, programPaths, transferLocations } from './endpoint.mjs'
+import { catalog, managedEnvironment, programPaths, transferLocations, isNativeRuntimeConfig, connectorConfigReference } from './endpoint.mjs'
+import { NativeRuntimeConnector } from './native-connector.mjs'
 import { handoffPayload, validHandoffRecord, handoffObservation } from './handoff.mjs'
 import { validSessionContinuation, captureSessionContinuation } from './session-continuation.mjs'
 
@@ -17,6 +18,9 @@ export class LifecycleError extends Error {
 }
 function demand(ok, code) { if (!ok) throw new LifecycleError(code) }
 function code(error) { return error instanceof LifecycleError ? error.code : 'lifecycle_operation_failed' }
+function connectorFailure(error) {
+  return new LifecycleError(typeof error?.code === 'string' && /^(native_connector|connector)_[a-z_]+$/.test(error.code) ? error.code : 'connector_operation_failed')
+}
 async function readFile(file, limit = 262144) {
   const s = await fs.lstat(file)
   demand(s.isFile() && !s.isSymbolicLink() && s.nlink === 1 && s.size <= limit, 'unsafe_lifecycle_input')
@@ -154,6 +158,9 @@ export class NativeDriver {
     this.node = programs.node
     this.herdr = programs.herdr
     this.connector = programs.connector
+    this.nativeConnector = isNativeRuntimeConfig(config) ? new NativeRuntimeConnector({ node: this.node, entry: this.connector,
+      enrollmentFile: connectorConfigReference(config), cwd: config.sourceRoot, env: this.env,
+      deviceId: config.deviceId, runtimeId: config.runtimeId, version: catalog.nativeRuntime.version }) : null
     this.fingerprint = null
     this.marker = config.session === 'default' ? path.join(config.herdrConfigRoot, 'herdr.sock') : path.join(config.herdrConfigRoot, 'sessions', config.session, 'herdr.sock')
   }
@@ -161,11 +168,11 @@ export class NativeDriver {
     demand(process.platform === 'win32' && process.arch === 'x64' && typeof this.qualify === 'function', 'qualified_windows_driver_required')
     demand(await this.qualify(state) === true, 'component_qualification_failed')
     let credentials
-    try { credentials = await fs.lstat(path.join(this.config.agenvoConfigDir, 'credentials.json')) }
+    try { credentials = await fs.lstat(this.nativeConnector ? connectorConfigReference(this.config) : path.join(this.config.agenvoConfigDir, 'credentials.json')) }
     catch (e) { throw new LifecycleError(e.code === 'ENOENT' ? 'connector_authentication_required' : 'connector_credentials_unreadable') }
     demand(credentials.isFile() && !credentials.isSymbolicLink() && credentials.nlink === 1, 'connector_credentials_unreadable')
     const host = await readFile(path.join(this.config.herdrConfigRoot, 'config.toml'))
-    const connector = await readFile(path.join(this.config.agenvoConfigDir, 'config.json'))
+    const connector = await readFile(connectorConfigReference(this.config))
     const sum = createHash('sha256').update(host).update('\0').update(connector).digest('hex')
     demand(!this.fingerprint || this.fingerprint === sum, 'official_configuration_changed')
     this.fingerprint = sum
@@ -239,8 +246,9 @@ export class NativeDriver {
   }
   // An error can mean a failed kill, not a failed spawn. Until exit is observed
   // an allocated child still owns its slot and must remain eligible for cleanup.
-  alive(component) { const c = this.children.get(component); return Boolean(c && !c.exited) }
+  alive(component) { if (component === 'connector' && this.nativeConnector) return this.nativeConnector.alive(); const c = this.children.get(component); return Boolean(c && !c.exited) }
   confirmedExit(component) {
+    if (component === 'connector' && this.nativeConnector) return this.nativeConnector.confirmedExit()
     const c = this.children.get(component)
     // Only an exit event on the same retained child record after a verified
     // generation qualifies. A kill request, spawn error or missing PID does not.
@@ -249,6 +257,9 @@ export class NativeDriver {
   async start(component) {
     this.checkPrograms?.()
     demand(!this.alive(component), 'component_already_owned')
+    if (component === 'connector' && this.nativeConnector) {
+      try { await this.nativeConnector.start(); return } catch (error) { throw connectorFailure(error) }
+    }
     if (component === 'herdr') demand(!this.hostStatus().running, 'existing_herdr_requires_handoff')
     if (component === 'connector') {
       try { await fs.lstat(path.join(this.config.agenvoConfigDir, 'run.lock')); throw new LifecycleError('connector_lock_requires_owner') }
@@ -272,6 +283,7 @@ export class NativeDriver {
     this.children.set(component, c)
   }
   async connectorStatus() {
+    if (this.nativeConnector) return this.nativeConnector.status()
     const c = this.children.get('connector')
     if (!c) return null
     let s
@@ -290,7 +302,8 @@ export class NativeDriver {
     const deadline = Date.now() + timeout
     while (Date.now() < deadline) {
       demand(this.alive(component), `${component}_startup_exited`)
-      demand(!this.children.get(component).error, `${component}_process_error`)
+      const owned = component === 'connector' && this.nativeConnector ? this.nativeConnector.record : this.children.get(component)
+      demand(!owned?.error, `${component}_process_error`)
       if (component === 'herdr') {
         try {
           const s = this.hostStatus()
@@ -315,6 +328,13 @@ export class NativeDriver {
     throw new LifecycleError(`${component}_startup_timeout`)
   }
   async recoverConnectorLock() {
+    if (this.nativeConnector) {
+      // Official Runtime has no Agenvo run.lock. Only this exact closed child
+      // can be restarted; no PID guessing or external daemon recovery.
+      try { await this.nativeConnector.stop() } catch (error) { throw connectorFailure(error) }
+      demand(this.nativeConnector.confirmedExit(), 'connector_stop_unknown')
+      return
+    }
     const c = this.children.get('connector')
     let lock
     try { lock = await readJSON(path.join(this.config.agenvoConfigDir, 'run.lock')) }
@@ -329,6 +349,9 @@ export class NativeDriver {
     catch (e) { if (e.code !== 'ENOENT') throw e }
   }
   async stop(component) {
+    if (component === 'connector' && this.nativeConnector) {
+      try { await this.nativeConnector.stop(); return } catch (error) { throw connectorFailure(error) }
+    }
     const c = this.children.get(component)
     if (!c) return
     if (this.alive(component)) {
@@ -343,7 +366,7 @@ export class NativeDriver {
       try {
         await Promise.race([c.done, sleep(10000, undefined, { signal: timer.signal }).then(() => { throw new LifecycleError(`${component}_stop_unknown`) })])
       } finally { timer.abort() }
-      if (component === 'herdr' && this.config.schema === 2) {
+      if (component === 'herdr' && [2, 3].includes(this.config.schema)) {
         // Capture once at the confirmed owned exit, not on a later stop retry
         // when another process might have changed the official snapshot.
         try { c.sessionContinuation = await captureSessionContinuation(this.config) }
@@ -568,6 +591,6 @@ export class EndpointLifecycle {
 }
 
 export function leaseKeys(config) {
-  return [`device:${config.deviceId}`, `herdr:${config.herdrConfigRoot}:${config.session}`, `connector:${config.agenvoConfigDir}`,
-    ...(config.transferStateDir || config.schema === 2 && config.transfer ? [`transfer:${config.schema === 2 ? transferLocations(config).state : config.transferStateDir}`] : [])]
+  return [`device:${config.deviceId}`, `herdr:${config.herdrConfigRoot}:${config.session}`, `connector:${isNativeRuntimeConfig(config) ? connectorConfigReference(config) : config.agenvoConfigDir}`,
+    ...(config.transferStateDir || [2, 3].includes(config.schema) && config.transfer ? [`transfer:${[2, 3].includes(config.schema) ? transferLocations(config).state : config.transferStateDir}`] : [])]
 }

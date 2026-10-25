@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { EndpointError, validateConfig, validateDirectory, verifyBundle } from './endpoint.mjs'
+import { EndpointError, validateConfig, validateDirectory, verifyBundle, installationReferences, isNativeRuntimeConfig, connectorConfigReference } from './endpoint.mjs'
 import { deploymentLayout, deploymentReferences } from './deployment.mjs'
 import { acquireLeases, connectorAttention, LifecycleError, StateStore } from './lifecycle.mjs'
 import { createExplicitRuntime, validateRuntimeRequest, RuntimeError } from './runtime.mjs'
@@ -134,7 +134,7 @@ export class ForegroundHost {
             if (!samePath(config[key], expected[key])) throw new HostError('host_configuration_root_mismatch')
           }
         } else {
-          for (const external of [...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir'].map(k => config[k]), ...Object.values(config.programs), ...(config.transfer ? [config.transfer.pluginRoot] : [])]) {
+          for (const external of installationReferences(config)) {
             if ([this.layout.config, this.layout.data, this.layout.logs].some(owned => overlaps(owned, external))) throw new HostError('host_reference_overlap')
           }
         }
@@ -148,7 +148,7 @@ export class ForegroundHost {
         }
         await this.observeAuthorization(config)
         const previous = await new StateStore(this.stateDirectory, config.deviceId).load()
-        const recheckInstallation = Boolean(request) && config.schema === 2 && previous.phase === 'stopped' && previous.attention === 'installation_changed_restart_required'
+        const recheckInstallation = Boolean(request) && [2, 3].includes(config.schema) && previous.phase === 'stopped' && previous.attention === 'installation_changed_restart_required'
         if (previous.handoff) this.attention = 'host_handoff_unverified'
         else if (previous.attention && !recheckInstallation) this.attention = previous.attention
         else if (previous.phase !== 'stopped') this.attention = 'host_previous_runtime_uncertain'
@@ -162,7 +162,7 @@ export class ForegroundHost {
           if (!this.stopRequested) { await this.runtime.start(); this.components = 'synthetic_fixture' }
         } else if (request && !this.stopRequested && !this.attention) {
           this.runtime = await createExplicitRuntime({ config, stateDirectory: this.stateDirectory, request })
-          if (config.schema === 2 && [this.layout.config, this.layout.data, this.layout.logs].some(owned => overlaps(owned, this.runtime.driver.herdr))) throw new HostError('host_reference_overlap')
+          if ([2, 3].includes(config.schema) && [this.layout.config, this.layout.data, this.layout.logs].some(owned => overlaps(owned, this.runtime.driver.herdr))) throw new HostError('host_reference_overlap')
           if (!this.stopRequested) {
             await this.runtime.start({ acknowledgeAttention: recheckInstallation })
             if (!this.stopRequested) this.components = 'verified_local'
@@ -177,6 +177,11 @@ export class ForegroundHost {
     await this.publish()
   }
   async observeAuthorization(config) {
+    if (isNativeRuntimeConfig(config)) {
+      try { await regular(connectorConfigReference(config), 65536); this.connection = 'authorization_unverified' }
+      catch (error) { this.connection = error.code === 'ENOENT' ? 'authorization_required' : 'authorization_unverified' }
+      return // Presence is not authenticated Runtime identity or stop authority.
+    }
     try { await validateDirectory(config.agenvoConfigDir) }
     catch (error) {
       if (error.code === 'ENOENT') { this.connection = 'authorization_required'; return }

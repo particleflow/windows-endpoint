@@ -3,7 +3,7 @@
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { validateConfig, validateDirectory } from './endpoint.mjs'
+import { validateConfig, validateDirectory, installationReferences, isNativeRuntimeConfig } from './endpoint.mjs'
 import { DeploymentTransactions, DeploymentError, deploymentLayout } from './deployment.mjs'
 import { acquireLeases } from './lifecycle.mjs'
 import { boundedRead, readSessionHistory } from './session-diagnostics.mjs'
@@ -55,7 +55,7 @@ export class ProgramDeployment extends DeploymentTransactions {
       try { if (await handle.read()) return 'task_handoff_unverified' } finally { await handle.close() }
     }
     if (await exists(path.join(this.config.herdrConfigRoot, 'sessions', this.config.session, 'herdr.sock')) ||
-        await exists(path.join(this.config.agenvoConfigDir, 'run.lock'))) return 'external_component_state_unverified'
+        !isNativeRuntimeConfig(this.config) && await exists(path.join(this.config.agenvoConfigDir, 'run.lock'))) return 'external_component_state_unverified'
     return null
   }
 }
@@ -69,8 +69,8 @@ export async function programDeployment(root, { prepare = false, io = fs, checkp
   let config
   try { config = validateConfig(JSON.parse(configRaw)); if (runtimeRaw !== null) validateRuntimeRequest(JSON.parse(runtimeRaw), config) }
   catch { throw new DeploymentError('deployment_configuration_invalid') }
-  demand(config.schema === 2, 'deployment_existing_installations_required')
-  const external = [...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir'].map(k => config[k]), ...Object.values(config.programs), ...(config.transfer ? [config.transfer.pluginRoot] : [])]
+  demand([2, 3].includes(config.schema), 'deployment_existing_installations_required')
+  const external = installationReferences(config)
   demand(external.every(location => [layout.config, layout.data, layout.logs].every(owned => !overlaps(owned, location))), 'deployment_reference_overlap')
   // The same root convention as ForegroundHost. No external directory is made.
   const lifecycleDirectory = path.join(layout.data, 'endpoint')
@@ -86,7 +86,12 @@ export async function programDeployment(root, { prepare = false, io = fs, checkp
   } else { await validateDirectory(lifecycleDirectory) }
   const manager = new ProgramDeployment({ root, config, lifecycleDirectory, io, checkpoint,
     verify: verifyCandidate, stage: stageCandidate,
-    qualify: async () => ({ schema: 1, stateProfileSha256: programProfileHash }) })
+    qualify: async (_directory, _hash, verified) => {
+      // Older candidates cannot consume native config. Refuse before selection
+      // rather than activating an old entry and discovering it on next launch.
+      if (isNativeRuntimeConfig(config)) demand(verified?.manifest?.native_runtime, 'deployment_native_connector_missing')
+      return { schema: 1, stateProfileSha256: programProfileHash }
+    } })
   Object.assign(manager, { configFile, runtimeFile, configRaw, runtimeRaw })
   return manager
 }

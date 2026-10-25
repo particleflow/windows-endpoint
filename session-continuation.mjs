@@ -10,7 +10,11 @@ const reject = code => { throw Object.assign(new Error(code), { code }) }
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 function binding(config) {
   const keys = ['deviceId', 'runtimeId', 'instanceId', 'session', 'sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir']
-  return hash(JSON.stringify([...keys.map(k => config[k]), config.transfer || null]))
+  const values = [...keys.map(k => config[k]), config.transfer || null]
+  // Preserve legacy hashes exactly. A native connection reference remains part
+  // of this local data binding, never an authenticated NAS identity assertion.
+  if (config.schema === 3) values.push(config.connector.kind, config.connector.enrollmentFile)
+  return hash(JSON.stringify(values))
 }
 function ordinary(raw) {
   let snapshot

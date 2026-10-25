@@ -85,19 +85,42 @@ function validateAPIBase(value) {
   requireThat(url.protocol === 'https:' && url.hostname && !url.username && !url.password && !url.hostname.endsWith('.invalid'), code)
 }
 
+export function isNativeRuntimeConfig(config) { return config?.schema === 3 }
+export function connectorPackageRoot(config) {
+  return config.programs.connectorPackage ?? (isNativeRuntimeConfig(config) ? path.dirname(path.dirname(path.join(here, catalog.nativeRuntime.entry))) : undefined)
+}
+export function componentRoots(config) {
+  return ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', ...(!isNativeRuntimeConfig(config) ? ['agenvoConfigDir'] : []), 'piConfigDir'].map(key => config[key])
+}
+export function connectorConfigReference(config) {
+  return isNativeRuntimeConfig(config) ? config.connector.enrollmentFile : path.join(config.agenvoConfigDir, 'config.json')
+}
+export function installationReferences(config) {
+  if (config.schema === 1) return pathFields.map(key => config[key])
+  return [...componentRoots(config), ...Object.values(config.programs), ...(config.transfer ? [config.transfer.pluginRoot] : []), ...(isNativeRuntimeConfig(config) ? [connectorConfigReference(config)] : [])]
+}
+
 export function validateConfig(config) {
-  if (config?.schema === 2) {
-    const roots = ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir']
-    keys(config, ['schema', 'programs', ...roots, 'deviceId', 'runtimeId', 'instanceId', 'session'], ['transfer'])
-    // Omitted Herdr is resolved from the selected official Agenvo instance.
-    // The optional legacy value remains an explicit equality constraint.
-    keys(config.programs, ['node', 'piPackage', 'piBin', 'gitRoot', 'connectorPackage'], ['herdr'])
+  if ([2, 3].includes(config?.schema)) {
+    const native = isNativeRuntimeConfig(config)
+    const roots = ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', ...(!native ? ['agenvoConfigDir'] : []), 'piConfigDir']
+    keys(config, ['schema', 'programs', ...roots, 'deviceId', 'runtimeId', 'instanceId', 'session', ...(native ? ['connector'] : [])], ['transfer'])
+    if (native) {
+      keys(config.connector, ['kind', 'enrollmentFile'])
+      requireThat(config.connector.kind === 'memoh-runtime', 'connector_kind_unsupported')
+      absolute(config.connector.enrollmentFile)
+    }
+    // Legacy omitted Herdr resolves from its selected official Agenvo instance.
+    // Native mode keeps one explicit official installation reference.
+    keys(config.programs, ['node', 'piPackage', 'piBin', 'gitRoot', ...(native ? ['herdr'] : ['connectorPackage'])], native ? ['connectorPackage'] : ['herdr'])
     for (const value of [...roots.map(k => config[k]), ...Object.values(config.programs)]) absolute(value)
     requireThat(uuidPattern.test(config.deviceId) && uuidPattern.test(config.runtimeId) && idPattern.test(config.instanceId) && idPattern.test(config.session) && config.session !== 'default', 'dedicated_session_required')
     requireThat(path.basename(config.herdrConfigRoot) === 'herdr' && path.basename(config.herdrStateRoot) === 'herdr', 'herdr_root_name_required')
     const programs = programPaths(config)
-    for (const root of roots.map(k => config[k])) {
-      for (const location of [path.dirname(programs.node), ...(programs.herdr ? [path.dirname(programs.herdr)] : []), config.programs.piPackage, config.programs.piBin, config.programs.gitRoot, config.programs.connectorPackage]) requireThat(!overlaps(root, location), 'data_program_overlap')
+    const programRoots = [path.dirname(programs.node), ...(programs.herdr ? [path.dirname(programs.herdr)] : []), config.programs.piPackage, config.programs.piBin, config.programs.gitRoot, connectorPackageRoot(config)]
+    for (const root of roots.map(k => config[k])) for (const location of programRoots) requireThat(!overlaps(root, location), 'data_program_overlap')
+    if (native) {
+      for (const location of [...roots.map(k => config[k]), ...programRoots]) requireThat(!overlaps(config.connector.enrollmentFile, location), 'connector_enrollment_overlap')
     }
     for (let i = 0; i < roots.length; i++) for (let j = i + 1; j < roots.length; j++) requireThat(!overlaps(config[roots[i]], config[roots[j]]), 'component_data_overlap')
     if (config.transfer !== undefined) {
@@ -105,6 +128,7 @@ export function validateConfig(config) {
       absolute(config.transfer.pluginRoot)
       validateAPIBase(config.transfer.nasOrigin)
       for (const root of roots.map(k => config[k])) requireThat(!overlaps(root, config.transfer.pluginRoot), 'data_program_overlap')
+      if (native) requireThat(!overlaps(config.connector.enrollmentFile, config.transfer.pluginRoot), 'connector_enrollment_overlap')
     }
     return config
   }
@@ -245,8 +269,8 @@ export async function configure(from, to, root) {
   } else config = validateConfig(input)
   absolute(to)
   await canonical(path.dirname(to))
-  const locations = config.schema === 2 ? [...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir'].map(k => config[k]), ...Object.values(config.programs), ...(config.transfer ? [config.transfer.pluginRoot] : [])] : pathFields.map(k => config[k])
-  if (layout && config.schema === 2) requireThat(locations.every(location => [layout.config, layout.data, layout.logs].every(owned => !overlaps(owned, location))), 'host_reference_overlap')
+  const locations = installationReferences(config)
+  if (layout && config.schema >= 2) requireThat(locations.every(location => [layout.config, layout.data, layout.logs].every(owned => !overlaps(owned, location))), 'host_reference_overlap')
   requireThat(!locations.some(location => overlaps(location, to)), 'configuration_location_rejected')
   // Exclusive creation; upgrading never overwrites the references or credentials.
   const handle = await fs.open(to, 'wx')
@@ -262,9 +286,9 @@ export async function configure(from, to, root) {
 }
 
 export function programPaths(config) {
-  if (config.schema === 2) {
+  if ([2, 3].includes(config.schema)) {
     const p = config.programs
-    return { node: p.node, herdr: p.herdr, pi: path.join(p.piPackage, 'dist/bundle/cli.js'), connector: path.join(p.connectorPackage, 'dist/cli.js'),
+    return { node: p.node, herdr: p.herdr, pi: path.join(p.piPackage, 'dist/bundle/cli.js'), connector: path.join(connectorPackageRoot(config), isNativeRuntimeConfig(config) ? 'dist/cli.mjs' : 'dist/cli.js'),
       git: path.join(p.gitRoot, 'bin/bash.exe'), piBin: p.piBin, gitRoot: p.gitRoot }
   }
   const entry = id => path.join(config.bundleRoot, catalog.components[id].entry)
@@ -274,7 +298,7 @@ export function managedEnvironment(config, inherited = process.env) {
   const env = { ...inherited }
   // Keep the caller's ordinary OS environment but remove shell/runtime injection.
   for (const k of Object.keys(env)) {
-    if (/^(PATH|NODE_OPTIONS|NODE_PATH|BASH_ENV|BASH_FUNC_.*|ENV|CDPATH|SHELLOPTS|BASHOPTS|HERDR_.*|XDG_CONFIG_HOME|XDG_STATE_HOME|AGENVO_.*|PI_CODING_AGENT_DIR)$/i.test(k)) delete env[k]
+    if (/^(PATH|NODE_OPTIONS|NODE_PATH|BASH_ENV|BASH_FUNC_.*|ENV|CDPATH|SHELLOPTS|BASHOPTS|HERDR_.*|XDG_CONFIG_HOME|XDG_STATE_HOME|AGENVO_.*|MEMOH_RUNTIME_.*|PI_CODING_AGENT_DIR)$/i.test(k)) delete env[k]
   }
   const system = path.join(inherited.SystemRoot || 'C:\\Windows', 'System32')
   const p = programPaths(config)
@@ -283,7 +307,7 @@ export function managedEnvironment(config, inherited = process.env) {
   env.HERDR_CONFIG_PATH = path.join(config.herdrConfigRoot, 'config.toml')
   env.XDG_CONFIG_HOME = path.dirname(config.herdrConfigRoot)
   env.XDG_STATE_HOME = path.dirname(config.herdrStateRoot)
-  env.AGENVO_CONFIG_DIR = config.agenvoConfigDir
+  if (!isNativeRuntimeConfig(config)) env.AGENVO_CONFIG_DIR = config.agenvoConfigDir
   env.PI_CODING_AGENT_DIR = config.piConfigDir
   return env
 }
@@ -291,7 +315,7 @@ export function managedEnvironment(config, inherited = process.env) {
 // Shared reference checks only. The producer remains responsible for native
 // storage permissions, authorization and queue integrity; never repair ACLs here.
 export function transferLocations(config) {
-  if (config.schema === 2) {
+  if ([2, 3].includes(config.schema)) {
     requireThat(config.transfer, 'transfer_reference_required')
     return { root: config.transfer.pluginRoot, config: path.join(config.herdrConfigRoot, 'plugins/config/memoh.delivery'), state: path.join(config.herdrStateRoot, 'plugins/memoh.delivery'), origin: config.transfer.nasOrigin }
   }
@@ -326,9 +350,9 @@ export function launchPlan(config) {
     activation: 'blocked', reason: 'compatibility_qualification_pending',
     commands: [
       { component: 'herdr', file: entry('herdr'), args: ['--session', config.session, 'server'] },
-      { component: 'connector', file: entry('node'), args: [entry('connector'), 'run'] },
+      { component: 'connector', file: entry('node'), args: [entry('connector'), 'run', ...(isNativeRuntimeConfig(config) ? ['--config', connectorConfigReference(config)] : [])] },
     ],
-    environment: { PATH: managedEnvironment(config).PATH, HERDR_CONFIG_PATH: path.join(config.herdrConfigRoot, 'config.toml'), XDG_CONFIG_HOME: path.dirname(config.herdrConfigRoot), XDG_STATE_HOME: path.dirname(config.herdrStateRoot), AGENVO_CONFIG_DIR: config.agenvoConfigDir, PI_CODING_AGENT_DIR: config.piConfigDir },
+    environment: { PATH: managedEnvironment(config).PATH, HERDR_CONFIG_PATH: path.join(config.herdrConfigRoot, 'config.toml'), XDG_CONFIG_HOME: path.dirname(config.herdrConfigRoot), XDG_STATE_HOME: path.dirname(config.herdrStateRoot), ...(!isNativeRuntimeConfig(config) ? { AGENVO_CONFIG_DIR: config.agenvoConfigDir } : {}), PI_CODING_AGENT_DIR: config.piConfigDir },
     transfer: { owner: 'existing Herdr memoh.delivery actions', scheduler: 'existing task/result flow' },
   }
 }
@@ -340,7 +364,7 @@ function probe(file, args, env) {
 
 export async function doctor(config, run = probe) {
   validateConfig(config)
-  if (config.schema === 2) {
+  if ([2, 3].includes(config.schema)) {
     const { installedDoctor } = await import('./installed.mjs')
     return installedDoctor(config)
   }
@@ -434,6 +458,11 @@ export async function verifyToolchain(config, gitVersion, run = probe) {
 
 export async function main(args) {
   const [command, ...rest] = args
+  if (command === 'setup') {
+    const { setupMain, SetupError } = await import('./setup.mjs')
+    try { return await setupMain(rest) }
+    catch (error) { if (error instanceof SetupError || /^(candidate|deployment)_/.test(error.code)) throw new EndpointError(error.code); throw error }
+  }
   if (command === 'deploy') {
     const { programDeploymentMain } = await import('./program-deployment.mjs')
     const { DeploymentError } = await import('./deployment.mjs')
@@ -450,7 +479,7 @@ export async function main(args) {
     requireThat(/^--[a-z][a-z0-9-]*$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'invalid_arguments')
     options[rest[i]] = rest[i + 1]
   }
-  if (command === 'help' || !command) return { commands: ['configure --from FILE --root DIR', 'configure --from FILE --config FILE', 'doctor --config FILE', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR', 'host handoff-status --root DIR --request-id UUID', 'deploy install|update --root DIR --source DIR --manifest-sha256 SHA256', 'deploy rollback --root DIR --manifest-sha256 SHA256', 'deploy run|recover|status --root DIR'], status: 'portable program deployment and foreground review available; production release and active-task handoff remain unqualified' }
+  if (command === 'help' || !command) return { commands: ['setup --from FILE --root DIR --source DIR --manifest-sha256 SHA256 --transfer disabled|existing-queue', 'configure --from FILE --root DIR', 'configure --from FILE --config FILE', 'doctor --config FILE', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR', 'host handoff-status --root DIR --request-id UUID', 'deploy install|update --root DIR --source DIR --manifest-sha256 SHA256', 'deploy rollback --root DIR --manifest-sha256 SHA256', 'deploy run|recover|status --root DIR'], status: 'portable program deployment and foreground review available; production release and active-task handoff remain unqualified' }
   if (['start', 'activate', 'update', 'rollback', 'uninstall'].includes(command)) throw new EndpointError('qualification_required_no_runtime_or_data_changed')
   if (command === 'configure') {
     keys(options, ['--from'], ['--config', '--root'])
@@ -461,13 +490,13 @@ export async function main(args) {
   requireThat(['doctor', 'plan'].includes(command), 'unknown_command')
   keys(options, ['--config'], command === 'doctor' ? ['--target'] : [])
   const config = validateConfig(await readJSON(options['--config']))
-  if (config.schema === 2 && command === 'doctor') {
+  if ([2, 3].includes(config.schema) && command === 'doctor') {
     const { installedDoctor } = await import('./installed.mjs')
     return installedDoctor(config, options['--target'] ? await readJSON(options['--target']) : null)
   }
   requireThat(!options['--target'], 'existing_installation_config_required')
   if (command === 'doctor') return doctor(config)
-  if (config.schema === 2) {
+  if ([2, 3].includes(config.schema)) {
     const { inspectInstalled } = await import('./installed.mjs')
     return launchPlan((await inspectInstalled(config)).config)
   } else await verifyBundle(config.bundleRoot, config.manifestSha256)

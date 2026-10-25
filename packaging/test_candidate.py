@@ -31,6 +31,7 @@ class CandidateTests(unittest.TestCase):
             shutil.copyfile(ROOT / name, destination)
         catalog = json.loads((self.source / 'dependencies.json').read_bytes())
         catalog['components']['transfer']['revision'] = self.pin
+        catalog['nativeRuntime']['revision'] = self.pin
         (self.source / 'dependencies.json').write_text(json.dumps(catalog), encoding='utf-8')
         self.head = self.commit('synthetic candidate source')
         entries = []
@@ -40,6 +41,25 @@ class CandidateTests(unittest.TestCase):
             (self.producer / name).write_bytes(data)
             entries.append({'name': name, 'sha256': pack.sha(data)})
         (self.producer / 'SHA256SUMS.json').write_text(json.dumps({'source_commit': self.pin, 'arch': 'amd64', 'files': entries}), encoding='utf-8')
+        self.runtime = self.root / 'runtime'
+        self.runtime.mkdir()
+        # Inert package boundary only. No official Runtime connection is made.
+        runtime_files = {
+            'package.json': json.dumps({'name': '@memohai/runtime', 'version': '0.22.0'}).encode(),
+            'LICENSE': b'SYNTHETIC LICENSE',
+            'dist/cli.mjs': b"if (process.argv[2] === 'version') console.log('0.22.0'); else process.exitCode = 2;\n",
+            'dist/index.mjs': b'export class RuntimeSession {}\n',
+            'dist/index.d.ts': b'export declare class RuntimeSession {}\n',
+            'dist/bridge.proto': b'INERT PROTOCOL FIXTURE\n',
+        }
+        entries = []
+        for name, data in runtime_files.items():
+            target = self.runtime / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            entries.append({'path': name, 'size': len(data), 'sha256': pack.sha(data)})
+        (self.runtime / 'SHA256SUMS.json').write_text(json.dumps({'schema': 1, 'kind': 'memoh-runtime-source-build', 'source_repository': 'particleflow/Memoh', 'source_commit': self.pin,
+            'package_name': '@memohai/runtime', 'package_version': '0.22.0', 'files': entries}), encoding='utf-8')
 
     def commit(self, message):
         subprocess.run(['git', '-C', str(self.source), 'add', '.'], check=True)
@@ -47,7 +67,7 @@ class CandidateTests(unittest.TestCase):
         return pack.git(self.source, 'rev-parse', 'HEAD').decode().strip()
 
     def build(self, name='out'):
-        return pack.build(self.source, self.head, self.producer, self.source, self.root / name)
+        return pack.build(self.source, self.head, self.producer, self.source, self.root / name, self.runtime)
 
     def test_reproducible_archive_runs_existing_entry_without_checkout_or_npm(self):
         (self.source / 'credentials.json').write_text('SYNTHETIC EXCLUDED USER INPUT', encoding='utf-8')
@@ -61,6 +81,8 @@ class CandidateTests(unittest.TestCase):
             manifest = json.loads(zipped.read('candidate.json'))
             self.assertEqual(manifest['source_commit'], self.head)
             self.assertEqual(manifest['positive_production_tls'], 'unverified')
+            self.assertEqual(manifest['native_runtime']['commit'], self.pin)
+            self.assertIn('runtime-connector/dist/cli.mjs', names)
             self.assertEqual(set(names), {f['path'] for f in manifest['files']} | {'candidate.json'})
             for entry in manifest['files']:
                 data = zipped.read(entry['path'])
@@ -73,7 +95,7 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(pack.sha(archive.read_bytes()), a['sha256'])
         checked = subprocess.run(['node', str(ROOT / 'packaging/verify_candidate.mjs'), str(extracted), str(self.root / 'a/candidate-summary.json')], cwd=self.root, capture_output=True, text=True, timeout=25)
         self.assertEqual(checked.returncode, 0, checked.stderr)
-        self.assertEqual(json.loads(checked.stdout)['passed'], 7)
+        self.assertEqual(json.loads(checked.stdout)['passed'], 8)
 
     def test_changed_source_and_producer_are_rejected_without_output(self):
         file = self.source / 'host.mjs'
@@ -100,6 +122,25 @@ class CandidateTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             self.build()
         self.assertEqual(archive.read_bytes(), before)
+
+    def test_runtime_payload_tamper_extra_secret_and_wrong_source_are_rejected(self):
+        extra = self.runtime / 'credentials.json'
+        extra.write_bytes(b'EXCLUDED SYNTHETIC INPUT')
+        with self.assertRaisesRegex(ValueError, 'unexpected Runtime files'):
+            self.build()
+        extra.unlink()
+        original = (self.runtime / 'dist/cli.mjs').read_bytes()
+        (self.runtime / 'dist/cli.mjs').write_bytes(original + b'changed')
+        with self.assertRaisesRegex(ValueError, 'Runtime hash mismatch'):
+            self.build()
+        (self.runtime / 'dist/cli.mjs').write_bytes(original)
+        proof_file = self.runtime / 'SHA256SUMS.json'
+        proof = json.loads(proof_file.read_bytes())
+        proof['source_commit'] = '0' * 40
+        proof_file.write_text(json.dumps(proof), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'Runtime source/version mismatch'):
+            self.build()
+        self.assertFalse((self.root / 'out').exists())
 
 
 if __name__ == '__main__':

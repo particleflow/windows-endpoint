@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: '24.14.0'
       - name: Verify delivery boundary and recovery fixtures
-        run: node --test --test-timeout=30000 endpoint.test.mjs handoff.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs program-deployment.test.mjs host.test.mjs runtime.test.mjs installed.test.mjs session-diagnostics.test.mjs session-continuation.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs official-smoke/pi-model-fixture.test.mjs official-smoke/owner-control-fixture.test.mjs
+        run: node --test --test-timeout=30000 endpoint.test.mjs handoff.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs program-deployment.test.mjs host.test.mjs runtime.test.mjs installed.test.mjs setup.test.mjs native-connector.test.mjs session-diagnostics.test.mjs session-continuation.test.mjs official-smoke/native-runtime-peer.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs official-smoke/pi-model-fixture.test.mjs official-smoke/owner-control-fixture.test.mjs
       - uses: actions/checkout@v4
         if: runner.os == 'Linux'
         with:
@@ -43,6 +43,7 @@ jobs:
           node --check official-smoke/transfer.mjs
           node --check official-smoke/feedback-fixture.mjs
           node --check official-smoke/host.mjs
+          node --check official-smoke/native-runtime.mjs
       - name: Verify portable candidate packaging and extracted entry
         run: python -m unittest discover -s packaging -p 'test_*.py' -v
       - name: Validate transfer fixture PowerShell syntax
@@ -127,13 +128,37 @@ jobs:
         run: |
           node ./official-smoke/producer-fixtures.mjs '${{ runner.temp }}/endpoint-transfer-source-build' ./producer-source
           if ($LASTEXITCODE -ne 0) { throw 'Producer native fixtures failed' }
+      - uses: actions/checkout@v4
+        with:
+          repository: particleflow/Memoh
+          ref: 9601ac062a3b65477db8db76bcaa521265ba7ee2
+          path: runtime-source
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.27.0
+          run_install: false
+      - name: Build unchanged official Runtime from fixed source and lockfile
+        shell: pwsh
+        working-directory: runtime-source
+        run: |
+          if ((git rev-parse HEAD) -ne '9601ac062a3b65477db8db76bcaa521265ba7ee2') { throw 'Wrong Runtime source' }
+          pnpm install --frozen-lockfile --ignore-scripts --filter @memohai/runtime --filter @memohai/monorepo
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime locked dependency install failed' }
+          pnpm --filter @memohai/runtime build
+          if ($LASTEXITCODE -ne 0) { throw 'Official Runtime build failed' }
+      - name: Inventory fixed Runtime build without enrolling or starting it
+        shell: pwsh
+        run: |
+          python packaging/collect_runtime.py --source runtime-source --commit 9601ac062a3b65477db8db76bcaa521265ba7ee2 --output '${{ runner.temp }}/endpoint-runtime-source-build'
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime build inventory failed' }
       - name: Package exact-source portable review candidate
         shell: pwsh
         env:
           ENDPOINT_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           $output = '${{ runner.temp }}/endpoint-candidate-output'
-          python ./packaging/build_candidate.py --commit $env:ENDPOINT_SOURCE_COMMIT --producer '${{ runner.temp }}/endpoint-transfer-source-build' --producer-source ./producer-source --output $output
+          python ./packaging/build_candidate.py --commit $env:ENDPOINT_SOURCE_COMMIT --producer '${{ runner.temp }}/endpoint-transfer-source-build' --producer-source ./producer-source --native-runtime '${{ runner.temp }}/endpoint-runtime-source-build' --output $output
           if ($LASTEXITCODE -ne 0) { throw 'Candidate packaging failed' }
           $summary = Get-Content -Raw -LiteralPath (Join-Path $output 'candidate-summary.json') | ConvertFrom-Json
           $archive = Join-Path $output $summary.archive
@@ -159,6 +184,9 @@ jobs:
       - name: Prepare original-task workload with real Herdr and Pi plus fixed producer projection
         shell: pwsh
         run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint native Pi workload' -UntrustedOnly -PiWorkload -ProducerSource ./producer-source
+      - name: Exercise packaged native Runtime and independent owned Herdr across reconnect
+        shell: pwsh
+        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint native Runtime host' -UntrustedOnly -NativeRuntime -RuntimePackage '${{ runner.temp }}/endpoint extracted candidate Unicode 空格/runtime-connector' -CandidateRoot '${{ runner.temp }}/endpoint extracted candidate Unicode 空格' | Tee-Object -FilePath '${{ runner.temp }}/endpoint-candidate-output/native-runtime-host.log'
       - name: Retain verified portable candidate for review only
         uses: actions/upload-artifact@v4
         with:
@@ -168,6 +196,7 @@ jobs:
             ${{ runner.temp }}/endpoint-candidate-output/candidate-summary.json
             ${{ runner.temp }}/endpoint-candidate-output/package-smoke.json
             ${{ runner.temp }}/endpoint-candidate-output/candidate-host.log
+            ${{ runner.temp }}/endpoint-candidate-output/native-runtime-host.log
           if-no-files-found: error
           retention-days: 7
       - name: Verify production CLI trusted TLS with disposable CurrentUser test root

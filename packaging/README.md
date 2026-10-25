@@ -1,15 +1,20 @@
 # Windows endpoint portable review candidate
 
-This archive contains the executable Node foreground host and the fixed
-source-built Windows transfer CLI. It needs no npm install. It is **not a
+This archive contains the executable Node foreground host, the fixed
+source-built Memoh Runtime connector and Windows transfer CLI. It needs no npm
+install on the PC. It is **not a
 released installer**: production HTTPS success, physical PC/NAS acceptance,
 active-task upgrade and unattended activation/rollback are not qualified.
 `candidate.json` identifies exact sources and every file hash; the separate
 `candidate-summary.json` identifies the archive hash. Obtain both from the same
 reviewed CI run. These inventories are build evidence, not release signatures.
 
-Pi, Herdr, Agenvo, Node and Git are **not copied into this package**. Use their
-existing official installations/configuration. The producer's unchanged review
+Pi, Herdr, Node and Git are **not copied into this package**. Use their existing
+official installations/configuration. The native connector uses the original
+Memoh Runtime CLI and its existing enrollment file; the host owns its foreground
+process, with no separate Runtime daemon registration. The legacy Agenvo mode
+remains available through its existing external installation/configuration.
+The producer's unchanged review
 bundle includes two test executables and its fixture script; these are identified
 in `candidate.json` and are not new services or user setup steps. The included
 AGPL license applies to this endpoint and the referenced Memoh source; upstream
@@ -20,43 +25,48 @@ source and dependency declarations are available at the recorded exact commits.
 Keep the extracted software directory separate from the existing host root and
 all component configuration, workspaces, Pi sessions, journals and logs. Extraction
 does not configure or activate anything. Never extract over a running installation.
-Use the host's existing `config`, `data` and `logs` directories; for a first test,
-create an empty host root and its `config` subdirectory only.
+Use the host's existing `config`, `data` and `logs` directories.
 
-Fill `examples/endpoint.references.example.json` with the existing authorized
+Fill `examples/endpoint.native-runtime.example.json` with the existing authorized
 mapping and save the input outside the software directory. The placeholders
 are intentionally invalid until configured; no identity or credential is minted.
-Herdr's binary comes only from the matching instance in existing Agenvo
-`config.json`. The current host expects exactly one configured instance.
+This schema references the existing official Herdr/Pi installations and Runtime
+enrollment file. Omitting `programs.connectorPackage` selects the connector in
+the current candidate, so a compatible program update needs no second path edit.
+The configured device/runtime mapping remains a declaration until verified by
+the NAS; a connected process does not grant task stopping authority.
+For legacy Agenvo use `examples/endpoint.references.example.json`; its Herdr
+binary still comes from the single matching instance in Agenvo `config.json`.
 The producer API base must match existing `transfer.json.origin` byte for byte.
 Do not change a populated queue's binding or replace its original IDs.
 
 From PowerShell, using the existing absolute Node path:
 
 ```powershell
-& $NodePath (Join-Path $Candidate 'endpoint.mjs') configure --from $References --root $HostRoot
-& $NodePath (Join-Path $Candidate 'endpoint.mjs') doctor --config (Join-Path $HostRoot 'config/endpoint.json')
 $Summary = Get-Content -Raw $SummaryFile | ConvertFrom-Json
-& $NodePath (Join-Path $Candidate 'endpoint.mjs') deploy install --root $HostRoot --source $Candidate --manifest-sha256 $Summary.manifest_sha256
+& $NodePath (Join-Path $Candidate 'endpoint.mjs') setup --from $References --root $HostRoot --source $Candidate --manifest-sha256 $Summary.manifest_sha256 --transfer existing-queue
 & $NodePath (Join-Path $Candidate 'endpoint.mjs') deploy run --root $HostRoot
 ```
 
-`configure` creates the endpoint file exclusively and refuses to overwrite it.
-For an existing host, retain its configuration and skip that command.
-To opt into components and the finite consumer, use the existing
-`config/runtime.json` contract shown in `examples/runtime.example.json`; do not
-overwrite an existing request. Without that file, the host only observes.
-Doctor deliberately retains `ready:false` and exit 2 while unqualified: inspect
-the individual checks. Missing components or grants do not mean the PC is offline.
+`setup` composes the existing configuration, runtime request, doctor and program
+installation flow. Matching existing configuration is retained byte for byte;
+different or malformed configuration is rejected rather than overwritten.
+It does not start processes, enroll credentials, install a service or register a
+login task. Inspect its prerequisite checks and selected-candidate result before
+explicit `deploy run`. `--transfer disabled` is an explicit configuration choice,
+not a substitute for the requested file capability. The existing
+`config/runtime.json` format is unchanged, as shown in `examples/runtime.example.json`.
+Doctor retains `ready:false` while unqualified; missing components or grants do
+not mean the PC is offline.
 The optional existing PowerShell bootstrap requires an explicitly trusted Node
 hash and changes no execution policy.
 
-The transfer plugin uses the official Herdr plugin registration, and its existing
-config/state roots under the selected Herdr roots. For a first isolated setup,
-use the official `plugin link <candidate-transfer-directory>` flow under those
-same roots, then configure the existing `transfer.json` and device credential
-through their existing owner. This archive supplies neither credentials nor
-permission grants. Do not replace an active or differently bound plugin.
+The transfer plugin uses the official Herdr plugin registration and its existing
+config/state roots under the selected Herdr roots. A missing registration,
+configuration or device credential is reported as an unmet prerequisite; the
+archive supplies neither credentials nor permission grants. Setup does not
+replace an active or differently bound plugin. The finite CLI remains part of
+the one endpoint package, not a separately installed service.
 Control authorization and file-transfer authorization remain separate.
 
 `configure` reports `transferConfiguration.networkPolicyFile` in that same
@@ -105,18 +115,20 @@ An already-running external Herdr/connector is not adopted or stopped.
 
 ## Updates and preserved data
 
-Official owners/package managers update Pi, Herdr and Agenvo. After a controlled
+Official owners/package managers update Pi, Herdr and legacy Agenvo. After a controlled
 stop, restart rechecks the existing program/configuration references. Herdr's
 Windows updater can change its canonical version directory: update only the
-existing Agenvo instance's `binary` mapping and complete any native scope approval;
-the endpoint has no second Herdr path to maintain. Same-path version changes are
+existing Agenvo instance's `binary` mapping and complete any native scope approval
+in legacy mode. Native mode references the official installation directly and
+rechecks its recognized current selection on a fresh run. Same-path version changes are
 not themselves a new Agenvo scope. No session/history is imported or replayed.
 
-The existing deployment journal now stages and selects **endpoint program only**
+The existing deployment journal stages and selects the **endpoint program and
+its bundled Runtime connector**
 under `packages/<manifest hash>`. `deploy run` verifies and runs that selection
 in the same foreground process and carries the host lease across launch. It uses
 the original configuration and transfer-plugin path; it does not relink or update
-the official components or producer. Pending queue bytes are never read as an
+the external Pi/Herdr/Node/Git installations or producer. Pending queue bytes are never read as an
 instruction to migrate or replay work.
 If the existing plugin registration refers to the original extracted candidate's
 `transfer` directory, retain that directory: program installation does not relocate

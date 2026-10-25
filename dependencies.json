@@ -2,6 +2,12 @@
   "schema": 1,
   "qualification": "blocked",
   "platform": "win32-x64",
+  "nativeRuntime": {
+    "version": "0.22.0",
+    "source": "https://github.com/particleflow/Memoh",
+    "revision": "9601ac062a3b65477db8db76bcaa521265ba7ee2",
+    "entry": "runtime-connector/dist/cli.mjs"
+  },
   "components": {
     "herdr": {
       "version": "0.9.5",

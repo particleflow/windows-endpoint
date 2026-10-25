@@ -25,7 +25,7 @@ async function json(file) {
 // inventory; it is not a release certification or a way to supply executables,
 // arguments, shell commands, credentials, or a test driver.
 export function validateRuntimeRequest(value, config) {
-  if (config.schema === 2) {
+  if ([2, 3].includes(config.schema)) {
     requireRuntime(value && typeof value === 'object' && Object.keys(value).sort().join(',') === 'mode,schema,transfer' && value.schema === 2 && value.mode === 'existing-installations' && ['disabled', 'existing-queue'].includes(value.transfer), 'runtime_request_invalid')
     requireRuntime(value.transfer !== 'existing-queue' || config.transfer, 'transfer_reference_required')
     return Object.freeze({ ...value })
@@ -38,7 +38,7 @@ export function validateRuntimeRequest(value, config) {
 
 export async function validateRuntimeConfiguration(config, request) {
   validateConfig(config); validateRuntimeRequest(request, config)
-  if (config.schema === 2) {
+  if ([2, 3].includes(config.schema)) {
     await validateInstalledConfiguration(config)
     if (request.transfer === 'existing-queue') await inspectInstalledTransfer(config)
     return
@@ -68,12 +68,12 @@ export async function createExplicitRuntime({ config, stateDirectory, request })
   validateRuntimeRequest(request, config)
   // Resolve only local configuration here, without probing or starting a child.
   // Freeze the effective path for this runtime; official changes need a new run.
-  if (config.schema === 2) config = (await validateInstalledConfiguration(config, { inspectHistoryOnly: true })).config
+  if ([2, 3].includes(config.schema)) config = (await validateInstalledConfiguration(config, { inspectHistoryOnly: true })).config
   let verified, installation, installedTransfer, driver
   const qualify = async state => {
     try {
       requireRuntime(process.platform === 'win32' && process.arch === 'x64', 'runtime_windows_x64_required')
-      if (config.schema === 2) {
+      if ([2, 3].includes(config.schema)) {
         // A running owner's recovery cannot silently accept an official update.
         // A new explicit run re-detects versions without a new approval manifest.
         installation?.assertUnchanged()
@@ -97,7 +97,7 @@ export async function createExplicitRuntime({ config, stateDirectory, request })
   // Recheck executable/proof bytes before each finite command. Full inventory
   // and version checks also run before every component start or recovery.
   const qualifyTransfer = async () => {
-    if (config.schema === 2) {
+    if ([2, 3].includes(config.schema)) {
       requireRuntime(installation && installedTransfer, 'runtime_inventory_unverified')
       installation.assertUnchanged()
       await installedTransfer.assertUnchanged()
@@ -113,7 +113,7 @@ export async function createExplicitRuntime({ config, stateDirectory, request })
     return true
   }
   const transfer = request.transfer === 'existing-queue' ? new TransferLifecycle({ driver: new NativeTransferDriver(config, { qualify: qualifyTransfer }) }) : null
-  driver = new NativeDriver(config, { qualify, checkPrograms: config.schema === 2 ? scope => {
+  driver = new NativeDriver(config, { qualify, checkPrograms: [2, 3].includes(config.schema) ? scope => {
     requireRuntime(installation, 'installation_not_checked')
     try { installation.assertUnchanged(scope) } catch (error) { throw new RuntimeError(error.code) }
   } : null })

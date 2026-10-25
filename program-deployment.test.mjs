@@ -171,3 +171,18 @@ test('an unresolved handoff acknowledgement prevents program switching without c
   assert.deepEqual(await fs.readFile(store.file), before)
   await preserve(f)
 })
+
+test('native configuration refuses rollback to an Agenvo-only candidate without changing selection or external state', async t => {
+  const f = await fixture(t)
+  await apply(f, f.a); await apply(f, f.b, 'update')
+  const configuration = { ...f.config, schema: 3, programs: { ...f.config.programs, herdr: f.p.herdr },
+    connector: { kind: 'memoh-runtime', enrollmentFile: path.join(f.base, 'native/runtime.json') } }
+  delete configuration.agenvoConfigDir
+  await fs.writeFile(f.manager.configFile, JSON.stringify(configuration))
+  const before = await fs.readFile(f.manager.file)
+  const references = await Promise.all(f.originalFiles.map(file => fs.readFile(file)))
+  await assert.rejects(programDeploymentMain(['rollback', '--root', f.root, '--manifest-sha256', f.a.hash]), { code: 'deployment_native_connector_missing' })
+  assert.deepEqual(await fs.readFile(f.manager.file), before)
+  assert.deepEqual(await Promise.all(f.originalFiles.map(file => fs.readFile(file))), references)
+  assert.equal((await f.manager.read()).current, f.b.hash)
+})

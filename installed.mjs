@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises'
 import { statSync, lstatSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { EndpointError, catalog, validateConfig, validateDirectory, programPaths, managedEnvironment, digest, transferLocations, validateTransferConfiguration } from './endpoint.mjs'
+import { EndpointError, catalog, validateConfig, validateDirectory, programPaths, managedEnvironment, digest, transferLocations, validateTransferConfiguration, isNativeRuntimeConfig, componentRoots, connectorConfigReference, connectorPackageRoot } from './endpoint.mjs'
 import { readSessionHistory, observeExistingSession } from './session-diagnostics.mjs'
 import { verifySessionContinuation } from './session-continuation.mjs'
 
@@ -35,6 +35,20 @@ function minimum(value, floor) {
   demand(a[0] > b[0] || a[0] === b[0] && (a[1] > b[1] || a[1] === b[1] && a[2] >= b[2]), 'installation_version_too_old')
 }
 const fingerprint = s => [s.dev, s.ino, s.size, s.mtimeMs, s.ctimeMs, s.nlink, s.mode].join(':')
+async function resolveNativeHerdr(config) {
+  const binary = config.programs.herdr, release = path.dirname(binary), releases = path.dirname(release), standalone = path.dirname(releases)
+  if (path.basename(releases) !== 'releases' || path.basename(standalone) !== 'standalone' || path.basename(path.dirname(standalone)) !== 'packages') return binary
+  demand(path.basename(binary).toLowerCase() === 'herdr.exe', 'herdr_active_installation_invalid')
+  await validateDirectory(releases)
+  const current = path.join(standalone, 'current')
+  demand((await fs.lstat(current)).isSymbolicLink(), 'herdr_active_installation_invalid')
+  const selected = await fs.realpath(current)
+  await validateDirectory(selected)
+  demand(same(path.dirname(selected), releases), 'herdr_active_installation_invalid')
+  // Resolve only this official selection at a fresh check. The running owner
+  // captures the current link and selected bytes before issuing any command.
+  return path.join(selected, path.basename(binary))
+}
 async function officialHerdrSelection(config) {
   const release = path.dirname(config.programs.herdr), releases = path.dirname(release), standalone = path.dirname(releases)
   // Recognize only the official Windows standalone layout. This reads its
@@ -99,26 +113,40 @@ async function capture(config, binding) {
 
 export async function validateInstalledConfiguration(config, { inspectHistoryOnly = false, sessionContinuation = null } = {}) {
   validateConfig(config)
-  demand(config.schema === 2, 'existing_installation_config_required')
-  for (const key of ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir']) await validateDirectory(config[key])
+  demand([2, 3].includes(config.schema), 'existing_installation_config_required')
+  for (const directory of componentRoots(config)) await validateDirectory(directory)
   await regular(path.join(config.herdrConfigRoot, 'config.toml'))
-  const file = path.join(config.agenvoConfigDir, 'config.json'), before = await regular(file)
+  const native = isNativeRuntimeConfig(config), file = connectorConfigReference(config)
+  let before
+  try { before = await regular(file) }
+  catch (error) { if (native && error.code === 'ENOENT') throw new EndpointError('connector_authentication_required'); throw error }
   demand(before.size <= 65536, 'installation_metadata_oversized')
-  let connector
-  try { connector = JSON.parse(await fs.readFile(file, 'utf8')) } catch { throw new EndpointError('installation_metadata_invalid') }
-  demand(fingerprint(before) === fingerprint(await regular(file)), 'installation_changed_restart_required')
-  demand(connector.schema === 1 && connector.deviceId === config.deviceId && Array.isArray(connector.instances) && connector.instances.length === 1, 'runtime_device_mapping_invalid')
-  const i = connector.instances.find(instance => instance?.id === config.instanceId)
-  demand(i?.kind === 'herdr' && same(i.cwd, config.sourceRoot) && same(i.configRoot, config.herdrConfigRoot), 'runtime_approved_path_mismatch')
-  demand(config.programs.herdr === undefined || same(i.binary, config.programs.herdr), 'runtime_approved_path_mismatch')
-  const resolved = { ...config, programs: { ...config.programs, herdr: i.binary } }
+  let herdr, herdrSource
+  if (native) {
+    // Presence is not authenticated NAS identity. Only the official Runtime
+    // loader reads this credential and validates its native enrollment format.
+    demand(before.size > 0, 'connector_authentication_required')
+    herdr = await resolveNativeHerdr(config)
+    herdrSource = same(herdr, config.programs.herdr) ? 'explicit_official_installation' : 'official_current_selection'
+  } else {
+    let connector
+    try { connector = JSON.parse(await fs.readFile(file, 'utf8')) } catch { throw new EndpointError('installation_metadata_invalid') }
+    demand(fingerprint(before) === fingerprint(await regular(file)), 'installation_changed_restart_required')
+    demand(connector.schema === 1 && connector.deviceId === config.deviceId && Array.isArray(connector.instances) && connector.instances.length === 1, 'runtime_device_mapping_invalid')
+    const i = connector.instances.find(instance => instance?.id === config.instanceId)
+    demand(i?.kind === 'herdr' && same(i.cwd, config.sourceRoot) && same(i.configRoot, config.herdrConfigRoot), 'runtime_approved_path_mismatch')
+    demand(config.programs.herdr === undefined || same(i.binary, config.programs.herdr), 'runtime_approved_path_mismatch')
+    herdr = i.binary
+    herdrSource = config.programs.herdr === undefined ? 'agenvo_instance' : 'legacy_explicit_match'
+    let relay
+    try { relay = new URL(connector.relay) } catch { throw new EndpointError('runtime_relay_invalid') }
+    demand(relay.protocol === 'https:' && !relay.username && !relay.password && !relay.search && !relay.hash && relay.pathname === '/', 'runtime_relay_invalid')
+    try { demand((await regular(path.join(config.agenvoConfigDir, 'credentials.json'))).size > 0, 'connector_authentication_required') }
+    catch (error) { if (error.code === 'ENOENT') throw new EndpointError('connector_authentication_required'); throw error }
+  }
+  const resolved = { ...config, programs: { ...config.programs, herdr, connectorPackage: connectorPackageRoot(config) } }
   validateConfig(resolved)
   await regular(resolved.programs.herdr)
-  let relay
-  try { relay = new URL(connector.relay) } catch { throw new EndpointError('runtime_relay_invalid') }
-  demand(relay.protocol === 'https:' && !relay.username && !relay.password && !relay.search && !relay.hash && relay.pathname === '/', 'runtime_relay_invalid')
-  try { demand((await regular(path.join(config.agenvoConfigDir, 'credentials.json'))).size > 0, 'connector_authentication_required') }
-  catch (error) { if (error.code === 'ENOENT') throw new EndpointError('connector_authentication_required'); throw error }
   // Existing historical panes may contain live/unknown work. Do not import or
   // resume them merely because this config names their official state root.
   const history = await readSessionHistory(config)
@@ -128,7 +156,7 @@ export async function validateInstalledConfiguration(config, { inspectHistoryOnl
       catch (error) { throw new EndpointError(error.code || 'session_continuation_unavailable') }
     } else demand(['no_saved_history', 'no_saved_workspaces'].includes(history.startup), 'existing_herdr_session_requires_handoff')
   }
-  return { config: resolved, binding: { file, stamp: fingerprint(before) }, herdrSource: config.programs.herdr === undefined ? 'agenvo_instance' : 'legacy_explicit_match', history }
+  return { config: resolved, binding: { file, stamp: fingerprint(before) }, herdrSource, history }
 }
 
 export function compareProducerTarget(config, target) {
@@ -146,7 +174,8 @@ export async function inspectInstalled(config, run = probe, { inspectHistoryOnly
   const p = programPaths(config)
   const pi = await json(path.join(config.programs.piPackage, 'package.json'))
   const connector = await json(path.join(config.programs.connectorPackage, 'package.json'))
-  demand(pi.name === '@earendil-works/pi-coding-agent' && connector.name === '@agenvo/herdr', 'installation_package_mismatch')
+  const native = isNativeRuntimeConfig(config)
+  demand(pi.name === '@earendil-works/pi-coding-agent' && connector.name === (native ? '@memohai/runtime' : '@agenvo/herdr'), 'installation_package_mismatch')
   const launcher = path.join(p.piBin, 'pi')
   demand((await regular(launcher)).size <= 16384, 'installation_launcher_invalid')
   const relativeEntry = path.relative(p.piBin, p.pi).split(path.sep).join('/')
@@ -160,14 +189,18 @@ export async function inspectInstalled(config, run = probe, { inspectHistoryOnly
   const call = (file, args) => { observed.assertUnchanged(); const output = run(file, args, env); observed.assertUnchanged(); return output }
   const versions = { node: call(p.node, ['--version']).replace(/^v/, ''), herdr: call(p.herdr, ['--version']).replace(/^herdr /, ''), pi: call(p.node, [p.pi, '--version']) }
   let connectorVersion
-  try { connectorVersion = JSON.parse(call(p.node, [p.connector, '--version'])).version } catch { throw new EndpointError('installation_connector_protocol_invalid') }
+  try { connectorVersion = native ? call(p.node, [p.connector, 'version']) : JSON.parse(call(p.node, [p.connector, '--version'])).version } catch { throw new EndpointError('installation_connector_protocol_invalid') }
   versions.connector = connectorVersion
   minimum(versions.node, '24.13.0'); minimum(versions.herdr, '0.9.5'); minimum(versions.pi, '1.2.0')
-  demand(versions.pi === pi.version && versions.connector === connector.version && versions.connector === '0.2.0', 'installation_package_protocol_mismatch')
+  demand(versions.pi === pi.version && versions.connector === connector.version && versions.connector === (native ? catalog.nativeRuntime?.version : '0.2.0'), 'installation_package_protocol_mismatch')
   const piHelp = call(p.node, [p.pi, '--help'])
   for (const flag of ['--mode', '--session-dir', '--session-id', '--provider', '--model']) demand(piHelp.includes(flag), 'installation_pi_protocol_missing')
   const herdrHelp = call(p.herdr, ['--help'])
   for (const flag of ['--session', 'server', 'status']) demand(herdrHelp.includes(flag), 'installation_herdr_protocol_missing')
+  if (native) {
+    const runtimeHelp = call(p.node, [p.connector, 'run', '--help'])
+    for (const flag of ['run', '--config', '--log']) demand(runtimeHelp.includes(flag), 'installation_connector_protocol_invalid')
+  }
   // Resolve the real official launcher in the same controlled environment the
   // host supplies. Positional values never become shell source or a new shim.
   const resolution = 'set -e; case "$(uname -s)" in MINGW*|MSYS*) ;; *) exit 91;; esac; for t in base64 cygpath sha256sum wc mkdir mv rm rmdir; do command -v "$t" >/dev/null || exit 92; done; printf "%s\\n" "$(cygpath -w "$(command -v pi)")"; pi --version'
@@ -179,9 +212,11 @@ export async function inspectInstalled(config, run = probe, { inspectHistoryOnly
 }
 
 export async function installedDoctor(config, target = null) {
-  const checks = [], result = { schema: 1, ready: false, mode: 'existing-installations', versions: null, checks,
+  const native = isNativeRuntimeConfig(config)
+  const checks = [], result = { schema: 1, ready: false, mode: native ? 'native-runtime-existing-installations' : 'existing-installations', versions: null, checks,
     producer: 'not_checked', transfer: 'not_included_pending_qualification', update: 'official_owner; stop_and_recheck; task_handoff_unimplemented', credentialsRead: false,
-    herdrReference: { source: config.programs.herdr === undefined ? 'agenvo_instance' : 'legacy_explicit_match', migration: config.programs.herdr === undefined ? null : 'omit_programs_herdr_once_to_follow_existing_instance' } }
+    herdrReference: { source: native ? 'explicit_official_installation' : config.programs.herdr === undefined ? 'agenvo_instance' : 'legacy_explicit_match', migration: native || config.programs.herdr === undefined ? null : 'omit_programs_herdr_once_to_follow_existing_instance' } }
+  if (native) result.identityBinding = 'declared_configuration; authenticated_server_binding_unverified'
   result.history = await readSessionHistory(config)
   result.sessionObservation = { state: 'not_queried', ownership: 'not_acquired', stopAuthority: false, serverIdentity: 'not_verified' }
   try {
@@ -204,7 +239,7 @@ export async function installedDoctor(config, target = null) {
 // receipt checks selected local bytes; it is not a signed release certificate.
 export async function inspectInstalledTransfer(config) {
   validateConfig(config)
-  demand(config.schema === 2 && config.transfer, 'transfer_reference_required')
+  demand([2, 3].includes(config.schema) && config.transfer, 'transfer_reference_required')
   const locations = transferLocations(config)
   await validateDirectory(locations.root)
   await validateTransferConfiguration(config)

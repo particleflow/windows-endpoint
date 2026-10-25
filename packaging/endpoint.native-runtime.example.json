@@ -1,0 +1,26 @@
+{
+  "schema": 3,
+  "programs": {
+    "node": "<existing absolute node.exe path>",
+    "herdr": "<existing official canonical herdr.exe path>",
+    "piPackage": "<existing absolute official Pi package directory>",
+    "piBin": "<existing absolute official Pi launcher directory>",
+    "gitRoot": "<existing absolute Git for Windows directory>"
+  },
+  "connector": {
+    "kind": "memoh-runtime",
+    "enrollmentFile": "<existing official Memoh Runtime enrollment file>"
+  },
+  "sourceRoot": "<existing original work directory>",
+  "herdrConfigRoot": "<existing absolute Herdr configuration directory ending in herdr>",
+  "herdrStateRoot": "<existing absolute Herdr state directory ending in herdr>",
+  "piConfigDir": "<existing absolute Pi configuration directory>",
+  "deviceId": "<existing device UUID>",
+  "runtimeId": "<NAS-authorized Runtime UUID>",
+  "instanceId": "<existing Herdr instance ID>",
+  "session": "<existing dedicated non-default Herdr service session>",
+  "transfer": {
+    "pluginRoot": "<absolute candidate transfer directory or unchanged existing matching plugin root>",
+    "nasOrigin": "<existing exact HTTPS API base, including /api where configured>"
+  }
+}

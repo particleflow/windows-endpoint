@@ -3,11 +3,107 @@ import assert from 'node:assert/strict'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { inspectInstalled, inspectInstalledTransfer, compareProducerTarget, validateInstalledConfiguration } from './installed.mjs'
-import { catalog, digest, validateConfig, managedEnvironment, programPaths, configure, main, transferLocations, transferEnvironment } from './endpoint.mjs'
+import { catalog, digest, validateConfig, managedEnvironment, programPaths, configure, main, transferLocations, transferEnvironment, componentRoots, connectorConfigReference, installationReferences, launchPlan } from './endpoint.mjs'
 import { validateRuntimeRequest, createExplicitRuntime } from './runtime.mjs'
 import { NativeDriver, LifecycleError, leaseKeys } from './lifecycle.mjs'
 import { transferCommand } from './transfer-lifecycle.mjs'
-import { installedFixture } from './test-support/installed-fixture.mjs'
+import { installedFixture, nativeInstalledFixture } from './test-support/installed-fixture.mjs'
+
+test('native Runtime references retain official programs and external state without reading enrollment or copying configuration', async t => {
+  const f = await nativeInstalledFixture(t), original = JSON.stringify(f.config)
+  const protectedFiles = [f.config.connector.enrollmentFile, path.join(f.config.piConfigDir, 'auth.json'), path.join(f.config.herdrConfigRoot, 'config.toml')]
+  const before = await Promise.all(protectedFiles.map(file => fs.readFile(file)))
+  const inspected = await inspectInstalled(f.config, f.run)
+  assert.equal(inspected.versions.connector, '0.22.0')
+  assert.equal(inspected.herdrSource, 'explicit_official_installation')
+  assert.equal(connectorConfigReference(f.config), f.config.connector.enrollmentFile)
+  assert.equal(componentRoots(f.config).length, 4)
+  assert.equal(componentRoots(f.config).includes(undefined), false)
+  assert.equal(installationReferences(f.config).includes(f.config.connector.enrollmentFile), true)
+  const env = managedEnvironment(f.config, { MEMOH_RUNTIME_KEY: 'SYNTHETIC MUST NOT INHERIT', MEMOH_RUNTIME_CONFIG: 'OTHER', AGENVO_CONFIG_DIR: 'OTHER' })
+  assert.equal(env.MEMOH_RUNTIME_KEY, undefined); assert.equal(env.MEMOH_RUNTIME_CONFIG, undefined); assert.equal(env.AGENVO_CONFIG_DIR, undefined)
+  assert.equal(env.PI_CODING_AGENT_DIR, f.config.piConfigDir)
+  assert.deepEqual(launchPlan(f.config).commands[1].args, [f.p.connector, 'run', '--config', f.config.connector.enrollmentFile])
+  const root = path.join(f.base, 'host'), input = path.join(f.base, 'input.json')
+  await fs.mkdir(path.join(root, 'config'), { recursive: true }); await f.write(input, original)
+  await configure(input, undefined, root)
+  assert.equal(JSON.stringify(JSON.parse(await fs.readFile(path.join(root, 'config/endpoint.json')))), original)
+  assert.deepEqual(await Promise.all(protectedFiles.map(file => fs.readFile(file))), before)
+  assert.equal(JSON.stringify(f.config), original)
+})
+
+test('native preflight requires a safe existing enrollment and suspends same-run enrollment changes', async t => {
+  const f = await nativeInstalledFixture(t), file = f.config.connector.enrollmentFile
+  const first = await inspectInstalled(f.config, f.run)
+  await fs.appendFile(file, ' CHANGED')
+  assert.throws(first.assertUnchanged, { code: 'installation_changed_restart_required' })
+  first.assertUnchanged('connector') // ownership-bound cleanup never reads replacement credentials
+  await fs.writeFile(file, '')
+  await assert.rejects(inspectInstalled(f.config, f.run), { code: 'connector_authentication_required' })
+  await fs.rm(file)
+  await assert.rejects(inspectInstalled(f.config, f.run), { code: 'connector_authentication_required' })
+  for (const invalid of [
+    { ...f.config, agenvoConfigDir: path.join(f.base, 'legacy') },
+    { ...f.config, connector: { ...f.config.connector, kind: 'unknown' } },
+    { ...f.config, connector: { ...f.config.connector, enrollmentFile: path.join(f.config.sourceRoot, 'runtime.json') } },
+    { ...f.config, connector: { ...f.config.connector, enrollmentFile: path.join(path.dirname(f.p.node), 'runtime.json') } },
+  ]) assert.throws(() => validateConfig(invalid))
+})
+
+test('native candidate supplies its colocated Runtime without saving a version-specific package path', async t => {
+  const f = await nativeInstalledFixture(t)
+  delete f.config.programs.connectorPackage
+  const original = JSON.stringify(f.config), selected = programPaths(validateConfig(f.config)).connector
+  assert.equal(path.basename(selected), 'cli.mjs')
+  assert.equal(path.basename(path.dirname(path.dirname(selected))), 'runtime-connector')
+  const resolved = await validateInstalledConfiguration(f.config)
+  assert.equal(resolved.config.programs.connectorPackage, path.dirname(path.dirname(selected)))
+  assert.equal(JSON.stringify(f.config), original)
+  assert.equal(installationReferences(f.config).includes(resolved.config.programs.connectorPackage), false, 'colocated code is not an external installation reference')
+  const input = path.join(f.base, 'input.json'), destination = path.join(f.base, 'endpoint.json')
+  await f.write(input, original); await configure(input, destination)
+  assert.equal(JSON.parse(await fs.readFile(destination)).programs.connectorPackage, undefined)
+})
+
+test('native mode follows only official current selection on fresh check while freezing a running generation', async t => {
+  const f = await nativeInstalledFixture(t), standalone = path.join(f.base, 'official-herdr/packages/standalone')
+  const firstRelease = path.join(standalone, 'releases/0.9.5-windows-x86_64'), secondRelease = path.join(standalone, 'releases/0.9.6-windows-x86_64')
+  f.config.programs.herdr = path.join(firstRelease, 'herdr.exe'); f.p.herdr = f.config.programs.herdr
+  await f.write(f.p.herdr, 'INERT OLD RELEASE'); await f.write(path.join(secondRelease, 'herdr.exe'), 'INERT NEW RELEASE')
+  const current = path.join(standalone, 'current'), before = JSON.stringify(f.config)
+  await fs.symlink(firstRelease, current, 'junction')
+  const first = await inspectInstalled(f.config, f.run)
+  await fs.unlink(current); await fs.symlink(secondRelease, current, 'junction')
+  assert.throws(first.assertUnchanged, { code: 'installation_changed_restart_required' })
+  first.assertUnchanged('connector')
+  f.p.herdr = path.join(secondRelease, 'herdr.exe'); f.versions.herdr = '0.9.6'
+  const rechecked = await inspectInstalled(f.config, f.run)
+  assert.equal(rechecked.herdrSource, 'official_current_selection'); assert.equal(rechecked.config.programs.herdr, f.p.herdr)
+  assert.equal(rechecked.versions.herdr, '0.9.6'); assert.equal(JSON.stringify(f.config), before)
+  assert.equal(await fs.readFile(f.config.programs.herdr, 'utf8'), 'INERT OLD RELEASE')
+  const calls = f.calls.length
+  await fs.unlink(current); await fs.symlink(f.config.sourceRoot, current, 'junction')
+  await assert.rejects(inspectInstalled(f.config, f.run), { code: 'herdr_active_installation_invalid' })
+  assert.equal(f.calls.length, calls)
+})
+
+test('native Runtime package and foreground protocol must match before being considered locally verified', async t => {
+  const f = await nativeInstalledFixture(t)
+  await assert.rejects(inspectInstalled(f.config, (file, args, env) => args[0] === f.p.connector && args[1] === 'run' ? '--config' : f.run(file, args, env)), { code: 'installation_connector_protocol_invalid' })
+  await f.write(path.join(f.config.programs.connectorPackage, 'package.json'), JSON.stringify({ name: '@agenvo/herdr', version: '0.22.0' }))
+  await assert.rejects(inspectInstalled(f.config, f.run), { code: 'installation_package_mismatch' })
+})
+
+test('native connection selection never imports an existing Herdr task or rewrites saved history', async t => {
+  const f = await nativeInstalledFixture(t)
+  const file = path.join(f.config.herdrConfigRoot, 'sessions', f.config.session, 'session.json')
+  const history = JSON.stringify({ version: 3, workspaces: [{ id: 'original-workspace' }] })
+  await f.write(file, history)
+  await assert.rejects(inspectInstalled(f.config, f.run), { code: 'existing_herdr_session_requires_handoff' })
+  assert.equal(f.calls.length, 0)
+  assert.equal(await fs.readFile(file, 'utf8'), history)
+  assert.equal((await validateInstalledConfiguration(f.config, { inspectHistoryOnly: true })).history.startup, 'requires_handoff')
+})
 
 test('references inspect existing programs without a bundle, credential copy or user version manifest', async t => {
   const f = await installedFixture(t), before = await fs.readFile(path.join(f.config.piConfigDir, 'auth.json'))
@@ -198,8 +294,8 @@ test('reference activation is explicit and transfer cannot be enabled through an
   assert.equal(runtime.transfer, null); assert.equal(runtime.driver.children.size, 0)
 })
 
-async function installedTransferFixture(t) {
-  const f = await installedFixture(t)
+async function installedTransferFixture(t, native = false) {
+  const f = await (native ? nativeInstalledFixture(t) : installedFixture(t))
   f.config.transfer = { pluginRoot: path.join(f.base, 'existing-delivery-plugin'), nasOrigin: 'https://nas.example.test' }
   const locations = transferLocations(f.config)
   for (const directory of [locations.root, locations.config, locations.state]) await fs.mkdir(directory, { recursive: true })
@@ -219,6 +315,19 @@ async function installedTransferFixture(t) {
   await f.write(registryFile, JSON.stringify(registry))
   return { ...f, locations, proof, proofFile, registry, registryFile }
 }
+test('native connector configuration retains original transfer roots, raw API binding and existing queue bytes', async t => {
+  const f = await installedTransferFixture(t, true)
+  const journal = path.join(f.locations.state, 'original-queue-evidence')
+  await fs.writeFile(journal, 'ORIGINAL TASK RECEIPT OFFSET')
+  const files = [journal, path.join(f.locations.config, 'transfer.json'), path.join(f.locations.config, 'device.credential'), f.registryFile]
+  const before = await Promise.all(files.map(file => fs.readFile(file)))
+  const legacy = { ...f.config, schema: 2, agenvoConfigDir: path.join(f.base, 'configuration/agenvo') }
+  delete legacy.connector
+  assert.deepEqual(transferLocations(f.config), transferLocations(legacy))
+  assert.equal((await inspectInstalledTransfer(f.config)).source, catalog.components.transfer.revision)
+  assert.equal(transferEnvironment(f.config).HERDR_PLUGIN_STATE_DIR, f.locations.state)
+  assert.deepEqual(await Promise.all(files.map(file => fs.readFile(file))), before)
+})
 test('reference mode shares the registered producer paths and lease without another bundle or queue', async t => {
   const f = await installedTransferFixture(t), request = { schema: 2, mode: 'existing-installations', transfer: 'existing-queue' }
   delete f.config.programs.herdr
