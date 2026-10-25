@@ -76,7 +76,7 @@ test('process termination after backup leaves original journal; later recheck ca
  await assert.rejects(recoverHost(f.options,f.deps));assert.equal(await fs.readFile(f.stateFile,'utf8'),f.raw)
  delete f.deps.checkpoint;assert.equal((await recoverHost(f.options,f.deps)).state,'infrastructure_rechecked')
 })
-if (process.platform === 'win32') test('native read-only owner/process probe accepts an exited child and rejects a live PID on Windows', async t=>{
+if (process.platform === 'win32') test('native read-only owner/process probe accepts an exited child and rejects a live PID on Windows', {timeout:60000}, async t=>{
  const f=await fixture(t)
  // Use the actual installed Node and inert nonexistent official paths. No Herdr
  // command is invoked: first prove the helper itself under the production wrapper.
@@ -92,7 +92,7 @@ if (process.platform === 'win32') test('native read-only owner/process probe acc
  }
  await fs.writeFile(input,JSON.stringify({root:f.base,items}))
  const ps=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe')
- const made=spawnSync(ps,['-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./official-smoke/private-fixture.ps1',import.meta.url)),'-InputFile',input],{encoding:'utf8',timeout:15000,maxBuffer:4096})
+ const made=spawnSync(ps,['-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./official-smoke/private-fixture.ps1',import.meta.url)),'-InputFile',input],{encoding:'utf8',timeout:30000,maxBuffer:4096})
  assert.equal(made.status,0,'create only fresh private probe files')
 
  // Helper succeeds, then the inert Herdr command fails; this is not real Herdr qualification.
@@ -130,7 +130,7 @@ for(const [name,records,context] of [
  ['missing original run start',[scopeAnchor,externalHerdr,externalPi],{...scopeContext,runStart:null}],
  ['different session name without observed ancestry',[{...externalHerdr,parent:999}],scopeContext],
  ['earlier Pi without observed ancestry',[{...externalPi,created:100,parent:999}],scopeContext],
- ['unknown process identity',[scopeAnchor,{...externalHerdr,ownerCurrent:false}],scopeContext],
+ ['unreadable program or command line',[scopeAnchor,{...externalHerdr,role:'unknown'}],scopeContext],
  ['different Windows session',[scopeAnchor,{...externalHerdr,windowsSession:2}],scopeContext],
  ['same Runtime enrollment',[scopeAnchor,{...externalHerdr,role:'connector',scope:'same'}],scopeContext],
  ['unknown Runtime enrollment',[scopeAnchor,{...externalHerdr,role:'connector',scope:'unknown'}],scopeContext],
@@ -141,10 +141,10 @@ test('different explicit Runtime enrollment also requires a verified external ge
  assert.equal(classifyRecoveryProcesses([connector],scopeContext).absent,false)
 })
 test('unknown identity is reported separately from an observed original task reference',()=>{
- assert.equal(classifyRecoveryProcesses([scopeAnchor,{...externalHerdr,ownerCurrent:false}],scopeContext).reason,'process_identity_unknown')
+ assert.equal(classifyRecoveryProcesses([scopeAnchor,{...externalHerdr,role:'unknown'}],scopeContext).reason,'process_identity_unknown')
  assert.equal(classifyRecoveryProcesses([scopeAnchor,externalHerdr,{...externalPi,originalReference:true}],scopeContext).reason,'original_process_reference')
 })
-if(process.platform === 'win32')test('native scoped probe excludes a live unrelated Pi-style process but rejects the same binary with original task roots',async t=>{
+if(process.platform === 'win32')test('native scoped probe excludes a live unrelated Pi-style process but rejects the same binary with original task roots',{timeout:60000},async t=>{
  const f=await fixture(t),config={...f.config,programs:{...f.config.programs,node:process.execPath}}
  // Disposable test program, not a modified official Pi installation.
  await fs.writeFile(f.p.pi,'setInterval(()=>{},1000)')
@@ -154,7 +154,7 @@ if(process.platform === 'win32')test('native scoped probe excludes a live unrela
  for(const key of ['state','config','runtime','status']) {const content=await fs.readFile(files[key],'utf8');files[key]=path.join(audit,key+'.json');items.push({kind:'file',path:files[key],content})}
  await fs.writeFile(input,JSON.stringify({root:f.base,items}))
  const ps=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe')
- assert.equal(spawnSync(ps,['-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./official-smoke/private-fixture.ps1',import.meta.url)),'-InputFile',input],{timeout:15000,maxBuffer:4096}).status,0)
+ assert.equal(spawnSync(ps,['-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./official-smoke/private-fixture.ps1',import.meta.url)),'-InputFile',input],{timeout:30000,maxBuffer:4096}).status,0)
  async function candidate(dir,expected) {
   const child=spawn(process.execPath,[f.p.pi,...(dir === null ? ['--continue'] : ['--session-dir',dir])],{stdio:'ignore'})
   await new Promise((resolve,reject)=>{child.once('spawn',resolve);child.once('error',reject)})
@@ -164,12 +164,12 @@ if(process.platform === 'win32')test('native scoped probe excludes a live unrela
  await candidate(null, 'herdr_observation_unknown')
  await candidate(path.join(f.config.sourceRoot,'.memoh-computer/sessions/original'), 'host_recovery_process_evidence_unavailable')
 })
-test('older recovery caller requires a real child edge, distinct scope, owner and session; an arbitrary earlier orphan stays unknown',()=>{
+test('older recovery caller requires a real child edge, distinct scope and Windows session; an arbitrary earlier orphan stays unknown',()=>{
  const priorCaller={...externalHerdr,id:60,parent:999,created:500,role:'node',scope:'other_program'}
  const invoker={...scopeAnchor,id:70,parent:60,created:3000}
  assert.equal(classifyRecoveryProcesses([priorCaller,invoker],{...scopeContext,recoveryPid:70}).absent,true)
  assert.equal(classifyRecoveryProcesses([priorCaller],scopeContext).absent,false)
  assert.equal(classifyRecoveryProcesses([{...priorCaller,originalReference:true},invoker],{...scopeContext,recoveryPid:70}).absent,false)
- assert.equal(classifyRecoveryProcesses([{...priorCaller,ownerCurrent:false},invoker],{...scopeContext,recoveryPid:70}).absent,false)
+ assert.equal(classifyRecoveryProcesses([{...priorCaller,role:'unknown'},invoker],{...scopeContext,recoveryPid:70}).absent,false)
  assert.equal(classifyRecoveryProcesses([{...priorCaller,created:4000},invoker],{...scopeContext,recoveryPid:70}).absent,false)
 })

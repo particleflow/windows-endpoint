@@ -288,7 +288,7 @@ unchanged through publication. At least one real parent link, with monotonically
 ordered creation times, must reach an ancestor older than that boundary without
 crossing the original host PID. PID reuse, gaps and cycles remain unknown.
 
-Exclusion also requires the current Windows user/session and distinct supported
+Exclusion also requires the original Windows session and distinct supported
 scope: canonical Herdr server arguments selecting another session; Pi with an
 explicit outside task root or independent interactive invocation; or Runtime
 with another explicit enrollment. Any original HostRoot, task-root or enrollment
@@ -300,9 +300,17 @@ rules still apply. The command emits bounded PID/role/reason diagnostics and
 successful exclusions; it never prints arguments, private paths or credentials.
 
 For a live unrelated process the minimum additional onsite readback is its
-PID/parent-PID/creation time, current user/session match and recognized scope,
+PID/parent-PID/creation time, Windows session and recognized scope,
 plus the first original-run event's runId/time. Traverse only until a verified
 older ancestor is reached. If non-admin CIM returns an empty command line, keep
 identity unknown; use the existing legitimately authorized context for that
 specific read rather than change permissions, read process memory or infer scope
 from an old label. Recovery does not stop an excluded or unknown process.
+
+The unrelated process account SID is neither queried nor asserted. Its exclusion
+is proved by the observed creation graph and distinct scope, not by its account
+name, PID age alone or a label. This does not grant ownership or stop authority.
+The caller's original file trust, exact identity/configuration binding, leases and
+official original-session absence checks remain unchanged. A live ancestor older
+than the run can also be established by a verified edge from the recovery invoker;
+its own subsequently exited parent is not guessed or reconstructed.

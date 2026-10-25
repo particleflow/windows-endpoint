@@ -59,7 +59,7 @@ public static class RecoveryArgv {
     $records = @()
     $currentSession = [Diagnostics.Process]::GetCurrentProcess().SessionId
     foreach ($p in @(Get-CimInstance Win32_Process)) {
-        $role = 'other'; $scope = 'unknown'; $referencesOriginal = $false; $ownerCurrent = $false
+        $role = 'other'; $scope = 'unknown'; $referencesOriginal = $false
         $created = $null
         if ($null -ne $p.CreationDate) { $created = ([DateTimeOffset]$p.CreationDate.ToUniversalTime()).ToUnixTimeMilliseconds() }
         if ($p.ProcessId -ne $RecoveryProcessId -and $p.ProcessId -ne $PID -and $p.Name -in @('node.exe','herdr.exe')) {
@@ -99,11 +99,10 @@ public static class RecoveryArgv {
                     if ($argv.Count -eq 4 -and (Base-Name $argv[1]) -eq 'native-connector-child.mjs') { $selected=$argv[3] }
                     if ($selected -and [IO.Path]::IsPathRooted($selected) -and -not (Same-Path $selected $EnrollmentFile) -and -not (Inside-Path $selected $HostRoot)) { $scope='different_enrollment' }
                 } else { $scope='other_program' }
-                try { $ownerCurrent = (Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid).Sid -eq $sid } catch { $ownerCurrent=$false }
             }
         }
         $records += [ordered]@{ id=[int]$p.ProcessId; parent=[int]$p.ParentProcessId; created=$created; windowsSession=[int]$p.SessionId;
-            role=$role; scope=$scope; originalReference=$referencesOriginal; ownerCurrent=$ownerCurrent }
+            role=$role; scope=$scope; originalReference=$referencesOriginal }
     }
     # Only IDs/times and bounded classifications cross this private child pipe.
     # No command lines, arguments, paths, environment or credentials are emitted.

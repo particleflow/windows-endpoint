@@ -361,8 +361,9 @@ try {
   const failedRaw = JSON.stringify(failureState)
   await fs.writeFile(lifecycleFile, failedRaw)
   const cached = JSON.parse(await fs.readFile(hostStatusFile, 'utf8'))
-  cached.updatedAt -= 10000
-  await fs.writeFile(hostStatusFile, JSON.stringify(cached))
+  // Preserve the original run's real timestamp ordering. Backdating this cache
+  // below its own starting event invalidates the generation evidence.
+  await eventually(()=>Date.now()-cached.updatedAt > 5000,'stopped fixture observation did not become stale')
   const originalAttempt = path.join(sourceRoot, '.memoh-computer/attempts/recovery-fixture/receipt.json')
   await fs.mkdir(path.dirname(originalAttempt), { recursive: true })
   const unknownReceipt = JSON.stringify({ state: 'unknown', prompt_submitted: false, attempt: 1, pi_session: piSession, receipt: 'synthetic-original' })

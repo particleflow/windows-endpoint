@@ -46,7 +46,7 @@ export async function attemptEvidence(config) {
 // ownership. A broken/reused parent chain never establishes unrelated work.
 export function classifyRecoveryProcesses(records, {oldPid, currentSession, runStart, recoveryPid}) {
   const byId = new Map(records.map(p=>[p.id,p])), excluded = []
-  const refuse = (reason,p) => ({absent:false,reason,excluded,blocked:p ? {pid:p.id,role:p.role,ownerCurrent:p.ownerCurrent === true,sessionMatches:p.windowsSession === currentSession} : undefined})
+  const refuse = (reason,p) => ({absent:false,reason,excluded,blocked:p ? {pid:p.id,role:p.role,sessionMatches:p.windowsSession === currentSession} : undefined})
   if(byId.has(oldPid)) return refuse('original_host_pid_present',byId.get(oldPid))
   const callers = new Set(), callerSeen = new Set()
   let caller=byId.get(recoveryPid)
@@ -75,7 +75,7 @@ export function classifyRecoveryProcesses(records, {oldPid, currentSession, runS
   }
   for(const p of records) {
     if(p.role === 'other') continue
-    if(p.role === 'unknown' || !p.ownerCurrent || p.windowsSession !== currentSession) return refuse('process_identity_unknown',p)
+    if(p.role === 'unknown' || p.windowsSession !== currentSession) return refuse('process_identity_unknown',p)
     if(p.originalReference || p.scope === 'same') return refuse('original_process_reference',p)
     if(!Number.isSafeInteger(runStart) || runStart <= 0 || !externalChain(p)) return refuse('process_ancestry_unknown_or_related',p)
     if(p.role === 'herdr' && p.scope !== 'different_session' || p.role === 'pi' && !['different_task_root','interactive'].includes(p.scope) || p.role === 'node' && p.scope !== 'other_program' || p.role === 'connector' && p.scope !== 'different_enrollment') return refuse('process_scope_unknown',p)
