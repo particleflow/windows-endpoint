@@ -213,7 +213,9 @@ try {
   // pane.run acknowledges queued input, not shell readiness. Observe this fresh
   // fixture's empty prompt before the only workload submission; never retry it.
   await eventually(async () => isFreshPiShellPrompt(await herdrOutput(['pane', 'read', paneId, '--source', 'recent-unwrapped', '--lines', '5']), config.sourceRoot), 'fresh native Runtime fixture shell was not ready')
-  await herdr(['pane', 'run', paneId, 'node native-runtime-workload.cjs'])
+  // Official pane.run succeeds with empty CLI stdout; its exit status admits
+  // input only. The progress and once-only side effect below prove execution.
+  await herdrOutput(['pane', 'run', paneId, 'node native-runtime-workload.cjs'])
   await eventually(async () => await progress() >= 2, 'ordinary Herdr workload did not start')
   const before = await progress(), connections = peer.counts.connections, cutover = Date.now()
   peer.disconnect()
