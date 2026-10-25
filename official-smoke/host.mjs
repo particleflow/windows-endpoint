@@ -16,10 +16,13 @@ const bundle = await fs.realpath(process.argv[2])
 await fs.mkdir(process.argv[3]) // fail if this isolated root already exists
 const root = await fs.realpath(process.argv[3])
 const references = process.argv[4] === '--existing-installations', hostRoot = references ? path.join(root, 'host') : root
+const candidate = process.argv[5] ? await fs.realpath(process.argv[5]) : null
+assert.ok(!candidate || references, 'Packaged candidate requires existing-installation mode')
 const config = deploymentReferences(references ? path.join(root, 'existing-component-data') : root, { manifestSha256: await digest(path.join(bundle, 'bundle.json')), nasOrigin: 'https://127.0.0.1', deviceId: randomUUID(), runtimeId: randomUUID(), instanceId: 'ci-explicit', session: 'ci-explicit' })
 config.bundleRoot = bundle
 const node = path.join(bundle, 'node/node.exe'), herdr = path.join(bundle, 'herdr/herdr.exe')
-const endpoint = fileURLToPath(new URL('../endpoint.mjs', import.meta.url))
+const endpoint = candidate ? path.join(candidate, 'endpoint.mjs') : fileURLToPath(new URL('../endpoint.mjs', import.meta.url))
+const transferRoot = path.join(candidate || bundle, 'transfer')
 const result = [], children = new Map()
 const checked = check => { result.push(check); process.stdout.write(JSON.stringify({ explicitHostCheck: check, state: 'passed' }) + '\n') }
 async function bounded(promise, milliseconds, message) {
@@ -86,22 +89,22 @@ const official = new Map([
   [path.join(config.herdrConfigRoot, 'config.toml'), '[update]\nversion_check = false\nmanifest_check = false\n'],
   [path.join(config.agenvoConfigDir, 'config.json'), JSON.stringify({ schema: 1, relay: relayOrigin, deviceId: config.deviceId, name: 'isolated-ci-explicit', instances: [{ id: config.instanceId, label: 'fixture', kind: 'herdr', binary: herdr, cwd: config.sourceRoot, configRoot: config.herdrConfigRoot }] })],
   [path.join(config.agenvoConfigDir, 'credentials.json'), JSON.stringify({ secret: 'synthetic-test-only-'.repeat(4) })],
-  [path.join(config.herdrConfigRoot, 'plugins.json'), JSON.stringify([{ plugin_id: 'memoh.delivery', enabled: true, version: catalog.components.transfer.version, plugin_root: path.join(bundle, 'transfer'), manifest_path: path.join(bundle, 'transfer/herdr-plugin.toml') }])],
+  [path.join(config.herdrConfigRoot, 'plugins.json'), JSON.stringify([{ plugin_id: 'memoh.delivery', enabled: true, version: catalog.components.transfer.version, plugin_root: transferRoot, manifest_path: path.join(transferRoot, 'herdr-plugin.toml') }])],
 ])
 for (const [file, content] of official) await fs.writeFile(file, content)
 const hostConfig = references ? {
   schema: 2,
   programs: { node, piPackage: path.join(bundle, 'node_modules/@earendil-works/pi-coding-agent'), piBin: path.join(bundle, 'node_modules/.bin'), gitRoot: path.join(bundle, 'git'), connectorPackage: path.join(bundle, 'node_modules/@agenvo/herdr') },
   ...Object.fromEntries(['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir', 'deviceId', 'runtimeId', 'instanceId', 'session'].map(k => [k, config[k]])),
-  transfer: { pluginRoot: path.join(bundle, 'transfer'), nasOrigin: config.nasOrigin },
+  transfer: { pluginRoot: transferRoot, nasOrigin: config.nasOrigin },
 } : config
-assert.deepEqual(transferLocations(hostConfig), transferLocations(config), 'Public host and producer must use identical existing roots')
+assert.deepEqual(transferLocations(hostConfig), { ...transferLocations(config), root: transferRoot }, 'Public host and producer must use identical existing roots')
 await fs.writeFile(path.join(hostRoot, 'config/endpoint.json'), JSON.stringify(hostConfig))
 await fs.writeFile(path.join(hostRoot, 'config/runtime.json'), JSON.stringify(references ? { schema: 2, mode: 'existing-installations', transfer: 'existing-queue' } : { schema: 1, mode: 'explicit-review', manifestSha256: config.manifestSha256, transfer: 'existing-queue' }))
 async function cli(action, input, id, expectedExit = 0) {
   // Keep the loopback server responsive while the real CLI performs TLS/I/O.
   return new Promise((resolve, reject) => {
-    const child = execFile(path.join(bundle, catalog.components.transfer.entry), ['-action', action, ...(id ? ['-delivery', id] : [])], { env: transferEnvironment(config), cwd: config.sourceRoot, encoding: 'utf8', timeout: 125000, maxBuffer: 16384, windowsHide: true }, (error, stdout) => {
+    const child = execFile(path.join(transferRoot, 'transferqueue.exe'), ['-action', action, ...(id ? ['-delivery', id] : [])], { env: transferEnvironment(hostConfig), cwd: config.sourceRoot, encoding: 'utf8', timeout: 125000, maxBuffer: 16384, windowsHide: true }, (error, stdout) => {
       try {
         assert.equal(error?.killed ?? false, false, 'CLI timeout is not a TLS rejection')
         assert.equal(error?.code ?? 0, expectedExit, `production CLI ${action}: ${stdout.slice(0, 500)}`)

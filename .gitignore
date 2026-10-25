@@ -6,3 +6,4 @@ node_modules/
 /bundle/
 /artifacts/
 /fixture/
+/packaging/__pycache__/

@@ -24,6 +24,8 @@ jobs:
         run: node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs installed.test.mjs session-diagnostics.test.mjs session-continuation.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs official-smoke/pi-model-fixture.test.mjs
       - name: Validate transfer fixture JavaScript syntax
         run: node --check official-smoke/transfer.mjs
+      - name: Verify portable candidate packaging and extracted entry
+        run: python -m unittest discover -s packaging -p 'test_*.py' -v
       - name: Validate transfer fixture PowerShell syntax
         if: runner.os == 'Windows'
         shell: powershell
@@ -80,6 +82,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 2
       - uses: actions/checkout@v4
         with:
           repository: particleflow/Memoh
@@ -105,6 +108,20 @@ jobs:
         run: |
           node ./official-smoke/producer-fixtures.mjs '${{ runner.temp }}/endpoint-transfer-source-build' ./producer-source
           if ($LASTEXITCODE -ne 0) { throw 'Producer native fixtures failed' }
+      - name: Package exact-source portable review candidate
+        shell: pwsh
+        env:
+          ENDPOINT_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $output = '${{ runner.temp }}/endpoint-candidate-output'
+          python ./packaging/build_candidate.py --commit $env:ENDPOINT_SOURCE_COMMIT --producer '${{ runner.temp }}/endpoint-transfer-source-build' --producer-source ./producer-source --output $output
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate packaging failed' }
+          $summary = Get-Content -Raw -LiteralPath (Join-Path $output 'candidate-summary.json') | ConvertFrom-Json
+          $archive = Join-Path $output $summary.archive
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $summary.sha256) { throw 'Candidate archive hash mismatch' }
+          Expand-Archive -LiteralPath $archive -DestinationPath '${{ runner.temp }}/endpoint extracted candidate Unicode 空格'
+          node ./packaging/verify_candidate.mjs '${{ runner.temp }}/endpoint extracted candidate Unicode 空格' (Join-Path $output 'candidate-summary.json') | Tee-Object -FilePath (Join-Path $output 'package-smoke.json')
+          if ($LASTEXITCODE -ne 0) { throw 'Extracted candidate checks failed' }
       - name: Assemble fixed component inventory for explicit host review
         shell: pwsh
         run: |
@@ -117,12 +134,23 @@ jobs:
       - name: Exercise public host and production CLI with isolated configuration
         shell: pwsh
         run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint untrusted TLS' -UntrustedOnly
-      - name: Exercise existing installation references with the same finite transfer CLI
+      - name: Exercise extracted candidate with existing official installations and transfer CLI
         shell: pwsh
-        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint referenced transfer' -UntrustedOnly -ReferencedTransfer
+        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint referenced transfer' -UntrustedOnly -ReferencedTransfer -CandidateRoot '${{ runner.temp }}/endpoint extracted candidate Unicode 空格' | Tee-Object -FilePath '${{ runner.temp }}/endpoint-candidate-output/candidate-host.log'
       - name: Prepare original-task workload with real Herdr and Pi plus fixed producer projection
         shell: pwsh
         run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint native Pi workload' -UntrustedOnly -PiWorkload -ProducerSource ./producer-source
+      - name: Retain verified portable candidate for review only
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-endpoint-review-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/endpoint-candidate-output/*.zip
+            ${{ runner.temp }}/endpoint-candidate-output/candidate-summary.json
+            ${{ runner.temp }}/endpoint-candidate-output/package-smoke.json
+            ${{ runner.temp }}/endpoint-candidate-output/candidate-host.log
+          if-no-files-found: error
+          retention-days: 7
       - name: Verify production CLI trusted TLS with disposable CurrentUser test root
         shell: pwsh
         # Keep a real failing prerequisite; never repeat the rejected import
