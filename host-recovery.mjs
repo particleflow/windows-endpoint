@@ -45,13 +45,16 @@ export async function attemptEvidence(config) {
 export async function nativeRecoveryEvidence({config,status,files}) {
   demand(process.platform === 'win32' && process.arch === 'x64','host_recovery_windows_required')
   const p = programPaths(config), powershell = path.join(process.env.SystemRoot || 'C:\\Windows','System32/WindowsPowerShell/v1.0/powershell.exe')
+  // Reuse the official Runtime's Windows PowerShell environment rule: a
+  // PowerShell 7 parent must not redirect PS5 built-in module resolution.
+  const env = Object.fromEntries(Object.entries(managedEnvironment(config)).filter(([key]) => key.toUpperCase() !== 'PSMODULEPATH'))
   let evidence
   try {
     const result = await promisify(execFile)(powershell,['-NoLogo','-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./host-recovery.ps1',import.meta.url)),
       '-LifecycleFile',files.state,'-ConfigurationFile',files.config,'-RuntimeFile',files.runtime,'-StatusFile',files.status,
       '-OldProcessId',String(status.pid),'-RecoveryProcessId',String(process.pid),'-NodePath',p.node,'-HerdrPath',p.herdr,
       '-PiEntry',p.pi,'-EnrollmentFile',connectorConfigReference(config),'-HostRoot',files.root],
-    {cwd:config.sourceRoot,env:managedEnvironment(config),windowsHide:true,shell:false,timeout:15000,maxBuffer:4096,encoding:'utf8'})
+    {cwd:config.sourceRoot,env,windowsHide:true,shell:false,timeout:15000,maxBuffer:4096,encoding:'utf8'})
     evidence = JSON.parse(result.stdout)
   } catch(error) {
     let stage = 'not_observed'

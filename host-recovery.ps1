@@ -32,8 +32,7 @@ try {
                 if ($p.CommandLine.IndexOf($reference,[StringComparison]::OrdinalIgnoreCase) -ge 0) { $blocked = $true; break }
             }
         }
-        $stage = 'process_absence'
-    if ($blocked) { break }
+        if ($blocked) { break }
     }
     $stage = 'process_absence'
     if ($blocked) { throw 'referenced_process_present' }

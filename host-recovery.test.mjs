@@ -93,7 +93,7 @@ if (process.platform === 'win32') test('native read-only owner/process probe acc
  assert.equal(made.status,0,'create only fresh private probe files')
 
  // Helper succeeds, then the inert Herdr command fails; this is not real Herdr qualification.
- await assert.rejects(nativeRecoveryEvidence({config,status:f.status,files}),{code:'herdr_observation_unknown'})
+ await assert.rejects(nativeRecoveryEvidence({config,status:f.status,files}),error=>{ assert.equal(error.code,'herdr_observation_unknown',`probe stage: ${error.evidenceStage || 'herdr_status'}`); return true })
  await assert.rejects(nativeRecoveryEvidence({config,status:{...f.status,pid:process.pid},files}),{code:'host_recovery_process_evidence_unavailable'})
 })
 if(process.platform === 'win32')test('actual recovery process exit after durable backup does not publish or replay; same evidence retries safely',async t=>{
