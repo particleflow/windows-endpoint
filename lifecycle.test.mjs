@@ -277,6 +277,87 @@ test('native runtime status probe lets pending process events run before reporti
   await pending
 })
 
+async function nativeConnectorFixture(t) {
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'endpoint-child-error-')))
+  const script = path.join(directory, 'inert-component.mjs')
+  await fs.writeFile(script, 'setInterval(() => {}, 1000)\n')
+  const driver = new NativeDriver({ bundleRoot: directory, sourceRoot: directory, herdrConfigRoot: directory, herdrStateRoot: directory, agenvoConfigDir: directory, piConfigDir: directory, session: 'default' })
+  driver.node = process.execPath; driver.connector = script
+  await driver.start('connector')
+  const child = driver.children.get('connector'), kill = child.process.kill.bind(child.process)
+  let closed = false
+  const close = new Promise(resolve => child.process.once('close', () => { closed = true; resolve() }))
+  t.after(async () => {
+    child.process.kill = kill
+    if (!closed) kill()
+    await close
+    await fs.rm(directory, { recursive: true, force: true })
+  })
+  assert.ok(Number.isSafeInteger(child.process.pid))
+  return { directory, driver, child, kill, close }
+}
+
+test('native child error after spawn cannot authorize a duplicate component or satisfy exit', async t => {
+  const { driver, child } = await nativeConnectorFixture(t)
+  let done = false; child.done.then(() => { done = true })
+  // Fault injection on a real owned process: Node also emits error when kill
+  // fails. No OS permission change or real EPERM condition is induced here.
+  child.process.emit('error', Object.assign(new Error('synthetic kill failure'), { code: 'EPERM' }))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(child.exitObserved, false)
+  assert.equal(child.exited, false)
+  assert.equal(done, false)
+  assert.equal(driver.alive('connector'), true)
+  await assert.rejects(driver.start('connector'), { code: 'component_already_owned' })
+  assert.equal(driver.children.get('connector'), child)
+  await driver.stop('connector')
+  assert.equal(child.exitObserved, true)
+})
+
+test('native failed kill keeps the lifecycle lease until explicit stop confirms actual exit', async t => {
+  const { directory, driver, child, kill } = await nativeConnectorFixture(t)
+  const store = new StateStore(directory, 'synthetic-kill-failure')
+  const lifecycle = new EndpointLifecycle({ driver, store, acquire: () => acquireLeases([directory], directory) })
+  lifecycle.state = await store.load(); lifecycle.state.phase = 'running'
+  lifecycle.release = await lifecycle.acquire()
+  let checkpoints = 0
+  driver.captureContinuation = async () => { checkpoints++; return null }
+  child.process.kill = () => {
+    child.process.emit('error', Object.assign(new Error('synthetic kill failure'), { code: 'EPERM' }))
+    return false
+  }
+  try {
+    await assert.rejects(lifecycle.stop(), { code: 'connector_stop_unknown' })
+    assert.equal(child.exitObserved, false); assert.equal(child.exited, false)
+    assert.equal(checkpoints, 0)
+    assert.equal((await store.load()).attention, 'connector_stop_unknown')
+    await assert.rejects(acquireLeases([directory], directory), { code: 'endpoint_already_owned' })
+    // Repeated failure remains handled and cannot release the same lease.
+    await assert.rejects(lifecycle.stop(), { code: 'connector_stop_unknown' })
+    child.process.kill = kill
+    await lifecycle.stop()
+    assert.equal(child.exitObserved, true); assert.equal(lifecycle.release, null)
+    const release = await acquireLeases([directory], directory); await release()
+  } finally {
+    child.process.kill = kill
+    if (lifecycle.release) await lifecycle.stop()
+  }
+})
+
+test('native spawn failure without a PID remains a completed failed start', async t => {
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'endpoint-spawn-failure-')))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const driver = new NativeDriver({ bundleRoot: directory, sourceRoot: directory, herdrConfigRoot: directory, herdrStateRoot: directory, agenvoConfigDir: directory, piConfigDir: directory, session: 'default' })
+  driver.node = path.join(directory, 'missing-node.exe')
+  await driver.start('connector')
+  const child = driver.children.get('connector')
+  await child.done
+  assert.equal(child.process.pid, undefined)
+  assert.equal(driver.alive('connector'), false)
+  assert.equal(child.exitObserved, false)
+  await driver.stop('connector')
+})
+
 test('preexisting host is never adopted or started over', async t => {
   const { lifecycle, driver, calls } = await fixture(t)
   driver.hostStatus = () => ({ running: true })

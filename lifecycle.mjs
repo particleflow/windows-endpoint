@@ -175,7 +175,9 @@ export class NativeDriver {
     await this.ownedGeneration()
     return status
   }
-  alive(component) { const c = this.children.get(component); return Boolean(c && !c.exited && !c.error) }
+  // An error can mean a failed kill, not a failed spawn. Until exit is observed
+  // an allocated child still owns its slot and must remain eligible for cleanup.
+  alive(component) { const c = this.children.get(component); return Boolean(c && !c.exited) }
   confirmedExit(component) {
     const c = this.children.get(component)
     // Only an exit event on the same retained child record after a verified
@@ -196,7 +198,12 @@ export class NativeDriver {
     const c = { process: processHandle, startedAt: Date.now(), exited: false, exitObserved: false, error: false, lock: null }
     c.done = new Promise(resolve => {
       processHandle.once('exit', () => { c.exitObserved = true; c.exited = true; resolve() })
-      processHandle.once('error', () => { c.error = true; c.exited = true; resolve() })
+      processHandle.on('error', () => {
+        c.error = true
+        // Failed spawn has no PID and no later exit event. A post-spawn error
+        // must not resolve done or discard the still-owned process handle.
+        if (processHandle.pid === undefined) { c.exited = true; resolve() }
+      })
     })
     processHandle.stdout.resume()
     processHandle.stderr.resume()
@@ -221,6 +228,7 @@ export class NativeDriver {
     const deadline = Date.now() + timeout
     while (Date.now() < deadline) {
       demand(this.alive(component), `${component}_startup_exited`)
+      demand(!this.children.get(component).error, `${component}_process_error`)
       if (component === 'herdr') {
         try {
           const s = this.hostStatus()
@@ -267,7 +275,7 @@ export class NativeDriver {
       } else {
         // Windows Node kill terminates this owned child; it does not guarantee
         // POSIX SIGTERM callbacks. Recover only its proven stale official lock.
-        c.process.kill()
+        demand(c.process.kill() || c.exitObserved, 'connector_stop_unknown')
       }
       const timer = new AbortController()
       try {
