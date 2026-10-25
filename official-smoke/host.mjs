@@ -11,6 +11,7 @@ import { deploymentReferences } from '../deployment.mjs'
 import { readHostStatus } from '../host.mjs'
 import { validateInstalledConfiguration } from '../installed.mjs'
 import { transferFixture } from './nas-fixture.mjs'
+import { connectorCalls, exerciseOwnerControl } from './owner-control-fixture.mjs'
 
 assert.equal(process.platform, 'win32')
 const bundle = await fs.realpath(process.argv[2])
@@ -58,13 +59,16 @@ const relay = https.createServer({ cert: await fs.readFile(cert), key: await fs.
 relay.on('tlsClientError', () => { tlsFailures++ })
 const { default: WebSocket } = await import(pathToFileURL(path.join(bundle, 'node_modules/ws/index.js')))
 const wss = new WebSocket.Server({ noServer: true }), sockets = new Set()
+const controlCalls = connectorCalls()
 relay.on('upgrade', (req, socket, head) => {
   if (rejectAuth) { socket.end('HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n'); return }
   wss.handleUpgrade(req, socket, head, ws => {
     sockets.add(ws); ws.on('close', () => sockets.delete(ws))
     ws.on('message', raw => {
       if (raw.toString() === 'agenvo:ping') { ws.send('agenvo:pong'); return }
-      if (JSON.parse(raw.toString()).type === 'hello') { welcomes++; ws.send(JSON.stringify({ v: 1, type: 'welcome' })) }
+      const packet = JSON.parse(raw.toString())
+      if (packet.type === 'hello') { controlCalls.hello(ws, packet); welcomes++; ws.send(JSON.stringify({ v: 1, type: 'welcome' })) }
+      else controlCalls.receive(ws, packet)
     })
   })
 })
@@ -258,6 +262,9 @@ try {
   assert.ok(welcomes > 0); assert.ok(tlsFailures > 0); assert.equal(nasRequests, 0)
   checked('public_host_runs_owned_official_components_and_production_finite_consumer')
   checked('production_cli_rejects_untrusted_tls_without_auth_or_tls_bypass')
+  // Real connector/native CLI/product entry, synthetic relay only. No Memoh
+  // owner grant, task handoff or stop authorization is inferred from this test.
+  if (candidate) await exerciseOwnerControl({ calls: controlCalls, config, node, endpoint, hostRoot, expected: running, checked })
   const before = await cli('inspect', null, deliveryId)
   assert.equal(before.associated, false); assert.equal(before.delivery_id, deliveryId)
   assert.equal((await host.stop()), 0)
