@@ -371,7 +371,30 @@ try {
   const failedHash = createHash('sha256').update(failedRaw).digest('hex')
   const recoveryArgs = [endpoint, 'host', 'recover', '--root', hostRoot, '--expected-run', cached.runId,
     '--expected-state-sha256', failedHash, '--expected-configuration-sha256', configurationHash]
-  const rechecked = JSON.parse((await promisify(execFile)(node, recoveryArgs, { timeout: 60000, maxBuffer: 16384, windowsHide: true, shell: false })).stdout)
+  // A second real official Herdr server belongs to a different session and
+  // this fixture's older parent process, not to the stopped host generation.
+  const otherSession = config.session + '-unrelated'
+  const otherServer = spawn(config.programs.herdr, ['--session', otherSession, 'server'], {env,cwd:sourceRoot,stdio:'ignore',windowsHide:true})
+  const otherExit = new Promise(resolve=>otherServer.once('exit',resolve))
+  const otherMarker = path.join(config.herdrConfigRoot,'sessions',otherSession,'herdr.sock')
+  let rechecked
+  try {
+    await eventually(async()=>{
+      try {const m=await fs.readFile(otherMarker,'utf8'); return m.split(':')[0] === String(otherServer.pid)} catch{return false}
+    },'unrelated official Herdr did not start')
+    const otherGeneration = await fs.readFile(otherMarker,'utf8')
+    rechecked = JSON.parse((await promisify(execFile)(node,recoveryArgs,{timeout:60000,maxBuffer:16384,windowsHide:true,shell:false})).stdout)
+    assert.ok(rechecked.excludedProcesses.some(p=>p.pid === otherServer.pid && p.role === 'herdr'))
+    assert.equal(otherServer.exitCode,null)
+    assert.equal(await fs.readFile(otherMarker,'utf8'),otherGeneration)
+    // Only our exact created generation can receive this cleanup request.
+    await promisify(execFile)(powershell,['-NoProfile','-NonInteractive','-File',path.join(path.dirname(endpoint),'owned-herdr.ps1'),'-MarkerPath',otherMarker,'-Generation',otherGeneration,'-OwnerProcessId',String(otherServer.pid),'-Action','stop'],{env,timeout:20000,maxBuffer:16384,windowsHide:true,shell:false})
+    await bounded(otherExit,10000,'unrelated fixture Herdr cleanup deadline')
+  } finally {
+    // Known disposable child handle only; never find/kill a process by name.
+    if(otherServer.exitCode === null) {otherServer.kill();await bounded(otherExit,10000,'unrelated fixture child exit deadline')}
+  }
+
   assert.equal(rechecked.state, 'infrastructure_rechecked'); assert.equal(rechecked.started, false); assert.equal(rechecked.businessReplayed, false)
   assert.equal(await fs.readFile(path.join(path.dirname(lifecycleFile), `lifecycle-before-recheck-${failedHash}.json`), 'utf8'), failedRaw)
   assert.equal(await fs.readFile(originalAttempt, 'utf8'), unknownReceipt)

@@ -42,6 +42,37 @@ export async function attemptEvidence(config) {
   return hash(JSON.stringify(files))
 }
 
+// Classify only observed generations. A shared binary/session label is not
+// ownership. A broken/reused parent chain never establishes unrelated work.
+export function classifyRecoveryProcesses(records, {oldPid, currentSession, runStart}) {
+  const byId = new Map(records.map(p=>[p.id,p])), excluded = []
+  const refuse = (reason,p) => ({absent:false,reason,excluded,blocked:p ? {pid:p.id,role:p.role} : undefined})
+  if(byId.has(oldPid)) return refuse('original_host_pid_present',byId.get(oldPid))
+  function externalChain(process) {
+    const seen = new Set([process.id]); let child = process
+    for(let n=0;n<64;n++) {
+      const parent=byId.get(child.parent)
+      if(!parent || seen.has(parent.id) || parent.id === oldPid || !Number.isSafeInteger(parent.created) || !Number.isSafeInteger(child.created) || parent.created > child.created) return false
+      seen.add(parent.id)
+      // Existing host code publishes its first starting event before it can
+      // spawn any component. A live, older ancestor cannot be its new child.
+      // At least one actual parent link is required, even for an older leaf.
+      if(parent.created < runStart) return true
+      child=parent
+    }
+    return false
+  }
+  for(const p of records) {
+    if(p.role === 'other') continue
+    if(p.role === 'unknown' || !p.ownerCurrent || p.windowsSession !== currentSession) return refuse('process_identity_unknown',p)
+    if(p.originalReference || p.scope === 'same') return refuse('original_process_reference',p)
+    if(!Number.isSafeInteger(runStart) || runStart <= 0 || !externalChain(p)) return refuse('process_ancestry_unknown_or_related',p)
+    if(p.role === 'herdr' && p.scope !== 'different_session' || p.role === 'pi' && !['different_task_root','interactive'].includes(p.scope) || p.role === 'node' && p.scope !== 'other_program' || p.role === 'connector' && p.scope !== 'different_enrollment') return refuse('process_scope_unknown',p)
+    excluded.push({pid:p.id,role:p.role,reason:'verified_external_ancestry_and_scope'})
+  }
+  return {absent:true,excluded}
+}
+
 export async function nativeRecoveryEvidence({config,status,files}) {
   demand(process.platform === 'win32' && process.arch === 'x64','host_recovery_windows_required')
   const p = programPaths(config), powershell = path.join(process.env.SystemRoot || 'C:\\Windows','System32/WindowsPowerShell/v1.0/powershell.exe')
@@ -53,18 +84,28 @@ export async function nativeRecoveryEvidence({config,status,files}) {
     const result = await promisify(execFile)(powershell,['-NoLogo','-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./host-recovery.ps1',import.meta.url)),
       '-LifecycleFile',files.state,'-ConfigurationFile',files.config,'-RuntimeFile',files.runtime,'-StatusFile',files.status,
       '-OldProcessId',String(status.pid),'-RecoveryProcessId',String(process.pid),'-NodePath',p.node,'-HerdrPath',p.herdr,
-      '-PiEntry',p.pi,'-EnrollmentFile',connectorConfigReference(config),'-HostRoot',files.root],
-    {cwd:config.sourceRoot,env,windowsHide:true,shell:false,timeout:15000,maxBuffer:4096,encoding:'utf8'})
+      '-PiEntry',p.pi,'-EnrollmentFile',connectorConfigReference(config),'-HostRoot',files.root,'-SourceRoot',config.sourceRoot,'-HerdrSession',config.session,'-RuntimeEntry',p.connector],
+    {cwd:config.sourceRoot,env,windowsHide:true,shell:false,timeout:15000,maxBuffer:262144,encoding:'utf8'})
     evidence = JSON.parse(result.stdout)
   } catch(error) {
     let stage = 'not_observed'
     try { const value = JSON.parse(error.stderr); if (['file_owner','process_inventory','process_absence'].includes(value.stage)) stage = value.stage } catch {}
     throw Object.assign(new Error('host_recovery_process_evidence_unavailable'),{code:'host_recovery_process_evidence_unavailable',evidenceStage:stage})
   }
-  demand(evidence.ownerVerified === true && evidence.oldHostAbsent === true && evidence.referencedProcessesAbsent === true,'host_recovery_process_evidence_unavailable')
+  let runStart = null
+  try {
+    const raw = await boundedRead(path.join(files.root,'logs/endpoint-host',`${status.runId}.jsonl`),65536)
+    const first = JSON.parse(raw.split('\n')[0])
+    if(first.schema === 1 && first.runId === status.runId && first.phase === 'starting' && Number.isSafeInteger(first.at) && first.at <= status.updatedAt) runStart=first.at
+  } catch { /* Missing start evidence cannot exclude a matching live process. */ }
+  const classified=classifyRecoveryProcesses(evidence.processes || [],{oldPid:status.pid,currentSession:evidence.currentSession,runStart})
+  if(evidence.ownerVerified !== true || evidence.oldHostAbsent !== true || !classified.absent) {
+    const failure=Object.assign(new Error('host_recovery_process_evidence_unavailable'),{code:'host_recovery_process_evidence_unavailable',evidenceStage:'process_absence'})
+    failure.processReason=classified.reason; failure.blockingProcess=classified.blocked; throw failure
+  }
   const driver = new NativeDriver(config)
   demand(driver.hostStatus().running === false,'host_recovery_herdr_present')
-  return evidence
+  return {ownerVerified:true,oldHostAbsent:true,referencedProcessesAbsent:true,excludedProcesses:classified.excluded}
 }
 
 // Injection is internal test support, never a config/CLI field.
@@ -99,11 +140,20 @@ export async function recoverHost({root,expectedRun,expectedState,expectedConfig
     const continuation = await captureSessionContinuation(effective)
     demand(continuation.ordinary,'host_recovery_agent_history_requires_handoff')
     const attempts = await attemptEvidence(config)
-    const recheck = async()=>{
+    const logFile=path.join(root,'logs/endpoint-host',`${status.runId}.jsonl`)
+    const readLog=async()=>{try{return await boundedRead(logFile,65536)}catch(error){if(error.code === 'ENOENT')return null;throw error}}
+    const logRaw = await readLog()
+    let observed = null
+    const verifyBytes = async()=>{
       inspected.assertUnchanged()
       demand(await boundedRead(files.config,65536) === configRaw && await boundedRead(files.runtime,65536) === runtimeRaw && await boundedRead(files.status,32768) === statusRaw && await boundedRead(files.state,262144) === stateRaw,'host_recovery_evidence_changed')
       demand(same(await captureSessionContinuation(effective),continuation) && await attemptEvidence(config) === attempts,'host_recovery_business_evidence_changed')
-      await observe({config:effective,status,files})
+      demand(await readLog() === logRaw,'host_recovery_run_log_changed')
+    }
+    const recheck = async()=>{
+      await verifyBytes()
+      observed=await observe({config:effective,status,files})
+      await verifyBytes() // CIM can take time; never publish over intervening work.
     }
     await recheck(); await checkpoint('verified')
     // Original journal bytes are retained before changing infrastructure attention.
@@ -118,7 +168,7 @@ export async function recoverHost({root,expectedRun,expectedState,expectedConfig
       infrastructureRecovery:{schema:1,fromState:expectedState,run:expectedRun,configuration:expectedConfiguration,attempts,previousPhase:state.phase,previousAttention:state.attention,businessReplayed:false}}
     try { await store.write(next) }
     catch(e) { throw Object.assign(new Error('host_recovery_publication_unknown'),{code:'host_recovery_publication_unknown',cause:e}) }
-    return {state:'infrastructure_rechecked',ready:false,started:false,businessReplayed:false,stopAuthority:false,originalJournalSha256:expectedState,attemptEvidenceSha256:attempts,next:'explicit_foreground_start',upgradeTaskGate:'retained'}
+    return {state:'infrastructure_rechecked',ready:false,started:false,businessReplayed:false,stopAuthority:false,originalJournalSha256:expectedState,attemptEvidenceSha256:attempts,next:'explicit_foreground_start',upgradeTaskGate:'retained',excludedProcesses:observed?.excludedProcesses || []}
   } finally { await release() }
 }
 

@@ -276,3 +276,33 @@ Deployment update still retains `task_handoff_unverified` for original attempts;
 this acknowledgement does not authorize an active-task upgrade or stop. Business
 continuation uses the original NAS operation/attempt and its authenticated resume
 entry, after the original Runtime connection is restored. The CLI never calls it.
+
+### Shared programs are not shared ownership
+
+A different Herdr/Pi process is not a conflict solely because it uses the same
+installation. The recheck decodes the actual Windows argument vector, records
+PID/parent-PID/creation-time generations from one CIM snapshot, and uses the
+first `starting` event of the original `logs/endpoint-host/<runId>.jsonl` as the
+host's pre-component boundary. The log must name that exact run and remain
+unchanged through publication. At least one real parent link, with monotonically
+ordered creation times, must reach an ancestor older than that boundary without
+crossing the original host PID. PID reuse, gaps and cycles remain unknown.
+
+Exclusion also requires the current Windows user/session and distinct supported
+scope: canonical Herdr server arguments selecting another session; Pi with an
+explicit outside task root or independent interactive invocation; or Runtime
+with another explicit enrollment. Any original HostRoot, task-root or enrollment
+reference remains a conflict. An unreadable command line, an unsupported form,
+a session label alone or an earlier PID alone cannot exclude a process. Shared
+Pi configuration/history is not read or imported. The original official Herdr
+`running:false` query, leases, history checks, journal backup/CAS and no-replay
+rules still apply. The command emits bounded PID/role/reason diagnostics and
+successful exclusions; it never prints arguments, private paths or credentials.
+
+For a live unrelated process the minimum additional onsite readback is its
+PID/parent-PID/creation time, current user/session match and recognized scope,
+plus the first original-run event's runId/time. Traverse only until a verified
+older ancestor is reached. If non-admin CIM returns an empty command line, keep
+identity unknown; use the existing legitimately authorized context for that
+specific read rather than change permissions, read process memory or infer scope
+from an old label. Recovery does not stop an excluded or unknown process.

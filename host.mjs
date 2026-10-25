@@ -370,7 +370,10 @@ export async function hostMain(args) {
     catch (error) {
       const code = error.code?.startsWith('host_recovery_') ? error.code : safeCode(error)
       const stage = ['file_owner','process_inventory','process_absence','not_observed'].includes(error.evidenceStage) ? error.evidenceStage : undefined
-      process.stderr.write(`${JSON.stringify({error: code, stage})}\n`); return 2
+      const processReason = ['original_host_pid_present','process_identity_unknown','original_process_reference','process_ancestry_unknown_or_related','process_scope_unknown'].includes(error.processReason) ? error.processReason : undefined
+      const b=error.blockingProcess
+      const blockingProcess=Number.isSafeInteger(b?.pid) && ['other','unknown','herdr','pi','node','connector'].includes(b?.role) ? b : undefined
+      process.stderr.write(`${JSON.stringify({error: code, stage, processReason, blockingProcess})}\n`); return 2
     }
   }
   if (command === 'handoff-status' && option === '--root' && typeof root === 'string' && extra.length === 2 && extra[0] === '--request-id') {
