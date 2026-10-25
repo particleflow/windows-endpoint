@@ -3,6 +3,11 @@
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][string]$InputFile)
 $ErrorActionPreference = 'Stop'
+# Stage/count-only diagnostics: never emit paths, document bodies or credentials.
+function Trace-PrivateFixture([string]$stage, [string]$state, [int]$index = -1) {
+  [Console]::Error.WriteLine((@{ privateFixtureStage=$stage; state=$state; index=$index } | ConvertTo-Json -Compress))
+}
+Trace-PrivateFixture 'compile' 'started'
 Add-Type -TypeDefinition @'
 using System;
 using System.IO;
@@ -39,12 +44,19 @@ public static class FreshPrivateFixture {
   }
 }
 '@
+Trace-PrivateFixture 'compile' 'completed'
+Trace-PrivateFixture 'read_input' 'started'
 $inputData = Get-Content -Raw -LiteralPath $InputFile | ConvertFrom-Json
 $root = [IO.Path]::GetFullPath($inputData.root).TrimEnd('\') + '\'
+Trace-PrivateFixture 'read_input' 'completed'
+$objectIndex = 0
 foreach ($item in $inputData.items) {
+    Trace-PrivateFixture 'create' 'started' $objectIndex
     $target = [IO.Path]::GetFullPath($item.path)
     if (-not $target.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or (Test-Path -LiteralPath $target)) { throw 'Fixture target not fresh or not contained' }
     if ($item.kind -eq 'directory') { [FreshPrivateFixture]::Directory($target) }
     elseif ($item.kind -eq 'file') { [FreshPrivateFixture]::File($target, $item.content) }
     else { throw 'Unknown fixture object' }
+    Trace-PrivateFixture 'create' 'completed' $objectIndex
+    $objectIndex++
 }

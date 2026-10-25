@@ -50,7 +50,7 @@ jobs:
           $errors = $null
           $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./official-smoke/prepare-transfer.ps1), [ref]$tokens, [ref]$errors)
           if ($errors.Count -ne 0) { throw 'Transfer fixture PowerShell parse failed' }
-          foreach ($file in @('host-tls.ps1','fixture-process.ps1','fixture-trust.ps1')) {
+          foreach ($file in @('host-tls.ps1','fixture-process.ps1','fixture-trust.ps1','private-fixture.ps1')) {
             $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path (Join-Path ./official-smoke $file)), [ref]$tokens, [ref]$errors)
             if ($errors.Count -ne 0) { throw 'TLS fixture PowerShell parse failed' }
           }

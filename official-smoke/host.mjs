@@ -116,8 +116,17 @@ if (candidate) {
 }
 // Admit this synthetic task only after program installation. Real attempt
 // evidence blocks program switching until its existing owner reconciles it.
-const created = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-File', fileURLToPath(new URL('./private-fixture.ps1', import.meta.url)), '-InputFile', fixtureInput], { encoding: 'utf8', timeout: 30000 })
-assert.equal(created.status, 0, `fresh private fixture objects: ${created.stderr.slice(0, 200)}`)
+function createPrivateFixture(input, stage) {
+  const started = Date.now()
+  const made = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-File', fileURLToPath(new URL('./private-fixture.ps1', import.meta.url)), '-InputFile', input], { encoding: 'utf8', timeout: 30000, maxBuffer: 65536 })
+  const phases = (made.stderr || '').split(/\r?\n/).flatMap(line => {
+    try { const item = JSON.parse(line); return typeof item.privateFixtureStage === 'string' ? [item] : [] } catch { return [] }
+  })
+  const evidence = { privateFixture: stage, exitCode: made.status, signal: made.signal, errorCode: made.error?.code ?? null, elapsedMs: Date.now() - started, phases }
+  process.stdout.write(JSON.stringify(evidence) + '\n')
+  assert.equal(made.status, 0, `fresh private fixture failed: ${JSON.stringify(evidence)}`)
+}
+createPrivateFixture(fixtureInput, 'initial_objects')
 // Like the host, resolve Herdr from the selected official instance before
 // constructing PATH. Keep the on-disk endpoint configuration single-source.
 const cliConfig = references ? (await validateInstalledConfiguration(hostConfig)).config : hostConfig
@@ -208,8 +217,7 @@ try {
     const original = await fs.readFile(identityFile), before = await cli('inspect', null, deliveryId)
     const input = path.join(root, 'network-policy-fixture.json')
     await fs.writeFile(input, JSON.stringify({ root, items: [{ kind: 'file', path: file, content: '{"version":1,"lan_addresses":["not-an-ip"]}' }] }))
-    const made = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-File', fileURLToPath(new URL('./private-fixture.ps1', import.meta.url)), '-InputFile', input], { encoding: 'utf8', timeout: 30000 })
-    assert.equal(made.status, 0, 'fresh private network policy fixture')
+    createPrivateFixture(input, 'network_policy')
     assert.equal((await cli('advance', null, deliveryId, 1)).state, 'unavailable', 'invalid present policy must fail, not silently use default routing')
     await fs.writeFile(file, JSON.stringify({ version: 1, lan_addresses: ['127.0.0.1'] }))
     assert.deepEqual(await cli('inspect', null, deliveryId), before)
