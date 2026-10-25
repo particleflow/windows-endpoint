@@ -389,7 +389,7 @@ try {
     assert.equal(otherServer.exitCode,null)
     assert.equal(await fs.readFile(otherMarker,'utf8'),otherGeneration)
     // Only our exact created generation can receive this cleanup request.
-    await promisify(execFile)(powershell,['-NoProfile','-NonInteractive','-File',path.join(path.dirname(endpoint),'owned-herdr.ps1'),'-MarkerPath',otherMarker,'-Generation',otherGeneration,'-OwnerProcessId',String(otherServer.pid),'-Action','stop'],{env,timeout:20000,maxBuffer:16384,windowsHide:true,shell:false})
+    await promisify(execFile)(powershell,['-NoProfile','-NonInteractive','-File',path.join(path.dirname(endpoint),'owned-herdr.ps1'),'-MarkerPath',otherMarker,'-Generation',otherGeneration,'-OwnerProcessId',String(otherServer.pid),'-Action','server.stop'],{env,timeout:20000,maxBuffer:16384,windowsHide:true,shell:false})
     await bounded(otherExit,10000,'unrelated fixture Herdr cleanup deadline')
   } finally {
     // Known disposable child handle only; never find/kill a process by name.
