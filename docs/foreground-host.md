@@ -235,3 +235,42 @@ not confer release qualification or production connection authorization.
 Agent pending-tool recovery, automatic transfer wakes, active updates/rollback,
 desktop GUI/session behavior and physical power-loss/capacity acceptance remain
 unimplemented or unverified. No service, production PC or NAS is used by these tests.
+
+## Explicit recheck after an observed coordinator failure
+
+`host recover --root ROOT --expected-run UUID --expected-state-sha256 HASH
+--expected-configuration-sha256 HASH` is a finite **native Windows** infrastructure
+recheck, not a task resume, process stop or journal reset. Only the exact
+`needs_attention/herdr_observation_unknown` case is eligible, with no handoff.
+Use the original reviewed configuration and run; do not infer identity from a
+label, a missing PID or an idle queue. The configuration hash is SHA256 of UTF-8
+`JSON.stringify([rawEndpointJson, rawRuntimeJson])`; the state hash covers the exact
+original lifecycle bytes. The original normal Windows identity must own the
+configuration, runtime request, lifecycle and status files. Permission failures
+remain failures; this command changes no ACL and does not bypass a denied read.
+
+The command holds the existing host/component/deployment leases, rechecks official
+program/configuration inventory, requires the cached original host PID to be
+absent, rejects referenced Herdr/Runtime/Pi processes, and requires the official
+Herdr status command to return `running:false`. Unknown process visibility fails
+closed. Ordinary shell snapshot bytes may be retained; managed Agent/launch
+history still requires handoff. No old workspace is claimed to be alive.
+
+Before publication it rechecks the exact configuration/status/journal bytes,
+ordinary snapshot and original attempt-file hashes. It fsyncs a byte-identical
+`data/endpoint/lifecycle-before-recheck-<original-sha256>.json` backup, then uses the
+existing atomic journal publication. The journal records the original reason,
+run/configuration/attempt hashes and `businessReplayed:false`. A lost result is
+checked by repeating the same expected evidence; `already_rechecked` performs no
+second state transition. Write failures can have unknown publication outcomes;
+inspect that same record before any next action. Original unknown tasks, receipt,
+Pi session, queue and source files are not edited, moved or replayed. There is no
+automatic rollback/reset command; the retained original bytes support diagnosis
+without granting permission to erase later work.
+
+Success means **infrastructure rechecked, no process started**. Explicit foreground
+start remains separate, through the existing selected program and same HostRoot.
+Deployment update still retains `task_handoff_unverified` for original attempts;
+this acknowledgement does not authorize an active-task upgrade or stop. Business
+continuation uses the original NAS operation/attempt and its authenticated resume
+entry, after the original Runtime connection is restored. The CLI never calls it.

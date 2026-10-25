@@ -6,7 +6,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawn, spawnSync, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { catalog, managedEnvironment, programPaths, transferEnvironment, transferLocations } from '../endpoint.mjs'
@@ -351,6 +351,42 @@ try {
   assert.equal(await fs.readFile(path.join(config.sourceRoot, 'invocations.txt'), 'utf8'), 'once\n')
   assert.deepEqual(await transferCLI('lifecycle-summary'), emptyQueue)
   checked('persisted_attention_restart_does_not_reconnect_or_replay_herdr_work')
+  // Own isolated fixture only: reproduce the exact persisted infrastructure
+  // failure after all known hosts have exited. Never alter production journals.
+  const lifecycleFile = path.join(hostRoot, 'data/endpoint/lifecycle.json')
+  const hostStatusFile = path.join(hostRoot, 'data/endpoint/host-status.json')
+  const failureState = JSON.parse(await fs.readFile(lifecycleFile, 'utf8'))
+  failureState.phase = 'needs_attention'; failureState.attention = 'herdr_observation_unknown'
+  delete failureState.sessionContinuation
+  const failedRaw = JSON.stringify(failureState)
+  await fs.writeFile(lifecycleFile, failedRaw)
+  const cached = JSON.parse(await fs.readFile(hostStatusFile, 'utf8'))
+  cached.updatedAt -= 10000
+  await fs.writeFile(hostStatusFile, JSON.stringify(cached))
+  const originalAttempt = path.join(sourceRoot, '.memoh-computer/attempts/recovery-fixture/receipt.json')
+  await fs.mkdir(path.dirname(originalAttempt), { recursive: true })
+  const unknownReceipt = JSON.stringify({ state: 'unknown', prompt_submitted: false, attempt: 1, pi_session: piSession, receipt: 'synthetic-original' })
+  await fs.writeFile(originalAttempt, unknownReceipt)
+  const configurationHash = createHash('sha256').update(JSON.stringify([await fs.readFile(hostConfig, 'utf8'), await fs.readFile(activation, 'utf8')])).digest('hex')
+  const failedHash = createHash('sha256').update(failedRaw).digest('hex')
+  const recoveryArgs = [endpoint, 'host', 'recover', '--root', hostRoot, '--expected-run', cached.runId,
+    '--expected-state-sha256', failedHash, '--expected-configuration-sha256', configurationHash]
+  const rechecked = JSON.parse((await promisify(execFile)(node, recoveryArgs, { timeout: 60000, maxBuffer: 16384, windowsHide: true, shell: false })).stdout)
+  assert.equal(rechecked.state, 'infrastructure_rechecked'); assert.equal(rechecked.started, false); assert.equal(rechecked.businessReplayed, false)
+  assert.equal(await fs.readFile(path.join(path.dirname(lifecycleFile), `lifecycle-before-recheck-${failedHash}.json`), 'utf8'), failedRaw)
+  assert.equal(await fs.readFile(originalAttempt, 'utf8'), unknownReceipt)
+  const unchangedJournal = await fs.readFile(lifecycleFile, 'utf8')
+  assert.equal(JSON.parse((await promisify(execFile)(node, recoveryArgs, { timeout: 60000, maxBuffer: 16384, windowsHide: true, shell: false })).stdout).state, 'already_rechecked')
+  assert.equal(await fs.readFile(lifecycleFile, 'utf8'), unchangedJournal)
+  const recovered = launch()
+  await recovered.until(s => s.attention === 'connector_authentication_required')
+  assert.equal(await recovered.stop(), 2) // Peer still refuses auth; never fake online.
+  assert.equal(await fs.readFile(originalAttempt, 'utf8'), unknownReceipt)
+  assert.equal(await fs.readFile(path.join(piWork, 'invocations.txt'), 'utf8'), 'once\n')
+  assert.deepEqual(model.snapshot(), { requests: 2, offeredWrites: 1 })
+  assert.equal(await fs.readFile(path.join(config.sourceRoot, 'invocations.txt'), 'utf8'), 'once\n')
+  checked('explicit_infrastructure_recheck_uses_real_process_owner_status_and_retains_unknown_attempt_without_pi_replay')
+
   for (const [file, content] of original) assert.equal(await fs.readFile(file, 'utf8'), content)
   assert.equal(peer.counts.invalid, 0)
   checked('official_configuration_enrollment_and_original_workload_bytes_are_preserved')

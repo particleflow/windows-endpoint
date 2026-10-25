@@ -364,6 +364,11 @@ export async function readHostHandoff(root, requestId) {
 
 export async function hostMain(args) {
   const [command, option, root, ...extra] = args
+  if (command === 'recover') {
+    const { recoveryMain } = await import('./host-recovery.mjs')
+    try { process.stdout.write(`${JSON.stringify(await recoveryMain(args.slice(1)))}\n`); return 0 }
+    catch (error) { throw new HostError(error.code?.startsWith('host_recovery_') ? error.code : safeCode(error)) }
+  }
   if (command === 'handoff-status' && option === '--root' && typeof root === 'string' && extra.length === 2 && extra[0] === '--request-id') {
     try { process.stdout.write(`${JSON.stringify(await readHostHandoff(root, extra[1]))}\n`); return 0 }
     catch (error) { throw new HostError(error.code?.startsWith('handoff_') ? error.code : safeCode(error)) }
