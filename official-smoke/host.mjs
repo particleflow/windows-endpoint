@@ -341,7 +341,7 @@ try {
       const admitted = await cli('enqueue-download', { job })
       assert.equal(admitted.delivery_id, id); assert.equal(admitted.admitted, true)
       assert.equal(admitted.associated, false); assert.equal(admitted.offset, 0); assert.equal(admitted.reference, undefined)
-      assert.equal(admitted.feedback_status, 'unavailable', 'inbound metadata has no matching outbound producer plan; do not infer automatic consumer qualification')
+      assert.equal(admitted.feedback_status, 'not_applicable', 'durable download does not publish outbound feedback; this is not completion')
       assert.deepEqual(await cli('inspect', null, id), admitted)
       assert.deepEqual(await cli('enqueue-download', { job }), admitted)
     }
@@ -354,9 +354,9 @@ try {
     assert.deepEqual(await fs.readFile(path.join(config.transferConfigDir, 'transfer.json')), configuration)
     assert.equal(nasRequests, requestsBefore); assert.equal(tlsFailures, tlsBefore)
     checked('packaged_default_cli_registers_nine_1gib_downloads_without_payload_allocation_network_or_rebinding')
-    process.stdout.write(JSON.stringify({ downloadMetadata: { jobs: 9, declaredBytesEach: 1024 ** 3, payloadBytes: 0, networkRequests: 0, feedbackStatus: 'unavailable', reason: 'no_matching_outbound_producer_context', automaticInboundConsumer: 'not_qualified' } }) + '\n')
+    process.stdout.write(JSON.stringify({ downloadMetadata: { jobs: 9, declaredBytesEach: 1024 ** 3, payloadBytes: 0, networkRequests: 0, feedbackStatus: 'not_applicable', reason: 'durable_download', positiveProductionTLS: 'unverified' } }) + '\n')
     await exerciseFeedbackBoundary({ root, candidate, transferRoot, config: cliConfig, plan, payload, createPrivateFixture, network: () => ({ requests: nasRequests, tlsFailures }) })
-    checked('packaged_advance_feedback_refuses_inbound_missing_context_and_real_outbound_write_failure')
+    checked('packaged_advance_feedback_accepts_explicit_inbound_applicability_and_refuses_outbound_write_failure')
   }
   process.stdout.write(JSON.stringify({ explicitHostChecks: result, mode: references ? 'existing-installations' : 'explicit-review', producer: catalog.components.transfer.revision, apiBasePrefix: references ? '/api/' : '/', ready: false, positiveProductionTLS: 'unverified', realPCandNAS: 'not_run', modelRequests: 0 }) + '\n')
   }

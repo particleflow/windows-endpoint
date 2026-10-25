@@ -5,7 +5,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { catalog, digest } from '../endpoint.mjs'
-import { testNames, fixturePlan, completedTests, completedAPIBaseCases, completedTaskAPIBaseCases, networkTests, downloadTests, cliDownloadTests, publicationMigrationTests, budgetTests, cliBudgetTests, registrationTests, cliRegistrationTests, verifyProducerBundle } from './producer-fixtures.mjs'
+import { testNames, fixturePlan, completedTests, completedAPIBaseCases, completedTaskAPIBaseCases, completedFeedbackCases, feedbackTests, networkTests, downloadTests, cliDownloadTests, publicationMigrationTests, budgetTests, cliBudgetTests, registrationTests, cliRegistrationTests, verifyProducerBundle } from './producer-fixtures.mjs'
 
 const native = ['TestWindowsNativeActiveJournal', 'TestWindowsNativePublicationBucketBudget', 'TestWindowsNativePublicationMigrationProcessCrash', 'TestWindowsNativePublicationNewCase', 'TestWindowsNativeNewCore']
 const cli = ['TestCLIPathChild', 'TestCLIPathTLSRestartAndLostResponses']
@@ -25,6 +25,15 @@ test('default download and old publication recovery require the fixed producer c
     assert.deepEqual(completedTests(output(names), names), names)
     assert.throws(() => completedTests(output(names.slice(1)), names))
     assert.throws(() => completedTests(output(names).replace('--- PASS:', '--- SKIP:'), names))
+  }
+})
+
+test('feedback coverage requires six applicability cases and the actual Windows inbound restart test', () => {
+  const names = ['download-no-context', 'download-foreign-context', 'upload-v1', 'upload-missing-context', 'upload-foreign-context', 'upload-write-failure']
+  const log = selected => selected.map(name => `    --- PASS: TestCLIPathFeedbackApplicability/${name} (0.01s)`).join('\n') + '\n' + output(feedbackTests)
+  assert.deepEqual(completedFeedbackCases(log(names)), names)
+  for (const value of [log(names.slice(1)), log([...names, names[0]]), log(names).replace('--- PASS:', '--- SKIP:'), log(names).replace('--- PASS: TestCLIPathInboundFeedbackRestart', '--- SKIP: TestCLIPathInboundFeedbackRestart')]) {
+    assert.throws(() => completedFeedbackCases(value))
   }
 })
 

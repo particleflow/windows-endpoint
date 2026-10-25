@@ -78,7 +78,7 @@ no Windows live handoff or automatic task replay is added.
 
 The finite consumer coalesces hints, honors producer deadlines and drains an
 invocation before shutdown. The current candidate source is Memoh
-`a51ddcb1cab8e246ee32fe50762e633f221ef271` / plugin 0.10.0; CI builds it using its
+`0894a6eb8ff69c8796e2da5450fa172d4cd5ef81` / plugin 0.10.1; CI builds it using its
 unchanged source build script. The optional LAN policy is read from the same
 private Herdr plugin config root; `configure` reports its path without copying
 addresses into endpoint configuration or changing an existing queue binding.

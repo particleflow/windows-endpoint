@@ -71,7 +71,9 @@ export function parseAdvanceDecision(raw, now = Date.now()) {
     requireContract(ref.delivery_id === value.delivery_id && /^[a-f0-9]{64}$/.test(ref.content_hash) && Number.isSafeInteger(ref.size_bytes) && ref.size_bytes >= 0)
   }
   requireContract(Object.hasOwn(value, 'feedback_status') && value.feedback_status !== '', 'transfer_feedback_unknown')
-  requireContract(['recorded', 'unavailable'].includes(value.feedback_status))
-  requireContract(value.feedback_status === 'recorded', 'transfer_feedback_unavailable')
+  // Producer 0.10.1 derives not_applicable only from a durable download's
+  // direction. It bypasses this outbound advisory gate, never other checks.
+  requireContract(['recorded', 'not_applicable', 'unavailable'].includes(value.feedback_status))
+  requireContract(value.feedback_status !== 'unavailable', 'transfer_feedback_unavailable')
   return result
 }

@@ -69,8 +69,8 @@ transfer.json. Explicit IPs are tried in order; only TCP connection failure fall
 back to the original authority's IPv6. Certificate/auth failures never select
 another route. An invalid policy or conflicting proxy fails visibly.
 
-This candidate pins producer 648e4511f35fe2ce187509e9823d03c1d2e1d341, plugin
-0.10.0. The prior a51/c292 candidates remain separate checkpoints. Endpoint program
+This candidate pins producer 0894a6eb8ff69c8796e2da5450fa172d4cd5ef81, plugin
+0.10.1. The prior 648/a51/c292 candidates remain separate checkpoints. Endpoint program
 update does not replace/relink an external producer, and cross-producer candidate
 switches remain rejected by the existing compatibility profile. Do not present
 this new build as an automatic upgrade of a running old plugin.
@@ -87,11 +87,15 @@ large retained states: cross-producer program update/rollback stays blocked,
 never deletes state or switches an active external plugin to make rollback fit.
 The fixed-source native tests and packaged EXE metadata check do not replace the
 outstanding production-EXE positive TLS gate or PC/NAS acceptance.
-Inbound downloads without a matching outbound producer context still report
-`feedback_status:unavailable`; the endpoint consumer retains its feedback guard.
-Metadata registration does not qualify automatic inbound task advancement.
-That distinction needs the original producer's explicit feedback contract; no
-local receipt, fabricated producer context or relaxed unavailable check is used.
+The pinned producer derives `feedback_status:not_applicable` only from a durable
+download. The consumer accepts that explicit value without inferring delivery;
+it retains all lifecycle, exit, association and reference checks. Outbound
+missing/foreign context or real feedback write failures still report
+`unavailable` and suspend advancement; old missing/empty feedback is unknown.
+No context is fabricated and no stored task, queue, configuration or binding is
+migrated. The source test dispatcher exercises positive HTTPS/NTFS inbound
+restarts with test-only CA injection; this is separate from the packaged EXE's
+system-trust gate, which remains unpassed.
 
 
 The host's stdin accepts `{"action":"status"}` and `{"action":"stop"}`.

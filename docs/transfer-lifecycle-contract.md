@@ -69,13 +69,16 @@ The advance envelope must also state `feedback_status`. `recorded` satisfies
 the existing advisory-feedback gate but is not business success. `unavailable`
 fails with `transfer_feedback_unavailable`; missing/empty feedback fails with
 `transfer_feedback_unknown`. Unknown values reject as an unsupported contract.
-No not-applicable value is accepted until the producer defines it explicitly.
+Producer `0894a6eb8ff69c8796e2da5450fa172d4cd5ef81` (plugin 0.10.1) adds
+`not_applicable`, derived only from the validated durable download direction.
+The consumer accepts it only at this advisory gate; all other checks remain.
 
-At the fixed producer above, an inbound job without a matching outbound
+At the earlier 648 producer, an inbound job without a matching outbound
 producer-context and a real outbound feedback publication failure both become
 `unavailable`. The consumer cannot safely distinguish them from that field.
-The source contract must separate those cases, including the no-work/empty-job
-case, before automatic inbound advancement is qualified. Preserve original
+The 0.10.1 contract separates downloads from outbound missing/foreign context
+and actual write failure. The no-work/empty-job case still supplies empty
+feedback and remains unknown; it is never relabeled inbound. Preserve original
 delivery/reference fields and the four lifecycle fields; do not infer success
 from `admitted`, `registered`, phase, exit zero or an absent feedback field.
 
@@ -83,9 +86,14 @@ from `admitted`, `registered`, phase, exit zero or an absent feedback field.
 fresh private roots. The existing untrusted TLS fixture yields durable backoff;
 it then feeds the real advance stdout to the packaged parser. Inbound missing
 context and an outbound feedback target replaced by a fixture-owned directory
-must both reject, with two non-advancing process reopens and the outbound file
-restored byte-for-byte. This is a negative reproduction, not positive TLS or
-successful inbound delivery. `inspect` can refresh advisory feedback with its
+now yield `not_applicable` and `unavailable` respectively. The packaged parser
+retains inbound backoff and rejects the outbound error, with two non-advancing
+process reopens and the outbound file restored byte-for-byte. The failed 766
+run and pre-fix 53 checkpoint retain the old-contract reproduction. This is a
+negative TLS fixture, not successful inbound delivery. The unchanged source
+CLI test dispatcher separately verifies full bytes/hash/reference on NTFS and
+completed reopens; its test-only CA is not production EXE system trust.
+`inspect` can refresh advisory feedback with its
 invocation clock; only `lifecycle-summary` is the non-mutating summary contract.
 
 This is source-level interface alignment only. PR56's first head has a reviewed

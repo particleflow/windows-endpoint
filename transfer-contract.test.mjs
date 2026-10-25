@@ -101,7 +101,14 @@ test('missing legacy feedback is unknown and cannot imply recorded or not-applic
   const value = { ...summary({ state: 'due' }), delivery_id: 'original', phase: 'queued', offset: 0, admitted: true, associated: false }
   for (const patch of [{}, { feedback_status: '' }]) assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, ...patch }), now), { code: 'transfer_feedback_unknown' })
   assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, feedback_status: 'unavailable' }), now), { code: 'transfer_feedback_unavailable' })
-  // No producer not-applicable contract has been adopted. A proposed/new value
-  // cannot relax the unavailable gate merely by spelling a reassuring label.
-  assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, feedback_status: 'not_applicable' }), now), { code: 'transfer_lifecycle_contract_invalid' })
+  assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, feedback_status: 'unknown' }), now), { code: 'transfer_lifecycle_contract_invalid' })
+})
+
+test('pinned inbound not-applicable bypasses only feedback and preserves lifecycle and identity checks', () => {
+  const waiting = summary({ state: 'waiting', error_class: 'transient', next_due_at: '2026-10-22T18:05:00Z' })
+  const value = { ...waiting, delivery_id: 'original-download', phase: 'queued', offset: 0, admitted: true, associated: false, feedback_status: 'not_applicable' }
+  assert.deepEqual(parseAdvanceDecision(JSON.stringify(value), now), waiting)
+  for (const patch of [{ next_due_at: null }, { offset: -1 }, { associated: 'true' }, { reference: { delivery_id: 'another' } }]) {
+    assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, ...patch }), now))
+  }
 })

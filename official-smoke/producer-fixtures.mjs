@@ -49,6 +49,14 @@ const taskAPIBaseTests = ['TestTaskAPIBaseLengthBoundary', 'TestTaskAPIBaseBound
 export const networkTests = ['TestHostNetworkPolicyKeepsOriginalQueueBinding', 'TestHostNetworkPolicyValidation', 'TestHostNetworkPolicyRejectsProxyConflict']
 export const downloadTests = ['TestDownloadMetadataDoesNotReservePayloadOrBacklog', 'TestDownloadDiskPressureRetainsCheckpointAndWorkerBound', 'TestDownloadDiskPressureKeepsUnknownAssociation']
 export const cliDownloadTests = ['TestCLIDefaultDownloadDoesNotCapSourceSize']
+export const feedbackTests = ['TestCLIPathFeedbackApplicability', 'TestCLIPathInboundFeedbackRestart']
+export function completedFeedbackCases(output) {
+  const cases = ['download-no-context', 'download-foreign-context', 'upload-v1', 'upload-missing-context', 'upload-foreign-context', 'upload-write-failure']
+  const parents = [...output.matchAll(/^--- PASS: (TestCLIPath\w+) \([\d.]+s\)\r?$/gm)].map(m => m[1]).filter(name => feedbackTests.includes(name))
+  const passed = [...output.matchAll(/^\s+--- PASS: TestCLIPathFeedbackApplicability\/([a-z0-9-]+) \([\d.]+s\)\r?$/gm)].map(m => m[1])
+  requireFixture(!/^\s*--- (?:FAIL|SKIP):/m.test(output) && sameSet(parents, feedbackTests) && sameSet(passed, cases), 'producer_feedback_coverage_incomplete')
+  return passed
+}
 export const publicationMigrationTests = ['TestPublicationMetadataMigrationPreservesCompleteHistory']
 export const budgetTests = ['TestHostBudgetConfiguration', 'TestBudgetMigrationPreservesIdentityAndUnknown', 'TestBudgetMigrationRejectsBusyMismatchAndCapacity', 'TestBudgetMigrationResumesIncompleteAdmission', 'TestBudgetMigrationProcessCrashAndTornTail']
 export const cliBudgetTests = ['TestCLIBudgetConfigurationAndOldQueueRecovery']
@@ -145,6 +153,7 @@ export async function verifyFixtures(root, sourceRoot) {
   }
   const native = testNames(await execute(path.join(root, 'transferqueue.test.exe'), ['-test.list=^TestWindowsNative'], remaining(30000)), 'TestWindowsNative')
   const cli = testNames(await execute(path.join(root, 'transferqueue-cli.test.exe'), ['-test.list=^TestCLIPath'], remaining(30000)), 'TestCLIPath')
+  requireFixture(feedbackTests.every(name => cli.includes(name)), 'producer_feedback_inventory_missing')
   const groups = fixturePlan(native, cli)
   process.stdout.write(JSON.stringify({ producerFixturePlan: groups, sourceCommit, suiteTimeoutSeconds: 720 }) + '\n')
   const passed = []
@@ -154,6 +163,8 @@ export async function verifyFixtures(root, sourceRoot) {
     try {
       const output = await execute(path.join(root, group.binary), [`-test.run=${group.pattern}`, '-test.v', `-test.timeout=${group.timeout}`], remaining(310000), true)
       tests = completedTests(output, group.tests)
+      if (group.name === 'cli-path') process.stdout.write(JSON.stringify({ producerFeedbackContract: 'passed', sourceCommit, cases: completedFeedbackCases(output),
+        inboundRestart: 'test_dispatcher_TLS_NTFS', productionExeSystemTrust: 'not_exercised' }) + '\n')
     } catch (error) {
       process.stdout.write(JSON.stringify({ producerFixtureGroup: group.name, state: 'failed', reason: error.message, exitCode: error.exitCode ?? null, signal: error.signal ?? null, durationMs: Date.now() - started }) + '\n')
       throw error

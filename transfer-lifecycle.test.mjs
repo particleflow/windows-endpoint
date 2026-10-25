@@ -113,7 +113,7 @@ test('reported corruption trap: due plus nonzero advance suspends all automatic 
   assert.deepEqual(calls, ['lifecycle-summary', 'advance-results'])
 })
 
-for (const [feedback, expected] of [[undefined, 'transfer_feedback_unknown'], ['unavailable', 'transfer_feedback_unavailable'], ['not_applicable', 'transfer_lifecycle_contract_invalid']]) {
+for (const [feedback, expected] of [[undefined, 'transfer_feedback_unknown'], ['unavailable', 'transfer_feedback_unavailable'], ['unknown', 'transfer_lifecycle_contract_invalid']]) {
   test(`unverified feedback ${String(feedback)} suspends advance and remains rejected after restart`, async () => {
     const { transfer, calls, time } = fixture(action => {
       if (action === 'lifecycle-summary') return output(action, decision('due'))
@@ -128,6 +128,23 @@ for (const [feedback, expected] of [[undefined, 'transfer_feedback_unknown'], ['
     assert.equal(transfer.snapshot().attention, expected)
     assert.equal(transfer.snapshot().businessCompletion, 'not_inferred')
     assert.ok(calls.every(action => ['lifecycle-summary', 'advance-results'].includes(action)), 'consumer never admits/replays a task')
+  })
+}
+
+for (const status of [0, 1]) {
+  test(`explicit inbound feedback with exit ${status} retains retry and restart without completing or replaying a task`, async () => {
+    const waiting = decision('waiting', { error_class: 'transient', next_due_at: '2026-10-22T18:05:00Z' })
+    const { transfer, calls, time } = fixture(action => action === 'lifecycle-summary' ? output(action, decision('due')) : {
+      status, stdout: JSON.stringify({ ...waiting, delivery_id: 'original-download', phase: 'queued', offset: 0, admitted: true, associated: false, feedback_status: 'not_applicable' }),
+    })
+    await transfer.tick()
+    assert.equal(transfer.snapshot().attention, null); assert.deepEqual(transfer.snapshot().decision, waiting)
+    time(1000); await transfer.tick(); assert.equal(calls.length, 2)
+    await transfer.stop(); transfer.start()
+    transfer.driver.invoke = async action => { calls.push(action); return output(action, waiting) }
+    await transfer.tick()
+    assert.deepEqual(calls, ['lifecycle-summary', 'advance-results', 'lifecycle-summary'])
+    assert.equal(transfer.snapshot().businessCompletion, 'not_inferred')
   })
 }
 

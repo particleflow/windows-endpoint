@@ -41,7 +41,8 @@ export async function exerciseFeedbackBoundary({ root, candidate, transferRoot, 
     const created = kind.startsWith('inbound') ? await command('enqueue-download', { job }) : await command('enqueue-result', { ...localPlan, closed: true, sha256: sha(payload), size_bytes: Buffer.byteLength(payload) })
     assert.equal(created.status, 0)
     const admitted = JSON.parse(created.stdout), id = admitted.delivery_id
-    assert.equal(admitted.feedback_status, kind.startsWith('inbound') ? 'unavailable' : 'recorded')
+    const inbound = kind.startsWith('inbound'), feedbackStatus = inbound ? 'not_applicable' : 'unavailable'
+    assert.equal(admitted.feedback_status, inbound ? 'not_applicable' : 'recorded')
     const feedbackFile = path.join(attempt, 'delivery-feedback.json'), backup = path.join(attempt, 'saved-feedback.json')
     let saved = null
     if (kind.startsWith('outbound')) {
@@ -54,19 +55,20 @@ export async function exerciseFeedbackBoundary({ root, candidate, transferRoot, 
       assert.deepEqual(parseLifecycleSummary(JSON.stringify(summary), observedAt), summary)
       assert.equal(summary.state, 'waiting'); assert.equal(summary.error_class, 'transient')
       assert.equal(value.delivery_id, id); assert.equal(value.offset, 0); assert.equal(value.associated, false)
-      assert.equal(value.feedback_status, 'unavailable')
-      assert.throws(() => parseAdvanceDecision(advanced.stdout, observedAt), { code: 'transfer_feedback_unavailable' })
+      assert.equal(value.feedback_status, feedbackStatus)
+      if (inbound) assert.deepEqual(parseAdvanceDecision(advanced.stdout, observedAt), summary)
+      else assert.throws(() => parseAdvanceDecision(advanced.stdout, observedAt), { code: 'transfer_feedback_unavailable' })
       const after = network()
       assert.equal(after.requests, before.requests); assert.ok(after.tlsFailures > before.tlsFailures)
       for (let i = 0; i < 2; i++) {
         const read = await command('inspect', null, id), state = JSON.parse(read.stdout)
         assert.equal(read.status, 0); assert.equal(state.delivery_id, id); assert.equal(state.offset, 0); assert.equal(state.associated, false)
-        assert.equal(state.feedback_status, 'unavailable')
+        assert.equal(state.feedback_status, feedbackStatus)
       }
       assert.deepEqual(network(), after, 'reopens never dispatch network work')
       assert.equal(await fs.readFile(path.join(configRoot, 'transfer.json'), 'utf8'), configuration)
       process.stdout.write(JSON.stringify({ nativeFeedbackBoundary: kind, advanceExit: advanced.status, advanceEnvelope: value, feedbackStatus: value.feedback_status,
-        consumerError: 'transfer_feedback_unavailable', stableReopens: 2, additionalHTTPRequests: 0, positiveTLS: 'not_run', inboundSuccess: false }) + '\n')
+        consumerError: inbound ? null : 'transfer_feedback_unavailable', stableReopens: 2, additionalHTTPRequests: 0, positiveTLS: 'not_run', inboundSuccess: false }) + '\n')
     } finally {
       if (saved) { await fs.rmdir(feedbackFile); await fs.rename(backup, feedbackFile); assert.deepEqual(await fs.readFile(feedbackFile), saved) }
     }
