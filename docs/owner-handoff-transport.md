@@ -98,3 +98,8 @@ exact head/run; a local test pass is not native evidence. Neither test exercises
 Memoh OAuth/grants, the real relay's approval path, admission fencing, actual
 task recovery, a stop handoff, or production PC/NAS traffic. The existing
 production-EXE positive TLS gate remains separate and unchanged.
+
+
+The next isolated increment implements [journal acknowledgement/readback](host-handoff-journal.md).
+Its public `host handoff-status` query is available without a mutation receiver.
+No local JSON, acknowledgement or admission pause grants stop authority.

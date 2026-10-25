@@ -7,6 +7,7 @@ import { spawn, spawnSync, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { catalog, managedEnvironment, programPaths, transferLocations } from './endpoint.mjs'
+import { handoffPayload, validHandoffRecord, handoffObservation } from './handoff.mjs'
 import { validSessionContinuation, captureSessionContinuation } from './session-continuation.mjs'
 
 // Internal foreground lifecycle. No business dispatch, transfer implementation,
@@ -57,25 +58,85 @@ export async function acquireLeases(keys, directory) {
 }
 
 export class StateStore {
-  constructor(directory, identity) { this.directory = directory; this.identity = identity; this.file = path.join(directory, 'lifecycle.json') }
+  constructor(directory, identity, { io = fs, checkpoint = async () => {} } = {}) {
+    this.directory = directory; this.identity = identity; this.file = path.join(directory, 'lifecycle.json')
+    this.io = io; this.checkpoint = checkpoint; this.writes = Promise.resolve()
+  }
+  serialize(operation) {
+    const pending = this.writes.then(operation)
+    this.writes = pending.catch(() => {})
+    return pending
+  }
   async load() {
     demand(path.isAbsolute(this.directory) && await fs.realpath(this.directory) === this.directory, 'canonical_state_root_required')
     let data
     try { data = await readJSON(this.file) } catch (e) { if (e.code !== 'ENOENT') throw new LifecycleError('lifecycle_state_unreadable') }
     if (!data) return { schema: 1, identity: this.identity, phase: 'stopped', restarts: [], attention: null }
-    demand(data.schema === 1 && data.identity === this.identity && Array.isArray(data.restarts) && data.restarts.length <= 100 && data.restarts.every(t => Number.isSafeInteger(t) && t >= 0), 'lifecycle_state_mismatch')
+    demand([1, 2].includes(data.schema) && data.identity === this.identity && Array.isArray(data.restarts) && data.restarts.length <= 100 && data.restarts.every(t => Number.isSafeInteger(t) && t >= 0), 'lifecycle_state_mismatch')
     demand(['stopped', 'starting', 'running', 'stopping', 'needs_attention'].includes(data.phase) && (data.attention === null || /^[a-z_]{1,80}$/.test(data.attention)), 'lifecycle_state_mismatch')
     demand(data.sessionContinuation === undefined || validSessionContinuation(data.sessionContinuation), 'lifecycle_state_mismatch')
+    demand(data.schema === 1 ? data.handoff === undefined : validHandoffRecord(data.handoff) && data.handoff.payload.native.device_id === this.identity, 'lifecycle_handoff_mismatch')
     return data
   }
-  async save(data) {
-    // Only this coordinator's small journal; never official session/queue files.
-    try { await readFile(this.file) } catch (e) { if (e.code !== 'ENOENT') throw e }
-    const temporary = path.join(this.directory, `.lifecycle-${randomUUID()}.tmp`)
-    const h = await fs.open(temporary, 'wx')
-    try { await h.writeFile(`${JSON.stringify(data)}\n`); await h.sync() } finally { await h.close() }
-    await fs.rename(temporary, this.file)
+  save(data) {
+    const snapshot = structuredClone(data)
+    return this.serialize(async () => {
+      const current = await this.load()
+      // Ordinary lifecycle saves cannot erase or regress an ack written while
+      // their state snapshot was in flight. Only the methods below mutate it.
+      if (current.handoff) { snapshot.schema = 2; snapshot.handoff = current.handoff }
+      else demand(snapshot.handoff === undefined && snapshot.schema === 1, 'lifecycle_handoff_write_required')
+      await this.write(snapshot)
+    })
   }
+  async write(data) {
+    // Existing journal and publication mechanism; no second task/request ledger.
+    const raw = `${JSON.stringify(data)}\n`
+    demand(Buffer.byteLength(raw) <= 262144, 'lifecycle_state_too_large')
+    try { await readFile(this.file) } catch (e) { if (e.code !== 'ENOENT') throw e }
+    await this.checkpoint('before_write')
+    const temporary = path.join(this.directory, `.lifecycle-${randomUUID()}.tmp`)
+    const h = await this.io.open(temporary, 'wx')
+    try { await h.writeFile(raw); await h.sync() } finally { await h.close() }
+    await this.checkpoint('file_synced')
+    await this.io.rename(temporary, this.file)
+    await this.checkpoint('published')
+  }
+  async handoffStatus(requestId) {
+    return handoffObservation((await this.load()).handoff, requestId)
+  }
+  async recordHandoff(value) {
+    // Internal journal operation, called only by its existing lease owner.
+    // No CLI/stdin mutation route is exposed until caller identity is resolved.
+    const checked = handoffPayload(value)
+    return this.serialize(async () => {
+      const current = await this.load(), requestId = checked.payload.request_id
+      demand(checked.payload.native.device_id === this.identity, 'handoff_identity_mismatch')
+      if (current.handoff) {
+        demand(current.handoff.request_id === requestId, 'handoff_request_pending')
+        demand(current.handoff.payload_sha256 === checked.sha256, 'handoff_content_conflict')
+        return handoffObservation(current.handoff, requestId)
+      }
+      const record = { schema: 1, request_id: requestId, payload_sha256: checked.sha256, payload: checked.payload, state: 'recorded_unverified' }
+      try { await this.write({ ...current, schema: 2, handoff: record }) }
+      catch (cause) { throw Object.assign(new LifecycleError('handoff_persistence_unknown'), { cause }) }
+      return handoffObservation(record, requestId)
+    })
+  }
+  markHandoffUnknown(requestId, payloadHash) {
+    return this.serialize(async () => {
+      const current = await this.load(), record = current.handoff
+      demand(record && record.request_id === requestId && record.payload_sha256 === payloadHash, 'handoff_content_conflict')
+      if (record.state !== 'outcome_unknown') {
+        const next = { ...record, state: 'outcome_unknown' }
+        try { await this.write({ ...current, handoff: next }) }
+        catch (cause) { throw Object.assign(new LifecycleError('handoff_persistence_unknown'), { cause }) }
+        return handoffObservation(next, requestId)
+      }
+      return handoffObservation(record, requestId)
+    })
+  }
+
 }
 
 export class NativeDriver {

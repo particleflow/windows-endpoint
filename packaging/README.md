@@ -129,3 +129,11 @@ import failed with `UI is not allowed in this operation`; this package neither
 retries that import nor changes the production trust source. The overall TLS gate
 remains unmet. `transferAutomaticRecovery:false` and `ready:false` remain truthful
 product outputs. This archive must not be labelled production-ready.
+
+
+A read-only `host handoff-status --root DIR --request-id UUID` command queries
+unresolved acknowledgement evidence in the existing lifecycle journal. It never
+requests stop or retry. The internal recorder has no public mutation/authorization
+entry yet; its records remain unverified. A journal containing such a record uses
+schema 2 so older programs reject it, and new host starts/program switches defer.
+Do not downgrade/delete this evidence to force an update.

@@ -13,7 +13,7 @@ export const programProfileHash = createHash('sha256').update(JSON.stringify({
 })).digest('hex')
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 const demand = (ok, code) => { if (!ok) throw Object.assign(new Error(code), { code }) }
-const required = ['endpoint.mjs', 'host.mjs', 'candidate.mjs', 'program-deployment.mjs', 'deployment.mjs', 'lifecycle.mjs', 'runtime.mjs', 'installed.mjs', 'dependencies.json', 'LICENSE', 'transfer/transferqueue.exe', 'transfer/SHA256SUMS.json']
+const required = ['endpoint.mjs', 'host.mjs', 'candidate.mjs', 'program-deployment.mjs', 'deployment.mjs', 'lifecycle.mjs', 'handoff.mjs', 'runtime.mjs', 'installed.mjs', 'dependencies.json', 'LICENSE', 'transfer/transferqueue.exe', 'transfer/SHA256SUMS.json']
 
 export async function verifyCandidate(root, expectedHash) {
   demand(hash(expectedHash), 'candidate_manifest_hash_required')

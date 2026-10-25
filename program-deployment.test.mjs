@@ -155,3 +155,19 @@ test('inherited selection lease stays held when component cleanup fails and is r
     const release = await acquireLeases([key], f.manager.lifecycleDirectory); await release()
   } finally { failStop = false; if (host.release) await host.stop() }
 })
+
+
+test('an unresolved handoff acknowledgement prevents program switching without clearing its evidence', async t => {
+  const f = await fixture(t); await apply(f, f.a)
+  const store = new StateStore(f.manager.lifecycleDirectory, f.config.deviceId)
+  const request = { schema: 1, request_id: '11111111-1111-4111-8111-111111111111',
+    host: { run_id: '22222222-2222-4222-8222-222222222222', root_sha256: 'a'.repeat(64), program_sha256: 'b'.repeat(64), configuration_sha256: 'c'.repeat(64) },
+    native: { device_id: f.config.deviceId, runtime_id: f.config.runtimeId, instance_id: f.config.instanceId, session: f.config.session, herdr_pid: 123, herdr_generation: '123:456', connector_pid: 789, connector_nonce: 'synthetic-nonce' },
+    gate: { connection_id: '33333333-3333-4333-8333-333333333333', device_id: f.config.deviceId, instance_id: f.config.instanceId, request_id: '44444444-4444-4444-8444-444444444444', revision: '1', paused: true, scope: 'owner_connection_instance' }, operations: [] }
+  await store.recordHandoff(request)
+  const before = await fs.readFile(store.file)
+  assert.equal((await apply(f, f.b, 'update')).reason, 'host_handoff_unverified')
+  assert.equal((await f.manager.read()).current, f.a.hash)
+  assert.deepEqual(await fs.readFile(store.file), before)
+  await preserve(f)
+})

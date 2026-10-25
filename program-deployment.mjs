@@ -34,6 +34,7 @@ export class ProgramDeployment extends DeploymentTransactions {
     await this.unchanged()
     if (profile !== programProfileHash) return 'state_profile_incompatible'
     const state = await this.lifecycleStore.load()
+    if (state.handoff) return 'host_handoff_unverified'
     if (state.phase !== 'stopped' || state.attention) return 'endpoint_stop_unverified'
     // This is a stopped-program switch, not a claim of global business idle or
     // an admission barrier for an external producer. No component/queue writer

@@ -149,7 +149,8 @@ export class ForegroundHost {
         await this.observeAuthorization(config)
         const previous = await new StateStore(this.stateDirectory, config.deviceId).load()
         const recheckInstallation = Boolean(request) && config.schema === 2 && previous.phase === 'stopped' && previous.attention === 'installation_changed_restart_required'
-        if (previous.attention && !recheckInstallation) this.attention = previous.attention
+        if (previous.handoff) this.attention = 'host_handoff_unverified'
+        else if (previous.attention && !recheckInstallation) this.attention = previous.attention
         else if (previous.phase !== 'stopped') this.attention = 'host_previous_runtime_uncertain'
         if (config.schema === 1) {
           try { await verifyBundle(config.bundleRoot, config.manifestSha256) }
@@ -310,8 +311,19 @@ export async function runForeground({ root, input = process.stdin, output = proc
   }
 }
 
+export async function readHostHandoff(root, requestId) {
+  const layout = deploymentLayout(root)
+  await validateDirectory(root); await validateDirectory(layout.config)
+  const config = validateConfig(JSON.parse(await regular(path.join(layout.config, 'endpoint.json'), 65536)))
+  return new StateStore(path.join(layout.data, 'endpoint'), config.deviceId).handoffStatus(requestId)
+}
+
 export async function hostMain(args) {
   const [command, option, root, ...extra] = args
+  if (command === 'handoff-status' && option === '--root' && typeof root === 'string' && extra.length === 2 && extra[0] === '--request-id') {
+    try { process.stdout.write(`${JSON.stringify(await readHostHandoff(root, extra[1]))}\n`); return 0 }
+    catch (error) { throw new HostError(error.code?.startsWith('handoff_') ? error.code : safeCode(error)) }
+  }
   if (!['run', 'status'].includes(command) || option !== '--root' || typeof root !== 'string' || extra.length) throw new HostError('host_arguments_invalid')
   if (command === 'run') return runForeground({ root })
   process.stdout.write(`${JSON.stringify(await readHostStatus(root))}\n`)
