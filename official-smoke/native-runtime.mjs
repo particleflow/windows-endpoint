@@ -45,7 +45,9 @@ const transfer = transferLocations(config), credential = 'synthetic-native-runti
 const original = new Map([
   [config.connector.enrollmentFile, JSON.stringify({ schemaVersion: 1, serverUrl: peer.origin, key, teamId, insecureLocalhost: true })],
   [path.join(config.herdrConfigRoot, 'config.toml'), '[update]\nversion_check = false\nmanifest_check = false\n'],
-  [path.join(config.herdrConfigRoot, 'plugins.json'), JSON.stringify([{ plugin_id: 'memoh.delivery', enabled: false, version: catalog.components.transfer.version, plugin_root: transfer.root, manifest_path: path.join(transfer.root, 'herdr-plugin.toml') }])],
+  // InstalledPluginInfo requires name even for disabled entries; Herdr reloads
+  // actions from this exact producer manifest before checking enabled=false.
+  [path.join(config.herdrConfigRoot, 'plugins.json'), JSON.stringify([{ plugin_id: 'memoh.delivery', name: 'Memoh delivery storage', enabled: false, version: catalog.components.transfer.version, plugin_root: transfer.root, manifest_path: path.join(transfer.root, 'herdr-plugin.toml') }])],
   [path.join(transfer.config, 'transfer.json'), JSON.stringify({ version: 1, origin: transfer.origin, source_root: config.sourceRoot })],
   [path.join(transfer.config, 'device.credential'), credential],
   [path.join(config.piConfigDir, 'auth.json'), '{}'],
