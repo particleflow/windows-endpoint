@@ -20,6 +20,12 @@ const bundle = await fs.realpath(process.argv[2]), runtimePackage = await fs.rea
 await fs.mkdir(process.argv[4])
 const root = await fs.realpath(process.argv[4]), candidate = process.argv[5] ? await fs.realpath(process.argv[5]) : null
 const node = path.join(bundle, 'node/node.exe'), hostRoot = path.join(root, 'host'), external = path.join(root, 'official configuration')
+// The official enrollment reader validates owners all the way to the volume
+// root. RUNNER_TEMP's D: namespace failed that unchanged check in 40185674832.
+// Use a fresh child of the CI user's home (the official enrollment namespace),
+// without touching .memoh, any existing enrollment, or any ancestor's ACL.
+const enrollmentParent = await fs.realpath(os.homedir())
+const enrollmentRoot = path.join(enrollmentParent, `endpoint-native-enrollment-${randomUUID()}`)
 const powershell = path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe')
 const endpoint = path.join(candidate || path.dirname(fileURLToPath(new URL('../endpoint.mjs', import.meta.url))), 'endpoint.mjs')
 const key = `mrk_${'c'.repeat(64)}`, teamId = randomUUID(), runtimeId = randomUUID()
@@ -29,7 +35,7 @@ const config = {
   schema: 3,
   programs: { node, herdr: path.join(bundle, 'herdr/herdr.exe'), piPackage: path.join(bundle, 'node_modules/@earendil-works/pi-coding-agent'),
     piBin: path.join(bundle, 'node_modules/.bin'), gitRoot: path.join(bundle, 'git'), connectorPackage: runtimePackage },
-  connector: { kind: 'memoh-runtime', enrollmentFile: path.join(external, 'runtime/runtime.json') },
+  connector: { kind: 'memoh-runtime', enrollmentFile: path.join(enrollmentRoot, 'runtime.json') },
   sourceRoot: path.join(external, 'work'), herdrConfigRoot: path.join(external, 'config/herdr'), herdrStateRoot: path.join(external, 'state/herdr'),
   piConfigDir: path.join(external, 'pi'), deviceId: runtimeId, runtimeId, instanceId: 'native-runtime-fixture', session: 'native-runtime-fixture',
   transfer: { pluginRoot: path.join(candidate || bundle, 'transfer'), nasOrigin: 'https://127.0.0.1:1/api' },
@@ -48,17 +54,25 @@ const hostConfig = path.join(hostRoot, 'config/endpoint.json'), activation = pat
 original.set(hostConfig, JSON.stringify(config)); original.set(activation, JSON.stringify({ schema: 2, mode: 'existing-installations', transfer: 'existing-queue' }))
 const directories = new Set()
 for (const file of original.keys()) {
+  if (file === config.connector.enrollmentFile) continue
   let directory = path.dirname(file)
   while (directory !== root) { directories.add(directory); directory = path.dirname(directory) }
 }
 for (let directory = transfer.state; directory !== root; directory = path.dirname(directory)) directories.add(directory)
 const input = path.join(root, 'private-native-runtime-fixture.json')
-await fs.writeFile(input, JSON.stringify({ root, items: [...[...directories].sort((a, b) => a.length - b.length).map(p => ({ kind: 'directory', path: p })), ...[...original].map(([p, content]) => ({ kind: 'file', path: p, content }))] }))
+await fs.writeFile(input, JSON.stringify({ root, items: [...[...directories].sort((a, b) => a.length - b.length).map(p => ({ kind: 'directory', path: p })), ...[...original].filter(([p]) => p !== config.connector.enrollmentFile).map(([p, content]) => ({ kind: 'file', path: p, content }))] }))
 const made = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-File', fileURLToPath(new URL('./private-fixture.ps1', import.meta.url)), '-InputFile', input], { encoding: 'utf8', timeout: 30000, maxBuffer: 65536 })
 assert.equal(made.status, 0, 'fresh private native Runtime fixture must be created without changing existing ACLs')
 // The temporary input is not a product auth file. Remove its synthetic key copy;
 // preserve all actual enrolled/configuration bytes until fixture verification.
 await fs.rm(input)
+await fs.writeFile(input, JSON.stringify({ root: enrollmentParent, items: [
+  { kind: 'directory', path: enrollmentRoot },
+  { kind: 'file', path: config.connector.enrollmentFile, content: original.get(config.connector.enrollmentFile) },
+] }))
+const enrolledFixture = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-File', fileURLToPath(new URL('./private-fixture.ps1', import.meta.url)), '-InputFile', input], { encoding: 'utf8', timeout: 30000, maxBuffer: 65536 })
+await fs.rm(input)
+assert.equal(enrolledFixture.status, 0, 'fresh CI-home enrollment must be created without changing existing ACLs')
 const env = managedEnvironment(config), marker = path.join(config.herdrConfigRoot, 'sessions', config.session, 'herdr.sock')
 const hosts = new Set(), checks = []
 const checked = name => { checks.push(name); process.stdout.write(JSON.stringify({ nativeRuntimeCheck: name, state: 'passed' }) + '\n') }
@@ -150,6 +164,7 @@ async function ping(generation) {
   assert.equal(JSON.parse(result.stdout).result.type, 'pong')
 }
 async function progress() { try { return Number(await fs.readFile(path.join(config.sourceRoot, 'progress.txt'), 'utf8')) } catch (error) { if (error.code === 'ENOENT') return 0; throw error } }
+let primaryError = null
 try {
   await stage('required_inputs', async () => {
     for (const [file, content] of original) assert.deepEqual(await fs.readFile(file), Buffer.from(content), 'private fixture must preserve every original configuration byte')
@@ -236,10 +251,27 @@ try {
     controlTransport: 'official_explicit_loopback_test_mode', originalWorkloadInvocations: 1, peerRPCDispatch: 'none', modelRequests: 0,
     transferProducer: catalog.components.transfer.revision, transferVersion: catalog.components.transfer.version, transferObservation: 'actual_exe_empty_queue_idle', deliveryAdmissionsSubmitted: 0,
     serverIdentity: 'synthetic_peer_not_memoh_owner', stopAuthority: false, taskRecovery: 'not_exercised', fileTransferTLS: 'not_exercised', realPCandNAS: 'not_run' }) + '\n')
+} catch (error) {
+  primaryError = error
 } finally {
   const cleanup = await Promise.allSettled([...hosts].map(host => host.stop()))
-  await bounded(peer.close(), 5000, 'native Runtime fixture peer close deadline')
-  process.stdout.write(JSON.stringify({ nativeRuntimeFixtureCleanup: 'observed', remainingHosts: hosts.size, stopFailures: cleanup.filter(r => r.status === 'rejected').length }) + '\n')
-  assert.equal(cleanup.filter(r => r.status === 'rejected').length, 0)
-  assert.equal(hosts.size, 0)
+  const [peerCleanup] = await Promise.allSettled([Promise.resolve().then(() => bounded(peer.close(), 5000, 'native Runtime fixture peer close deadline'))])
+  // Only the exclusive fresh fixture child above is ours to remove. Do not
+  // remove its enrollment while any host cleanup remains unconfirmed.
+  const [enrollmentCleanup] = await Promise.allSettled([Promise.resolve().then(async () => {
+    assert.equal(hosts.size, 0, 'retain fixture enrollment while host ownership is unresolved')
+    assert.equal(cleanup.filter(r => r.status === 'rejected').length, 0)
+    await fs.rm(enrollmentRoot, { recursive: true })
+    await assert.rejects(fs.stat(enrollmentRoot), { code: 'ENOENT' })
+  })])
+  process.stdout.write(JSON.stringify({ nativeRuntimeFixtureCleanup: 'observed', remainingHosts: hosts.size,
+    stopFailures: cleanup.filter(r => r.status === 'rejected').length, peer: peerCleanup.status === 'fulfilled' ? 'closed' : 'close_failed',
+    enrollment: enrollmentCleanup.status === 'fulfilled' ? 'fresh_child_removed' : 'retained_or_cleanup_failed' }) + '\n')
+  try {
+    assert.equal(cleanup.filter(r => r.status === 'rejected').length, 0)
+    assert.equal(hosts.size, 0)
+    assert.equal(peerCleanup.status, 'fulfilled', 'native Runtime fixture peer cleanup failed')
+    assert.equal(enrollmentCleanup.status, 'fulfilled', 'native Runtime fixture enrollment cleanup failed')
+  } catch (error) { primaryError ??= error }
 }
+if (primaryError) throw primaryError
