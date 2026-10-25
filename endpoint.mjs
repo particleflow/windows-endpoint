@@ -252,7 +252,13 @@ export async function configure(from, to, root) {
   const handle = await fs.open(to, 'wx')
   try { await handle.writeFile(`${JSON.stringify(config, null, 2)}\n`); await handle.sync() }
   finally { await handle.close() }
-  return { state: 'references_saved', credentialsRead: false, activation: 'blocked' }
+  return { state: 'references_saved', credentialsRead: false, activation: 'blocked',
+    transferConfiguration: config.schema === 1 || config.transfer ? {
+      directory: transferLocations(config).config,
+      networkPolicyFile: path.join(transferLocations(config).config, 'transfer-network.json'),
+      networkPolicy: 'optional_existing_producer_configuration', validation: 'producer_on_invoke',
+    } : null,
+  }
 }
 
 export function programPaths(config) {

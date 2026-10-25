@@ -78,8 +78,11 @@ no Windows live handoff or automatic task replay is added.
 
 The finite consumer coalesces hints, honors producer deadlines and drains an
 invocation before shutdown. The current candidate source is Memoh
-`c29253069038886c95a29807ad2a003a214c7593` / plugin 0.9.0; CI builds it using its
-unchanged source build script. The older artifact and PR56 history in
+`a51ddcb1cab8e246ee32fe50762e633f221ef271` / plugin 0.10.0; CI builds it using its
+unchanged source build script. The optional LAN policy is read from the same
+private Herdr plugin config root; `configure` reports its path without copying
+addresses into endpoint configuration or changing an existing queue binding.
+See the [candidate configuration instructions](packaging/README.md). The older artifact and PR56 history in
 [the original handoff](docs/transfer-integration-gap.md) are not current
 qualification evidence. No denied artifact is downloaded or substituted.
 

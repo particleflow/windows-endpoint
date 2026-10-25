@@ -59,6 +59,23 @@ through their existing owner. This archive supplies neither credentials nor
 permission grants. Do not replace an active or differently bound plugin.
 Control authorization and file-transfer authorization remain separate.
 
+`configure` reports `transferConfiguration.networkPolicyFile` in that same
+Herdr private plugin config directory. The new producer reads an optional
+`transfer-network.json` there: `{"version":1,"lan_addresses":["192.0.2.10"]}`
+(the example IP is documentation only). Existing setup owns this private file;
+configure does not write a policy or credential. No policy preserves the old
+route behavior. Do not copy LAN addresses into endpoint.json or change the bound
+transfer.json. Explicit IPs are tried in order; only TCP connection failure falls
+back to the original authority's IPv6. Certificate/auth failures never select
+another route. An invalid policy or conflicting proxy fails visibly.
+
+This candidate pins producer a51ddcb1cab8e246ee32fe50762e633f221ef271, plugin
+0.10.0. The prior c292 candidate remains a separate checkpoint. Endpoint program
+update does not replace/relink an external producer, and cross-producer candidate
+switches remain rejected by the existing compatibility profile. Do not present
+this new build as an automatic upgrade of a running old plugin.
+
+
 The host's stdin accepts `{"action":"status"}` and `{"action":"stop"}`.
 Status can also be read with `host status --root $HostRoot`. No system service,
 scheduled task, listening command port, OS trust change or second Agent is added.

@@ -18,14 +18,15 @@ export function testNames(output, prefix) {
 
 export function fixturePlan(native, cli) {
   testNames(native.join('\n'), 'TestWindowsNative'); testNames(cli.join('\n'), 'TestCLIPath')
-  const bucket = 'TestWindowsNativePublicationBucketBudget'
+  const bucket = 'TestWindowsNativePublicationBucketBudget', journal = 'TestWindowsNativeActiveJournal'
   const groups = [
-    { name: 'native-core', binary: 'transferqueue.test.exe', tests: native.filter(n => !n.startsWith('TestWindowsNativePublication')) },
+    { name: 'native-core', binary: 'transferqueue.test.exe', tests: native.filter(n => !n.startsWith('TestWindowsNativePublication') && n !== journal) },
+    { name: 'native-active-journal', binary: 'transferqueue.test.exe', tests: native.filter(n => n === journal) },
     { name: 'native-bucket-budget', binary: 'transferqueue.test.exe', tests: native.filter(n => n === bucket) },
     { name: 'native-publication', binary: 'transferqueue.test.exe', tests: native.filter(n => n.startsWith('TestWindowsNativePublication') && n !== bucket) },
     { name: 'cli-path', binary: 'transferqueue-cli.test.exe', tests: [...cli] },
   ]
-  requireFixture(groups.every(g => g.tests.length > 0) && sameSet(groups.slice(0, 3).flatMap(g => g.tests), native) && sameSet(groups[3].tests, cli), 'producer_fixture_partition_incomplete')
+  requireFixture(groups.every(g => g.tests.length > 0) && sameSet(groups.filter(g => g.binary === 'transferqueue.test.exe').flatMap(g => g.tests), native) && sameSet(groups.at(-1).tests, cli), 'producer_fixture_partition_incomplete')
   return groups.map(g => ({ ...g, timeout: '5m', pattern: `^(${g.tests.join('|')})$` }))
 }
 
@@ -45,6 +46,7 @@ export function completedAPIBaseCases(output, expected) {
 }
 
 const taskAPIBaseTests = ['TestTaskAPIBaseLengthBoundary', 'TestTaskAPIBaseBoundaryPreservesChecks']
+export const networkTests = ['TestHostNetworkPolicyKeepsOriginalQueueBinding', 'TestHostNetworkPolicyValidation', 'TestHostNetworkPolicyRejectsProxyConflict']
 export const budgetTests = ['TestHostBudgetConfiguration', 'TestBudgetMigrationPreservesIdentityAndUnknown', 'TestBudgetMigrationRejectsBusyMismatchAndCapacity', 'TestBudgetMigrationResumesIncompleteAdmission', 'TestBudgetMigrationProcessCrashAndTornTail']
 export const cliBudgetTests = ['TestCLIBudgetConfigurationAndOldQueueRecovery']
 export const registrationTests = ['TestRegisteredProcessExitBeforeAcknowledgement', 'TestRegisteredSourceRestartAndMissingChanges', 'TestRegisteredSourceResumesReceiptWithoutSnapshot', 'TestRegisteredSourceBlockProofRejectsUndetectedChange']
@@ -123,6 +125,7 @@ export async function verifyFixtures(root, sourceRoot) {
   process.stdout.write(JSON.stringify({ producerTaskAPIBaseBoundary: 'passed', sourceCommit, topLevel: taskAPIBaseTests.length, cases: boundaryCases.length, skipped: 0 }) + '\n')
   const cliBinary = path.join(root, 'transferqueue-cli.test.exe')
   for (const [file, names, selector, contractName] of [
+    [binary, networkTests, '^TestHostNetwork', 'producerNetworkContract'],
     [binary, budgetTests, '^Test(HostBudget|BudgetMigration)', 'producerBudgetContract'],
     [cliBinary, cliBudgetTests, '^TestCLIBudget', 'producerBudgetContract'],
     [binary, registrationTests, '^TestRegistered', 'producerRegistrationContract'],

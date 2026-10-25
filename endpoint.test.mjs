@@ -354,6 +354,28 @@ async function apiBaseFixture(t, schema) {
   return { ...f, setBase(value) { (schema === 1 ? f.config : f.config.transfer).nasOrigin = value } }
 }
 for (const schema of [1, 2]) {
+  test(`schema ${schema} configure reports the existing optional producer policy location without rewriting it or the queue`, async t => {
+    const f = await apiBaseFixture(t, schema), locations = transferLocations(f.config)
+    const input = path.join(f.base, 'network-input.json'), output = path.join(f.base, 'network-references.json')
+    await json(input, f.config)
+    const first = await configure(input, output)
+    assert.equal(first.transferConfiguration.directory, locations.config)
+    const policy = path.join(locations.config, 'transfer-network.json')
+    assert.equal(first.transferConfiguration.networkPolicyFile, policy)
+    assert.equal(first.transferConfiguration.validation, 'producer_on_invoke')
+    await assert.rejects(fs.access(policy), { code: 'ENOENT' })
+    for (const dir of [locations.config, locations.state]) await fs.mkdir(dir, { recursive: true })
+    const files = new Map([
+      [policy, '{"version":1,"lan_addresses":["192.0.2.1","2001:db8::1"]}\r\n'],
+      [path.join(locations.config, 'transfer.json'), '{"version":1,"origin":"https://NAS.example.test:443/api/"}\n'],
+      [path.join(locations.state, 'existing.journal'), 'OPAQUE EXISTING QUEUE BYTES'],
+    ])
+    for (const [name, raw] of files) await fs.writeFile(name, raw)
+    await configure(input, path.join(f.base, 'another-reference.json'))
+    for (const [name, raw] of files) assert.equal(await fs.readFile(name, 'utf8'), raw)
+    assert.deepEqual(JSON.parse(await fs.readFile(output)), f.config)
+  })
+
   test(`schema ${schema} adopts all shared API base vectors without normalization`, async t => {
     const f = await apiBaseFixture(t, schema)
     for (const vector of apiBaseVectors.cases) await t.test(vector.name, () => {

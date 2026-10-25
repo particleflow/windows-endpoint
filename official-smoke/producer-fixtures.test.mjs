@@ -5,11 +5,19 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { catalog, digest } from '../endpoint.mjs'
-import { testNames, fixturePlan, completedTests, completedAPIBaseCases, completedTaskAPIBaseCases, budgetTests, cliBudgetTests, registrationTests, cliRegistrationTests, verifyProducerBundle } from './producer-fixtures.mjs'
+import { testNames, fixturePlan, completedTests, completedAPIBaseCases, completedTaskAPIBaseCases, networkTests, budgetTests, cliBudgetTests, registrationTests, cliRegistrationTests, verifyProducerBundle } from './producer-fixtures.mjs'
 
 const native = ['TestWindowsNativeActiveJournal', 'TestWindowsNativePublicationBucketBudget', 'TestWindowsNativePublicationMigrationProcessCrash', 'TestWindowsNativePublicationNewCase', 'TestWindowsNativeNewCore']
 const cli = ['TestCLIPathChild', 'TestCLIPathTLSRestartAndLostResponses']
 const output = names => names.map(n => `=== RUN   ${n}\n--- PASS: ${n} (0.01s)`).join('\n') + '\nPASS\n'
+
+test('native network configuration coverage requires the three shared tests, without claiming Linux-only routing', () => {
+  assert.equal(networkTests.length, 3)
+  assert.deepEqual(completedTests(output(networkTests), networkTests), networkTests)
+  assert.throws(() => completedTests(output(networkTests.slice(1)), networkTests))
+  assert.throws(() => completedTests(output(networkTests).replace('--- PASS:', '--- SKIP:'), networkTests))
+  assert.ok(networkTests.every(name => name.startsWith('TestHostNetwork')))
+})
 
 test('budget coverage requires all five library tests and the actual CLI dispatcher test', () => {
   assert.equal(budgetTests.length, 5); assert.equal(cliBudgetTests.length, 1)
@@ -35,6 +43,7 @@ test('binary inventory partitions exactly once and selects every original subtes
   assert.deepEqual(groups.flatMap(g => g.tests).sort(), [...native, ...cli].sort())
   for (const name of [...native, ...cli]) assert.equal(groups.filter(g => new RegExp(g.pattern).test(name)).length, 1)
   assert.ok(groups.every(g => !g.pattern.includes('/') && g.timeout === '5m'))
+  assert.deepEqual(groups.find(g => g.name === 'native-active-journal').tests, ['TestWindowsNativeActiveJournal'])
   assert.deepEqual(testNames(native.join('\r\n') + '\r\n', 'TestWindowsNative'), native)
 })
 test('empty, duplicate, malformed or unexpected test inventory cannot authorize a partial plan', () => {

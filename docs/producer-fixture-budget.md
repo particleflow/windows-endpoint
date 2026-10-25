@@ -37,12 +37,12 @@ Only this repository's CI orchestration changes. `producer-fixtures.mjs` verifie
 all seven original payload hashes, exact bundle membership, architecture and
 source SHA, then enumerates the **compiled binaries** using the original
 `^TestWindowsNative` and `^TestCLIPath` selections. It divides native tests into
-three disjoint groups and retains the CLI group. No producer source, binary,
+four disjoint groups and retains the CLI group. No producer source, binary,
 manifest, assertion, synchronization or original `verify-fixtures.ps1` is edited.
 That original verifier remains hash-checked; its aggregate invocation is replaced
 only in this downstream job.
 
-The current source pin is `37b7464fe062714258ddea5208cce2a6f9ea5f5b`.
+The current source pin is `a51ddcb1cab8e246ee32fe50762e633f221ef271`.
 Its three API-base top-level tests are outside those two historical selections.
 The same packaged test executable runs `TestAPIBaseContractVectors` separately
 from the fixed source's `internal/transferclient` directory. That test reads its own
@@ -148,3 +148,12 @@ The native inventory also includes `TestWindowsNativeBudgetPublicationRecovery`.
 No old test is removed. These verify 8/16 GiB settings using small payloads,
 original records and process exits; they do not transfer multi-GiB files or prove
 physical power-loss durability. The total suite/job deadlines are unchanged.
+
+The a51 producer adds native-readable LAN policy tests. All three `TestHostNetwork*`
+cases run from the actual Windows test executable; none may skip. The existing
+active-journal wrapper now has its own five-minute group, following upstream's
+[measured cumulative-budget failure](https://github.com/particleflow/Memoh/blob/a51ddcb1cab8e246ee32fe50762e633f221ef271/docs/testing/transfer-native-ci-grouping.md).
+Inventory partition assertions still cover every native and CLI test exactly once.
+The Linux-only route/IPv6/TLS/403 tests run separately from the same source in the
+Ubuntu delivery job. They use real loopback sockets and process-local test CAs;
+they are not Windows production-EXE positive TLS qualification.

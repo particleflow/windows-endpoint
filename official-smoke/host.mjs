@@ -200,6 +200,23 @@ try {
     assert.deepEqual(await cli('inspect', null, deliveryId), before)
     checked('production_cli_rejects_changed_api_base_without_rebinding_existing_delivery')
   }
+  if (candidate) {
+    // Start from a genuinely registered old-style queue with no routing policy.
+    // Only fresh fixture files get private ACLs; no existing user ACL is changed.
+    const file = path.join(config.transferConfigDir, 'transfer-network.json')
+    const identityFile = path.join(config.transferConfigDir, 'transfer.json')
+    const original = await fs.readFile(identityFile), before = await cli('inspect', null, deliveryId)
+    const input = path.join(root, 'network-policy-fixture.json')
+    await fs.writeFile(input, JSON.stringify({ root, items: [{ kind: 'file', path: file, content: '{"version":1,"lan_addresses":["not-an-ip"]}' }] }))
+    const made = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-File', fileURLToPath(new URL('./private-fixture.ps1', import.meta.url)), '-InputFile', input], { encoding: 'utf8', timeout: 30000 })
+    assert.equal(made.status, 0, 'fresh private network policy fixture')
+    assert.equal((await cli('advance', null, deliveryId, 1)).state, 'unavailable', 'invalid present policy must fail, not silently use default routing')
+    await fs.writeFile(file, JSON.stringify({ version: 1, lan_addresses: ['127.0.0.1'] }))
+    assert.deepEqual(await cli('inspect', null, deliveryId), before)
+    assert.equal((await cli('enqueue-result', closed)).delivery_id, deliveryId)
+    assert.deepEqual(await fs.readFile(identityFile), original)
+    checked('packaged_cli_reads_optional_private_network_policy_and_preserves_original_queue_binding')
+  }
   if (trusted) {
     nas = transferFixture(plan, deliveryId, payload)
     const rootCert = new X509Certificate(await fs.readFile(ca))
