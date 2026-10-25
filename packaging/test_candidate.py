@@ -73,7 +73,7 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(pack.sha(archive.read_bytes()), a['sha256'])
         checked = subprocess.run(['node', str(ROOT / 'packaging/verify_candidate.mjs'), str(extracted), str(self.root / 'a/candidate-summary.json')], cwd=self.root, capture_output=True, text=True, timeout=25)
         self.assertEqual(checked.returncode, 0, checked.stderr)
-        self.assertEqual(json.loads(checked.stdout)['passed'], 6)
+        self.assertEqual(json.loads(checked.stdout)['passed'], 7)
 
     def test_changed_source_and_producer_are_rejected_without_output(self):
         file = self.source / 'host.mjs'

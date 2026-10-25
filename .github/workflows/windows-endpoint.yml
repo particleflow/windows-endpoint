@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: '24.14.0'
       - name: Verify delivery boundary and recovery fixtures
-        run: node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs installed.test.mjs session-diagnostics.test.mjs session-continuation.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs official-smoke/pi-model-fixture.test.mjs
+        run: node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs program-deployment.test.mjs host.test.mjs runtime.test.mjs installed.test.mjs session-diagnostics.test.mjs session-continuation.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs official-smoke/pi-model-fixture.test.mjs
       - name: Validate transfer fixture JavaScript syntax
         run: node --check official-smoke/transfer.mjs
       - name: Verify portable candidate packaging and extracted entry

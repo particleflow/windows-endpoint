@@ -3,7 +3,7 @@
 This archive contains the executable Node foreground host and the fixed
 source-built Windows transfer CLI. It needs no npm install. It is **not a
 released installer**: production HTTPS success, physical PC/NAS acceptance,
-active-task upgrade and automatic activation/rollback are not qualified.
+active-task upgrade and unattended activation/rollback are not qualified.
 `candidate.json` identifies exact sources and every file hash; the separate
 `candidate-summary.json` identifies the archive hash. Obtain both from the same
 reviewed CI run. These inventories are build evidence, not release signatures.
@@ -36,7 +36,9 @@ From PowerShell, using the existing absolute Node path:
 ```powershell
 & $NodePath (Join-Path $Candidate 'endpoint.mjs') configure --from $References --root $HostRoot
 & $NodePath (Join-Path $Candidate 'endpoint.mjs') doctor --config (Join-Path $HostRoot 'config/endpoint.json')
-& $NodePath (Join-Path $Candidate 'endpoint.mjs') host run --root $HostRoot
+$Summary = Get-Content -Raw $SummaryFile | ConvertFrom-Json
+& $NodePath (Join-Path $Candidate 'endpoint.mjs') deploy install --root $HostRoot --source $Candidate --manifest-sha256 $Summary.manifest_sha256
+& $NodePath (Join-Path $Candidate 'endpoint.mjs') deploy run --root $HostRoot
 ```
 
 `configure` creates the endpoint file exclusively and refuses to overwrite it.
@@ -71,12 +73,35 @@ existing Agenvo instance's `binary` mapping and complete any native scope approv
 the endpoint has no second Herdr path to maintain. Same-path version changes are
 not themselves a new Agenvo scope. No session/history is imported or replayed.
 
-This candidate has no automatic endpoint upgrade or rollback entry. Public
-`activate`, `update` and `rollback` still reject. The internal deployment selector
-does not activate this archive. Keep the current software and data intact until
-a checked replacement and controlled handoff are available; do not delete old
-packages or force-stop active/unknown work to switch versions. Ordinary shell
-restoration is verified separately from active Pi task/receipt recovery.
+The existing deployment journal now stages and selects **endpoint program only**
+under `packages/<manifest hash>`. `deploy run` verifies and runs that selection
+in the same foreground process and carries the host lease across launch. It uses
+the original configuration and transfer-plugin path; it does not relink or update
+the official components or producer. Pending queue bytes are never read as an
+instruction to migrate or replay work.
+If the existing plugin registration refers to the original extracted candidate's
+`transfer` directory, retain that directory: program installation does not relocate
+or rewrite that registration. `doctor` checks the referenced original components.
+
+After an explicit normal stop, `deploy update --root DIR --source NEW-CANDIDATE
+--manifest-sha256 HASH` stages/selects a checked compatible endpoint program.
+`deploy rollback --root DIR --manifest-sha256 PREVIOUS-HASH` selects only the
+recorded previous compatible package. Neither command starts a process. Use
+`deploy run --root DIR` for explicit foreground activation; no service or login
+startup is registered. `deploy recover --root DIR` reconciles an interrupted
+transaction, retaining its selected version, incomplete copies and unknown files.
+`deploy status --root DIR` reports the retained inventory.
+
+Running/draining hosts, attention, changed/unknown history, external lock/marker
+evidence and existing producer attempt records defer switching. Attempt records
+are **unreconciled**, not declared active or deleted: the task owner's handoff is
+still needed even if a record may describe a completed task. No global task
+admission barrier or active Pi upgrade handoff is claimed. A changed program-state
+profile or producer revision refuses compatibility; no data-format migration or
+automatic rollback follows a startup failure. Ordinary shell checkpoints and all
+original data are retained. Keep old packages; no cleanup or uninstall is added.
+The older `2009333` portable candidate remains runnable directly but lacks this
+managed-deployment profile and cannot be silently adopted into this journal.
 
 ## Qualification boundary
 

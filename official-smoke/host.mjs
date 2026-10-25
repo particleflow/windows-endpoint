@@ -84,8 +84,6 @@ for (const [file, content] of [
 const fixtureInput = path.join(root, 'fixture-input.json')
 await fs.writeFile(fixtureInput, JSON.stringify({ root, items: freshItems }))
 const powershell = path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe')
-const created = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-File', fileURLToPath(new URL('./private-fixture.ps1', import.meta.url)), '-InputFile', fixtureInput], { encoding: 'utf8', timeout: 30000 })
-assert.equal(created.status, 0, `fresh private fixture objects: ${created.stderr.slice(0, 200)}`)
 const official = new Map([
   [path.join(config.herdrConfigRoot, 'config.toml'), '[update]\nversion_check = false\nmanifest_check = false\n'],
   [path.join(config.agenvoConfigDir, 'config.json'), JSON.stringify({ schema: 1, relay: relayOrigin, deviceId: config.deviceId, name: 'isolated-ci-explicit', instances: [{ id: config.instanceId, label: 'fixture', kind: 'herdr', binary: herdr, cwd: config.sourceRoot, configRoot: config.herdrConfigRoot }] })],
@@ -102,6 +100,20 @@ const hostConfig = references ? {
 assert.deepEqual(transferLocations(hostConfig), { ...transferLocations(config), root: transferRoot }, 'Public host and producer must use identical existing roots')
 await fs.writeFile(path.join(hostRoot, 'config/endpoint.json'), JSON.stringify(hostConfig))
 await fs.writeFile(path.join(hostRoot, 'config/runtime.json'), JSON.stringify(references ? { schema: 2, mode: 'existing-installations', transfer: 'existing-queue' } : { schema: 1, mode: 'explicit-review', manifestSha256: config.manifestSha256, transfer: 'existing-queue' }))
+if (candidate) {
+  const manifestHash = await digest(path.join(candidate, 'candidate.json'))
+  const installed = spawnSync(node, [endpoint, 'deploy', 'install', '--root', hostRoot, '--source', candidate, '--manifest-sha256', manifestHash], { encoding: 'utf8', timeout: 30000 })
+  assert.equal(installed.status, 0, installed.stderr)
+  assert.equal(JSON.parse(installed.stdout).state, 'selected_review_only')
+  const selected = JSON.parse(await fs.readFile(path.join(hostRoot, 'control/deployment.json')))
+  assert.equal(selected.current, manifestHash); assert.equal(selected.pending, null)
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(hostRoot, 'config/endpoint.json'))), hostConfig)
+  checked('portable_candidate_staged_and_selected_without_changing_official_references')
+}
+// Admit this synthetic task only after program installation. Real attempt
+// evidence blocks program switching until its existing owner reconciles it.
+const created = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-File', fileURLToPath(new URL('./private-fixture.ps1', import.meta.url)), '-InputFile', fixtureInput], { encoding: 'utf8', timeout: 30000 })
+assert.equal(created.status, 0, `fresh private fixture objects: ${created.stderr.slice(0, 200)}`)
 // Like the host, resolve Herdr from the selected official instance before
 // constructing PATH. Keep the on-disk endpoint configuration single-source.
 const cliConfig = references ? (await validateInstalledConfiguration(hostConfig)).config : hostConfig
@@ -119,7 +131,7 @@ async function cli(action, input, id, expectedExit = 0) {
   })
 }
 function launch() {
-  const child = spawn(node, [endpoint, 'host', 'run', '--root', hostRoot], { env: { ...process.env, NODE_EXTRA_CA_CERTS: ca }, stdio: ['pipe', 'pipe', 'pipe'] })
+  const child = spawn(node, [endpoint, candidate ? 'deploy' : 'host', 'run', '--root', hostRoot], { env: { ...process.env, NODE_EXTRA_CA_CERTS: ca }, stdio: ['pipe', 'pipe', 'pipe'] })
   const states = []; let buffer = '', ended = false, stopRequested = false
   child.stdout.on('data', chunk => { buffer += chunk; const lines = buffer.split('\n'); buffer = lines.pop(); for (const line of lines) states.push(JSON.parse(line)) })
   child.stderr.resume()

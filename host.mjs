@@ -46,7 +46,7 @@ function validatedStatus(value) {
 }
 
 export class ForegroundHost {
-  constructor({ root, emit = () => {}, createTestRuntime = null }) {
+  constructor({ root, emit = () => {}, createTestRuntime = null, inheritedHostLease = null }) {
     this.root = root; this.layout = deploymentLayout(root)
     this.stateDirectory = path.join(this.layout.data, 'endpoint')
     this.statusFile = path.join(this.stateDirectory, 'host-status.json')
@@ -54,6 +54,7 @@ export class ForegroundHost {
     this.configFile = path.join(this.layout.config, 'endpoint.json')
     this.runtimeFile = path.join(this.layout.config, 'runtime.json')
     this.emit = emit; this.createTestRuntime = createTestRuntime
+    this.inheritedHostLease = inheritedHostLease
     this.runId = randomUUID(); this.phase = 'starting'; this.attention = null
     this.stopReason = null; this.control = 'unverified'
     this.configuration = 'unverified'; this.components = 'unavailable_unqualified'; this.connection = 'unverified'
@@ -116,7 +117,7 @@ export class ForegroundHost {
     await validateDirectory(this.root)
     await ensureDirectory(this.layout.data); await ensureDirectory(this.stateDirectory)
     await ensureDirectory(this.layout.logs); await ensureDirectory(this.logDirectory)
-    this.release = await acquireLeases([`host:${this.root}`], this.stateDirectory)
+    this.release = this.inheritedHostLease || await acquireLeases([`host:${this.root}`], this.stateDirectory)
     this.logHandle = await fs.open(path.join(this.logDirectory, `${this.runId}.jsonl`), 'wx')
     this.logState = 'recording'; this.initialized = true
     await this.publish()
@@ -251,14 +252,14 @@ export async function readHostStatus(root) {
   return { ...value, control: value.control ?? 'unverified', observation: age < 0 || age > 5000 ? 'stale_unknown' : 'cached', ready: false, transferAutomaticRecovery: false }
 }
 
-export async function runForeground({ root, input = process.stdin, output = process.stdout, createTestRuntime = null, tickMs = 1000 }) {
+export async function runForeground({ root, input = process.stdin, output = process.stdout, createTestRuntime = null, inheritedHostLease = null, tickMs = 1000 }) {
   let resolveDone, stopping = false, timer, buffer = '', commandBusy = false
   const done = new Promise(resolve => { resolveDone = resolve })
   const emit = value => {
     if (output.writableLength > 65536) { if (!host.stopRequested) void stop('host_observer_backpressure'); return }
     if (!output.destroyed && output.writable) output.write(`${JSON.stringify(value)}\n`)
   }
-  const host = new ForegroundHost({ root, emit, createTestRuntime })
+  const host = new ForegroundHost({ root, emit, createTestRuntime, inheritedHostLease })
   host.control = input.readableEnded || input.destroyed ? 'stdin_closed' : 'stdin_open'
   const stop = async reason => {
     // Capture an error even when an earlier clean stop is already draining.

@@ -193,22 +193,22 @@ export async function verifyBundle(root, expectedHash) {
 // Copy to a content-addressed candidate; never switch current binaries or touch data.
 // Incomplete .pending-* directories are inert. Retry creates a new one; no guessing
 // at a stale lock/PID and no destructive recovery. Explicit retention is deliberate.
-export async function stageBundle(source, destination, expectedHash, { checkpoint = async () => {} } = {}) {
+export async function stageBundle(source, destination, expectedHash, { checkpoint = async () => {}, verify = verifyBundle, manifestName = 'bundle.json' } = {}) {
   absolute(destination)
   await canonical(destination)
   requireThat(!overlaps(source, destination), 'stage_root_overlap')
-  const { manifest, totalBytes } = await verifyBundle(source, expectedHash)
+  const { manifest, totalBytes } = await verify(source, expectedHash)
   const target = path.join(destination, expectedHash)
   try {
     await fs.lstat(target)
-    await verifyBundle(target, expectedHash)
+    await verify(target, expectedHash)
     return { state: 'already_staged', manifestSha256: expectedHash }
   } catch (e) { if (e.code !== 'ENOENT') throw e }
   const space = await fs.statfs(destination)
   requireThat(space.bavail * space.bsize >= totalBytes + 64 * 1024 ** 2, 'insufficient_staging_space')
   const pending = path.join(destination, `.pending-${expectedHash}-${randomUUID()}`)
   await fs.mkdir(pending)
-  for (const file of [...manifest.files.map(f => f.path), 'bundle.json']) {
+  for (const file of [...manifest.files.map(f => f.path), manifestName]) {
     const output = path.join(pending, file)
     await fs.mkdir(path.dirname(output), { recursive: true })
     await fs.copyFile(path.join(source, file), output, 1)
@@ -216,11 +216,11 @@ export async function stageBundle(source, destination, expectedHash, { checkpoin
     try { await handle.sync() } finally { await handle.close() }
     await checkpoint('file_copied')
   }
-  await verifyBundle(pending, expectedHash)
+  await verify(pending, expectedHash)
   try { await fs.rename(pending, target) }
   catch (error) {
     if (!['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES'].includes(error.code)) throw error
-    await verifyBundle(target, expectedHash) // competing identical publication only
+    await verify(target, expectedHash) // competing identical publication only
     return { state: 'already_staged', manifestSha256: expectedHash, retainedPending: true }
   }
   return { state: 'staged_review_only', manifestSha256: expectedHash }
@@ -428,6 +428,12 @@ export async function verifyToolchain(config, gitVersion, run = probe) {
 
 export async function main(args) {
   const [command, ...rest] = args
+  if (command === 'deploy') {
+    const { programDeploymentMain } = await import('./program-deployment.mjs')
+    const { DeploymentError } = await import('./deployment.mjs')
+    try { return await programDeploymentMain(rest) }
+    catch (error) { if (error instanceof DeploymentError || /^(candidate|deployment)_/.test(error.code)) throw new EndpointError(error.code); throw error }
+  }
   if (command === 'host') {
     const { hostMain, HostError } = await import('./host.mjs')
     try { return { hostExitCode: await hostMain(rest) } }
@@ -435,10 +441,10 @@ export async function main(args) {
   }
   const options = {}
   for (let i = 0; i < rest.length; i += 2) {
-    requireThat(/^--[a-z-]+$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'invalid_arguments')
+    requireThat(/^--[a-z][a-z0-9-]*$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'invalid_arguments')
     options[rest[i]] = rest[i + 1]
   }
-  if (command === 'help' || !command) return { commands: ['configure --from FILE --root DIR', 'configure --from FILE --config FILE', 'doctor --config FILE', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR'], status: 'host observation and explicit verified component review available; release activation/update/rollback/uninstall blocked pending qualification' }
+  if (command === 'help' || !command) return { commands: ['configure --from FILE --root DIR', 'configure --from FILE --config FILE', 'doctor --config FILE', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR', 'deploy install|update --root DIR --source DIR --manifest-sha256 SHA256', 'deploy rollback --root DIR --manifest-sha256 SHA256', 'deploy run|recover|status --root DIR'], status: 'portable program deployment and foreground review available; production release and active-task handoff remain unqualified' }
   if (['start', 'activate', 'update', 'rollback', 'uninstall'].includes(command)) throw new EndpointError('qualification_required_no_runtime_or_data_changed')
   if (command === 'configure') {
     keys(options, ['--from'], ['--config', '--root'])

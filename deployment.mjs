@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { stageBundle, validateConfig, validateDirectory, verifyBundle } from './endpoint.mjs'
+import { stageBundle, validateConfig, validateDirectory, verifyBundle, transferLocations } from './endpoint.mjs'
 import { acquireLeases, leaseKeys, StateStore } from './lifecycle.mjs'
 
 // Internal offline transaction engine. No public activation command consumes
@@ -39,16 +39,18 @@ export function deploymentReferences(root, references) {
 }
 
 export class DeploymentTransactions {
-  constructor({ root, config, lifecycleDirectory, inspectWork, qualify, io = fs, checkpoint = async () => {} }) {
+  constructor({ root, config, lifecycleDirectory, inspectWork, qualify, verify = verifyBundle, stage = stageBundle, io = fs, checkpoint = async () => {} }) {
     this.root = root; this.layout = deploymentLayout(root); this.config = structuredClone(config)
     this.lifecycleDirectory = lifecycleDirectory
     this.lifecycleStore = new StateStore(lifecycleDirectory, config.deviceId)
     this.inspectWork = inspectWork; this.qualify = qualify; this.io = io; this.checkpoint = checkpoint
+    this.verify = verify; this.stagePayload = stage
     this.file = path.join(this.layout.control, 'deployment.json')
   }
   async locked(operation) {
     validateConfig(this.config)
-    for (const target of [this.lifecycleDirectory, ...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir', 'transferConfigDir', 'transferStateDir'].map(key => this.config[key])]) {
+    const transfer = this.config.schema === 1 || this.config.transfer ? transferLocations(this.config) : null
+    for (const target of [this.lifecycleDirectory, ...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir'].map(key => this.config[key]), ...(transfer ? [transfer.config, transfer.state] : [])]) {
       demand([this.layout.packages, this.layout.control].every(root => !contains(root, target) && !contains(target, root)), 'deployment_mutable_root_overlap')
     }
     await validateDirectory(this.root)
@@ -56,7 +58,7 @@ export class DeploymentTransactions {
     // The normal endpoint and this offline updater use the same lifetime leases.
     // A running/draining endpoint is deferred; this code never stops/kills it.
     let release
-    try { release = await acquireLeases([...leaseKeys(this.config), `deployment:${this.root}`], this.lifecycleDirectory) }
+    try { release = await acquireLeases([...leaseKeys(this.config), `host:${this.root}`, `deployment:${this.root}`], this.lifecycleDirectory) }
     catch (error) { if (error.code === 'endpoint_already_owned') return report('deferred', { reason: 'endpoint_owned' }); throw error }
     try {
       const lifecycle = await this.lifecycleStore.load()
@@ -64,6 +66,7 @@ export class DeploymentTransactions {
       return await operation()
     } catch (error) {
       if (error instanceof DeploymentError) throw error
+      if (/^candidate_[a-z_]+$/.test(error.code)) throw new DeploymentError(error.code)
       const reason = ['EACCES', 'EPERM', 'EROFS'].includes(error.code) ? 'deployment_storage_read_only' : error.code === 'ENOSPC' ? 'deployment_space_unavailable' : 'deployment_operation_failed'
       throw new DeploymentError(reason)
     } finally { await release() }
@@ -118,7 +121,7 @@ export class DeploymentTransactions {
     })
   }
   async proof(directory, expectedHash) {
-    const verified = await verifyBundle(directory, expectedHash)
+    const verified = await this.verify(directory, expectedHash)
     demand(typeof this.qualify === 'function', 'deployment_component_qualification_missing')
     const value = await this.qualify(directory, expectedHash)
     demand(exact(value, ['schema', 'stateProfileSha256']) && value.schema === 1 && hash(value.stateProfileSha256), 'deployment_state_profile_unknown')
@@ -156,7 +159,7 @@ export class DeploymentTransactions {
       await this.space(proof.totalBytes + 64 * 1024 ** 2)
       state.pending = { kind: 'stage', hash: expectedHash, profile: proof.profile }
       await this.write(state); await this.checkpoint('stage_prepared')
-      await stageBundle(source, this.layout.packages, expectedHash, { checkpoint: () => this.checkpoint('stage_copying') })
+      await this.stagePayload(source, this.layout.packages, expectedHash, { checkpoint: () => this.checkpoint('stage_copying') })
       await this.checkpoint('stage_published')
       state.packages.push({ hash: expectedHash, profile: proof.profile }); state.pending = null
       await this.write(state)
@@ -232,7 +235,7 @@ export class DeploymentTransactions {
       for (const entry of await this.io.readdir(this.layout.packages)) if (!state.packages.some(p => p.hash === entry)) unknown.push(`packages/${entry}`)
       for (const entry of await this.io.readdir(this.layout.control)) if (entry !== 'deployment.json') unknown.push(`control/${entry}`)
       for (const item of state.packages) {
-        try { await verifyBundle(path.join(this.layout.packages, item.hash), item.hash) }
+        try { await this.verify(path.join(this.layout.packages, item.hash), item.hash) }
         catch { unverifiedOwnedPackages.push(item.hash) }
       }
       // No cleanup implementation in this first batch: even known old packages

@@ -11,7 +11,7 @@ reference-mode checks. It contains this foreground host and the unchanged
 source-built transfer review bundle, references existing official installations,
 and keeps the positive production TLS gate unmet. It is not a production release.
 Release activation remains blocked. The current CLI provides configuration
-references, diagnostics, launch plans, verified offline staging and a runnable
+references, diagnostics, launch plans, verified program deployment and a runnable
 foreground host. The host reports missing configuration and unavailable capabilities;
 an explicit review request can start inventory-verified local official components
 and consume an existing transfer queue. See [explicit runtime](docs/explicit-runtime.md)
@@ -37,8 +37,10 @@ Historical task restoration and external-process adoption remain unimplemented.
 - `lifecycle.mjs`, `owned-herdr.ps1`: foreground coordination and owned-peer API client.
 - `transfer-lifecycle.mjs`, `transfer-contract.mjs`: internal finite command consumer
   and strict producer decisions; no Agent task replay or second queue.
-- `deployment.mjs`, `deployment-layout.json`: offline candidate-selection
-  transactions and relative configuration defaults; no runtime activation.
+- `deployment.mjs`, `deployment-layout.json`: shared staging/selection transactions
+  and relative configuration defaults.
+- `candidate.mjs`, `program-deployment.mjs`: portable program verification,
+  stopped-program install/update/rollback and selected foreground launch.
 - `*.test.mjs`: synthetic delivery and lifecycle regression tests, using Node builtins.
 - `official-smoke/`: fixed official Windows binaries/npm lock and isolated CI fixtures.
 - `docs/`: delivery/lifecycle contracts, provenance and the source hash inventory.
@@ -51,7 +53,7 @@ Use Node 24. No npm install is needed for the unit suite:
 
 ```sh
 node endpoint.mjs help
-node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs runtime.test.mjs installed.test.mjs session-diagnostics.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs
+node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs program-deployment.test.mjs host.test.mjs runtime.test.mjs installed.test.mjs session-diagnostics.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs
 ```
 
 The `Windows endpoint delivery checks` workflow runs on every pull request and
@@ -70,8 +72,9 @@ Passing tests apply only to the tested commit.
 Official Herdr 0.9.5 live handoff is Unix-only. The Windows fixture asserts its
 exact unsupported response while preserving the server, panes and an in-flight
 synthetic command. This is rejection safety, not seamless handoff support.
-Future Windows updates must use a controlled stop/restore design; update and
-rollback are not implemented by the current endpoint.
+The endpoint program can switch compatible candidates after normal shutdown.
+Updating official components and handing off active Pi work remain separate;
+no Windows live handoff or automatic task replay is added.
 
 The finite consumer coalesces hints, honors producer deadlines and drains an
 invocation before shutdown. The current candidate source is Memoh
@@ -91,18 +94,21 @@ No budget edit or user migration is added. This is not large-file end-to-end
 acceptance. See the
 [retained failure evidence](docs/explicit-runtime.md#withdrawn-endpoint-budget-setup).
 
-The [offline deployment transaction batch](docs/deployment-transactions.md) reuses
-verified staging and endpoint ownership to test candidate selection and recovery.
-It preserves user config/data/logs, defers busy/unknown state and rejects incompatible
-rollback. Its component/state observations are synthetic; the public launcher does
-not consume the selection. Real installation and updates remain blocked pending
-official path approval, admission control and complete component qualification.
+The [deployment transaction engine](docs/deployment-transactions.md) now also serves
+`deploy install/update/rollback/recover/status` for the portable endpoint program.
+`deploy run` consumes its verified selection in the existing foreground host,
+holding the host lease continuously. The adapter preserves config/data/logs and
+official program/plugin references. It never upgrades the producer or official
+Agent, kills busy work, reconciles task receipts or deletes old packages. Unknown
+task/history evidence defers switching. The older all-component offline selector
+still has no production admission-barrier implementation.
 
 The [foreground host](docs/foreground-host.md) can run in an existing canonical
 root using `node endpoint.mjs host run --root DIR`. It accepts only local stdin
 status/stop commands, holds a lifetime lease and reports configuration, authorization
-and component qualification separately. It does not activate the offline selected
-package. Real components require the separate explicit request and local checks;
+and component qualification separately. Direct `host run` uses that supplied
+program; `deploy run` uses the selected portable program. Real components require
+the existing explicit request and local checks;
 process liveness never implies PC readiness.
 
 ## Boundaries

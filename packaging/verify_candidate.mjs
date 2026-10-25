@@ -63,9 +63,14 @@ try {
   originals.set(path.join(root, 'config/endpoint.json'), await fs.readFile(path.join(root, 'config/endpoint.json'), 'utf8'))
   command(['configure', '--from', references, '--root', root], 2)
   checks.push('schema2_configure_preserves_existing_references_and_refuses_overwrite')
+  const installed = JSON.parse(command(['deploy', 'install', '--root', root, '--source', candidate, '--manifest-sha256', summary.manifest_sha256], 0))
+  assert.equal(installed.state, 'selected_review_only')
+  assert.equal(installed.officialComponentsChanged, false)
+  assert.equal(JSON.parse(command(['deploy', 'install', '--root', root, '--source', candidate, '--manifest-sha256', summary.manifest_sha256], 0)).state, 'already_selected')
+  checks.push('managed_program_install_is_repeatable_and_preserves_external_component_mapping')
   // The real packaged foreground entry runs in observer mode, without fixture
   // drivers, credentials, a runtime opt-in or any component execution.
-  const child = spawn(process.execPath, [entry, 'host', 'run', '--root', root], { cwd: sandbox, stdio: ['pipe', 'pipe', 'pipe'], shell: false })
+  const child = spawn(process.execPath, [entry, 'deploy', 'run', '--root', root], { cwd: sandbox, stdio: ['pipe', 'pipe', 'pipe'], shell: false })
   let output = '', error = '', closed = false, stopSent = false
   const done = new Promise(resolve => child.once('close', (code, signal) => { closed = true; resolve({ code, signal }) }))
   const timer = setTimeout(() => child.kill(), 15000)
@@ -84,7 +89,7 @@ try {
     assert.equal(running.components, 'unavailable_unqualified')
     assert.equal(running.componentLifecycle, null)
   } finally { clearTimeout(timer); if (!closed) { child.kill(); await done } }
-  checks.push('packaged_foreground_observer_starts_and_stops_without_starting_components')
+  checks.push('selected_packaged_foreground_observer_starts_and_stops_without_starting_components')
   for (const [file, value] of originals) assert.equal(await fs.readFile(file, 'utf8'), value)
   checks.push('configuration_task_original_and_pi_config_bytes_preserved')
   const missing = path.join(sandbox, 'missing-component-config.json')

@@ -1,0 +1,157 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import * as fs from 'node:fs/promises'
+import path from 'node:path'
+import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { PassThrough } from 'node:stream'
+import { programDeployment, programDeploymentMain, runSelectedProgram } from './program-deployment.mjs'
+import { verifyCandidate } from './candidate.mjs'
+import { digest } from './endpoint.mjs'
+import { StateStore, acquireLeases } from './lifecycle.mjs'
+import { captureSessionContinuation } from './session-continuation.mjs'
+import { ForegroundHost } from './host.mjs'
+import { installedFixture } from './test-support/installed-fixture.mjs'
+import { programPackage } from './test-support/program-package.mjs'
+
+async function fixture(t) {
+  const f = await installedFixture(t), root = path.join(f.base, 'host')
+  delete f.config.programs.herdr
+  await fs.mkdir(path.join(root, 'config'), { recursive: true })
+  const configFile = path.join(root, 'config/endpoint.json')
+  await fs.writeFile(configFile, JSON.stringify(f.config))
+  const a = await programPackage(path.join(f.base, 'package a'))
+  const b = await programPackage(path.join(f.base, 'package b'), 'b')
+  const manager = await programDeployment(root, { prepare: true })
+  const originalFiles = [configFile, path.join(f.config.agenvoConfigDir, 'config.json'), path.join(f.config.piConfigDir, 'auth.json')]
+  const originals = await Promise.all(originalFiles.map(p => fs.readFile(p)))
+  return { ...f, root, a, b, manager, originalFiles, originals }
+}
+const apply = (f, pkg, mode = 'install') => programDeploymentMain([mode, '--root', f.root, '--source', pkg.directory, '--manifest-sha256', pkg.hash])
+async function preserve(f) { assert.deepEqual(await Promise.all(f.originalFiles.map(p => fs.readFile(p))), f.originals) }
+
+test('portable program installs, updates, rolls back and runs the selected real foreground entry without copying official components', async t => {
+  const f = await fixture(t)
+  assert.equal((await apply(f, f.a)).state, 'selected_review_only')
+  assert.equal((await apply(f, f.a)).state, 'already_selected')
+  assert.equal((await apply(f, f.b, 'update')).state, 'selected_review_only')
+  assert.equal((await f.manager.read()).current, f.b.hash)
+  assert.equal((await programDeploymentMain(['rollback', '--root', f.root, '--manifest-sha256', f.a.hash])).state, 'selected_review_only')
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./endpoint.mjs', import.meta.url)), 'deploy', 'run', '--root', f.root], { stdio: ['pipe', 'pipe', 'pipe'] })
+  let output = '', stderr = ''; const ended = new Promise(resolve => child.once('close', code => resolve(code)))
+  const timeout = setTimeout(() => child.kill(), 15000)
+  try {
+    await new Promise((resolve, reject) => {
+      child.once('error', reject); child.once('exit', () => reject(new Error(stderr || 'host exited before running')))
+      child.stderr.on('data', c => { stderr += c })
+      child.stdout.on('data', c => { output += c; if (output.includes('"phase":"running"')) resolve() })
+    })
+    const before = await fs.readFile(f.manager.file)
+    assert.equal((await apply(f, f.b, 'update')).reason, 'endpoint_owned')
+    assert.deepEqual(await fs.readFile(f.manager.file), before)
+    child.stdin.end('{"action":"stop"}\n')
+    assert.equal(await ended, 0, stderr)
+  } finally { clearTimeout(timeout); if (child.exitCode === null) { child.kill(); await ended } }
+  assert.equal((await apply(f, f.b, 'update')).state, 'selected_review_only')
+  assert.ok(output.includes('"ready":false'))
+  await preserve(f)
+})
+
+test('attention, task evidence, external lock and incompatible state defer or reject without changing selected software or task files', async t => {
+  const f = await fixture(t); await apply(f, f.a)
+  const store = new StateStore(f.manager.lifecycleDirectory, f.config.deviceId), state = await store.load()
+  await store.save({ ...state, attention: 'transfer_permission' })
+  assert.equal((await apply(f, f.b, 'update')).reason, 'endpoint_attention')
+  assert.equal((await store.load()).attention, 'transfer_permission')
+  await store.save(state)
+  const attempt = path.join(f.config.sourceRoot, '.memoh-computer/attempts/opaque-attempt')
+  await fs.mkdir(attempt, { recursive: true }); await fs.writeFile(path.join(attempt, 'receipt.json'), 'SYNTHETIC UNKNOWN ORIGINAL')
+  assert.equal((await apply(f, f.b, 'update')).reason, 'task_handoff_unverified')
+  assert.equal(await fs.readFile(path.join(attempt, 'receipt.json'), 'utf8'), 'SYNTHETIC UNKNOWN ORIGINAL')
+  assert.equal((await f.manager.read()).current, f.a.hash)
+  await fs.rm(path.dirname(attempt), { recursive: true }) // remove only this test's fixture
+  const lock = path.join(f.config.agenvoConfigDir, 'run.lock')
+  await fs.writeFile(lock, 'SYNTHETIC EXTERNAL OWNER')
+  assert.equal((await apply(f, f.b, 'update')).reason, 'external_component_state_unverified')
+  assert.equal(await fs.readFile(lock, 'utf8'), 'SYNTHETIC EXTERNAL OWNER')
+  await fs.unlink(lock)
+  f.b.manifest.state_profile = 'future-format'
+  await fs.writeFile(path.join(f.b.directory, 'candidate.json'), JSON.stringify(f.b.manifest))
+  f.b.hash = await digest(path.join(f.b.directory, 'candidate.json'))
+  await assert.rejects(apply(f, f.b, 'update'), { code: 'candidate_state_profile_incompatible' })
+  assert.equal((await f.manager.read()).current, f.a.hash)
+  await preserve(f)
+})
+
+test('ordinary workspace checkpoint survives program changes and changed data roots cannot be treated as an empty first run', async t => {
+  const f = await fixture(t), snapshot = path.join(f.config.herdrConfigRoot, 'sessions', f.config.session, 'session.json')
+  await fs.mkdir(path.dirname(snapshot), { recursive: true })
+  const raw = JSON.stringify({ version: 3, workspaces: [{ id: 'preserved', tabs: [{ panes: { p: { cwd: f.config.sourceRoot } } }] }] })
+  await fs.writeFile(snapshot, raw)
+  const state = await f.manager.lifecycleStore.load()
+  await f.manager.lifecycleStore.save({ ...state, sessionContinuation: await captureSessionContinuation(f.config) })
+  const journalBefore = await fs.readFile(f.manager.lifecycleStore.file)
+  await apply(f, f.a); await apply(f, f.b, 'update')
+  assert.equal(await fs.readFile(snapshot, 'utf8'), raw)
+  assert.deepEqual(await fs.readFile(f.manager.lifecycleStore.file), journalBefore)
+  await fs.writeFile(f.manager.configFile, JSON.stringify({ ...f.config, sourceRoot: path.join(f.base, 'new-empty-root') }))
+  assert.equal((await programDeploymentMain(['rollback', '--root', f.root, '--manifest-sha256', f.a.hash])).reason, 'session_data_identity_changed')
+  assert.equal((await f.manager.read()).current, f.b.hash)
+})
+
+test('pending transaction prevents launch, recovery retains selection, and altered packages never execute', async t => {
+  const f = await fixture(t); await apply(f, f.a); await f.manager.stage(f.b.directory, f.b.hash)
+  const interrupted = await programDeployment(f.root, { checkpoint: async phase => { if (phase === 'switch_selected') throw new Error('fixture interruption') } })
+  await assert.rejects(interrupted.select(f.b.hash, 'update'))
+  const input = new PassThrough(), output = new PassThrough(); input.end('{"action":"stop"}\n')
+  await assert.rejects(runSelectedProgram(f.root, { input, output }), { code: 'deployment_recovery_required' })
+  assert.equal((await f.manager.recover()).manifestSha256, f.b.hash)
+  const target = path.join(f.manager.layout.packages, f.b.hash)
+  await fs.appendFile(path.join(target, 'host.mjs'), '\nthrow new Error("MUST NEVER EXECUTE")')
+  await assert.rejects(runSelectedProgram(f.root, { input, output }), { code: 'candidate_payload_changed' })
+  // Failed verification releases only the launcher's own lease; no child started.
+  const release = await acquireLeases([`host:${f.root}`], f.manager.lifecycleDirectory); await release()
+  await preserve(f)
+})
+
+test('read-only or full publication keeps previous program; unknown files remain and candidate links reject', async t => {
+  const f = await fixture(t); await apply(f, f.a); await f.manager.stage(f.b.directory, f.b.hash)
+  const foreign = path.join(f.base, 'foreign-root')
+  await fs.mkdir(path.join(foreign, 'config'), { recursive: true })
+  await fs.writeFile(path.join(foreign, 'config/endpoint.json'), JSON.stringify(f.config))
+  await fs.writeFile(path.join(foreign, 'user-original'), 'KEEP')
+  await assert.rejects(programDeployment(foreign, { prepare: true }), { code: 'deployment_unowned_root_retained' })
+  assert.deepEqual((await fs.readdir(foreign)).sort(), ['config', 'user-original'])
+  const before = await fs.readFile(f.manager.file)
+  for (const code of ['EACCES', 'ENOSPC']) {
+    const manager = await programDeployment(f.root, { io: { ...fs, rename: async () => { throw Object.assign(new Error('injected'), { code }) } } })
+    await assert.rejects(manager.select(f.b.hash, 'update'))
+    assert.deepEqual(await fs.readFile(f.manager.file), before)
+  }
+  await fs.writeFile(path.join(f.root, 'original-user-file'), 'PRESERVE')
+  assert.ok((await f.manager.inventory()).retainedUnknownEntries.includes('original-user-file'))
+  await fs.symlink(f.a.directory, path.join(f.b.directory, 'linked-package'), 'junction')
+  await assert.rejects(verifyCandidate(f.b.directory, f.b.hash), { code: 'candidate_link_rejected' })
+  await preserve(f)
+})
+
+test('inherited selection lease stays held when component cleanup fails and is released only after explicit retry', async t => {
+  const f = await fixture(t), key = `host:${f.root}`
+  const inherited = await acquireLeases([key], f.manager.lifecycleDirectory)
+  let failStop = true
+  const runtime = {
+    release: true, start: async () => {},
+    snapshot: () => ({ phase: 'running', attention: null, cleanupAttention: null, journal: 'observed', restartsInWindow: 0 }),
+    stop: async () => { if (failStop) throw Object.assign(new Error('owned stop unknown'), { code: 'herdr_stop_unknown' }); runtime.release = null },
+  }
+  const host = new ForegroundHost({ root: f.root, inheritedHostLease: inherited, createTestRuntime: async () => runtime })
+  try {
+    await host.start()
+    assert.equal(await host.stop(), false)
+    assert.equal(host.phase, 'stop_failed'); assert.ok(host.release)
+    await assert.rejects(acquireLeases([key], f.manager.lifecycleDirectory), { code: 'endpoint_already_owned' })
+    failStop = false
+    assert.equal(await host.stop(), true); assert.equal(host.release, null)
+    const release = await acquireLeases([key], f.manager.lifecycleDirectory); await release()
+  } finally { failStop = false; if (host.release) await host.stop() }
+})

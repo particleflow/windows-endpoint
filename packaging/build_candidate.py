@@ -14,7 +14,7 @@ RUNTIME_FILES = (
     'endpoint.mjs', 'endpoint.ps1', 'host.mjs', 'runtime.mjs', 'installed.mjs',
     'lifecycle.mjs', 'owned-herdr.ps1', 'session-continuation.mjs',
     'session-diagnostics.mjs', 'transfer-contract.mjs', 'transfer-lifecycle.mjs',
-    'deployment.mjs', 'deployment-layout.json', 'dependencies.json', 'LICENSE',
+    'deployment.mjs', 'deployment-layout.json', 'candidate.mjs', 'program-deployment.mjs', 'dependencies.json', 'LICENSE',
 )
 PRODUCER_FILES = (
     'README.md', 'herdr-plugin.toml', 'transfer.example.json',
@@ -90,7 +90,8 @@ def build(source, commit, producer, producer_source, output):
         'official_components': 'referenced-existing-installations-not-bundled',
         'producer_test_tools': ['transfer/transferqueue.test.exe', 'transfer/transferqueue-cli.test.exe', 'transfer/verify-fixtures.ps1'],
         'positive_production_tls': 'unverified',
-        'activation_update_rollback': 'not-implemented',
+        'activation_update_rollback': 'stopped-endpoint-program-only',
+        'state_profile': 'endpoint-program-v1',
         'files': [{'path': name, 'size': len(data), 'sha256': sha(data)} for name, data in sorted(payload.items())],
     }
     manifest_bytes = (json.dumps(manifest, indent=2) + '\n').encode()
