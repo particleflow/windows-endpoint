@@ -291,21 +291,24 @@ try {
   // Real connector/native CLI/product entry, synthetic relay only. No Memoh
   // owner grant, task handoff or stop authorization is inferred from this test.
   if (candidate) await exerciseOwnerControl({ calls: controlCalls, config, node, endpoint, hostRoot, expected: running, checked })
-  const before = await cli('inspect', null, deliveryId)
-  assert.equal(before.associated, false); assert.equal(before.delivery_id, deliveryId)
   assert.equal((await host.stop()), 0)
   assert.equal((await readHostStatus(hostRoot)).phase, 'stopped')
+  // A waiting snapshot can become due while the host is still running. Inspect
+  // also opens the producer queue, so take evidence after the existing drain;
+  // a concurrent writer's legitimate busy result is not an inspect success.
+  const before = await cli('inspect', null, deliveryId)
+  assert.equal(before.associated, false); assert.equal(before.delivery_id, deliveryId)
   const next = launch()
   await next.until(s => s.connection === 'online_snapshot' && s.transfer?.state === 'waiting')
-  const after = await cli('inspect', null, deliveryId)
-  assert.equal(after.delivery_id, deliveryId); assert.equal(after.offset, before.offset); assert.equal(after.associated, false)
-  assert.equal(await fs.readFile(path.join(config.sourceRoot, 'result-one'), 'utf8'), payload)
-  checked('fresh_host_reopens_same_pending_queue_without_recreating_task_or_delivery')
   rejectAuth = true
   for (const socket of sockets) socket.terminate()
   const refused = await next.until(s => s.attention === 'connector_authentication_required')
   assert.equal(refused.connection, 'authorization_required'); assert.equal(refused.ready, false)
   assert.equal(await next.stop(), 2)
+  const after = await cli('inspect', null, deliveryId)
+  assert.equal(after.delivery_id, deliveryId); assert.equal(after.offset, before.offset); assert.equal(after.associated, false)
+  assert.equal(await fs.readFile(path.join(config.sourceRoot, 'result-one'), 'utf8'), payload)
+  checked('fresh_host_reopens_same_pending_queue_without_recreating_task_or_delivery')
   const welcomesBefore = welcomes, blocked = launch()
   await blocked.until(s => s.phase === 'running' && s.attention === 'connector_authentication_required')
   assert.equal(welcomes, welcomesBefore); assert.equal(await blocked.stop(), 2)
