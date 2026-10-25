@@ -63,7 +63,10 @@ public static class RecoveryArgv {
         $created = $null
         if ($null -ne $p.CreationDate) { $created = ([DateTimeOffset]$p.CreationDate.ToUniversalTime()).ToUnixTimeMilliseconds() }
         if ($p.ProcessId -ne $RecoveryProcessId -and $p.ProcessId -ne $PID -and $p.Name -in @('node.exe','herdr.exe')) {
-            if (-not $p.ExecutablePath -or -not $p.CommandLine) { $role = 'unknown' }
+            # A known different Node executable is outside the configured
+            # component inventory, even if its arguments are not readable.
+            if ($p.Name -eq 'node.exe' -and $p.ExecutablePath -and -not (Same-Path $p.ExecutablePath $NodePath)) { $role='other' }
+            elseif (-not $p.ExecutablePath -or -not $p.CommandLine) { $role = 'unknown' }
             elseif ($p.Name -eq 'herdr.exe' -or (Same-Path $p.ExecutablePath $NodePath)) {
                 $argv = [RecoveryArgv]::Decode($p.CommandLine)
                 $role = 'node'

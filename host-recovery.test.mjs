@@ -96,7 +96,7 @@ if (process.platform === 'win32') test('native read-only owner/process probe acc
  assert.equal(made.status,0,'create only fresh private probe files')
 
  // Helper succeeds, then the inert Herdr command fails; this is not real Herdr qualification.
- await assert.rejects(nativeRecoveryEvidence({config,status:f.status,files}),error=>{ assert.equal(error.code,'herdr_observation_unknown',`probe stage: ${error.evidenceStage || 'herdr_status'}`); return true })
+ await assert.rejects(nativeRecoveryEvidence({config,status:f.status,files}),error=>{ assert.equal(error.code,'herdr_observation_unknown',`probe stage: ${error.evidenceStage || 'herdr_status'}; reason: ${error.processReason}; blocking: ${JSON.stringify(error.blockingProcess)}`); return true })
  await assert.rejects(nativeRecoveryEvidence({config,status:{...f.status,pid:process.pid},files}),{code:'host_recovery_process_evidence_unavailable'})
 })
 if(process.platform === 'win32')test('actual recovery process exit after durable backup does not publish or replay; same evidence retries safely',async t=>{
@@ -158,9 +158,18 @@ if(process.platform === 'win32')test('native scoped probe excludes a live unrela
  async function candidate(dir,expected) {
   const child=spawn(process.execPath,[f.p.pi,...(dir === null ? ['--continue'] : ['--session-dir',dir])],{stdio:'ignore'})
   await new Promise((resolve,reject)=>{child.once('spawn',resolve);child.once('error',reject)})
-  try{await assert.rejects(nativeRecoveryEvidence({config,status:f.status,files}),error=>{assert.equal(error.code,expected,`scope probe stage: ${error.evidenceStage}; reason: ${error.processReason}`);if(expected === 'host_recovery_process_evidence_unavailable')assert.equal(error.processReason,'original_process_reference');return true})}
-  finally {const closed=new Promise(resolve=>child.once('exit',resolve));child.kill();await closed}
+  try{await assert.rejects(nativeRecoveryEvidence({config,status:f.status,files}),error=>{assert.equal(error.code,expected,`scope probe stage: ${error.evidenceStage}; reason: ${error.processReason}; blocking: ${JSON.stringify(error.blockingProcess)}`);if(expected === 'host_recovery_process_evidence_unavailable')assert.equal(error.processReason,'original_process_reference');assert.equal(child.exitCode,null,'scope probe must preserve its live unrelated child');return true})}
+  finally {if(child.exitCode === null){const closed=new Promise(resolve=>child.once('exit',resolve));child.kill();await closed}}
  }
  await candidate(null, 'herdr_observation_unknown')
  await candidate(path.join(f.config.sourceRoot,'.memoh-computer/sessions/original'), 'host_recovery_process_evidence_unavailable')
+})
+test('older recovery caller requires a real child edge, distinct scope, owner and session; an arbitrary earlier orphan stays unknown',()=>{
+ const priorCaller={...externalHerdr,id:60,parent:999,created:500,role:'node',scope:'other_program'}
+ const invoker={...scopeAnchor,id:70,parent:60,created:3000}
+ assert.equal(classifyRecoveryProcesses([priorCaller,invoker],{...scopeContext,recoveryPid:70}).absent,true)
+ assert.equal(classifyRecoveryProcesses([priorCaller],scopeContext).absent,false)
+ assert.equal(classifyRecoveryProcesses([{...priorCaller,originalReference:true},invoker],{...scopeContext,recoveryPid:70}).absent,false)
+ assert.equal(classifyRecoveryProcesses([{...priorCaller,ownerCurrent:false},invoker],{...scopeContext,recoveryPid:70}).absent,false)
+ assert.equal(classifyRecoveryProcesses([{...priorCaller,created:4000},invoker],{...scopeContext,recoveryPid:70}).absent,false)
 })

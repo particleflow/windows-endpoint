@@ -44,11 +44,22 @@ export async function attemptEvidence(config) {
 
 // Classify only observed generations. A shared binary/session label is not
 // ownership. A broken/reused parent chain never establishes unrelated work.
-export function classifyRecoveryProcesses(records, {oldPid, currentSession, runStart}) {
+export function classifyRecoveryProcesses(records, {oldPid, currentSession, runStart, recoveryPid}) {
   const byId = new Map(records.map(p=>[p.id,p])), excluded = []
-  const refuse = (reason,p) => ({absent:false,reason,excluded,blocked:p ? {pid:p.id,role:p.role} : undefined})
+  const refuse = (reason,p) => ({absent:false,reason,excluded,blocked:p ? {pid:p.id,role:p.role,ownerCurrent:p.ownerCurrent === true,sessionMatches:p.windowsSession === currentSession} : undefined})
   if(byId.has(oldPid)) return refuse('original_host_pid_present',byId.get(oldPid))
+  const callers = new Set(), callerSeen = new Set()
+  let caller=byId.get(recoveryPid)
+  for(let n=0;caller && n<64;n++) {
+    const parent=byId.get(caller.parent)
+    if(!parent || callerSeen.has(parent.id) || parent.id === oldPid || !Number.isSafeInteger(parent.created) || !Number.isSafeInteger(caller.created) || parent.created > caller.created) break
+    callerSeen.add(parent.id); callers.add(parent.id); caller=parent
+  }
   function externalChain(process) {
+    // A real link FROM the recovery invoker also proves an older caller's
+    // generation when that caller's own parent has since exited. This is not
+    // permission to exclude an arbitrary older PID or an original reference.
+    if(process.created < runStart && callers.has(process.id)) return true
     const seen = new Set([process.id]); let child = process
     for(let n=0;n<64;n++) {
       const parent=byId.get(child.parent)
@@ -98,7 +109,7 @@ export async function nativeRecoveryEvidence({config,status,files}) {
     const first = JSON.parse(raw.split('\n')[0])
     if(first.schema === 1 && first.runId === status.runId && first.phase === 'starting' && Number.isSafeInteger(first.at) && first.at <= status.updatedAt) runStart=first.at
   } catch { /* Missing start evidence cannot exclude a matching live process. */ }
-  const classified=classifyRecoveryProcesses(evidence.processes || [],{oldPid:status.pid,currentSession:evidence.currentSession,runStart})
+  const classified=classifyRecoveryProcesses(evidence.processes || [],{oldPid:status.pid,currentSession:evidence.currentSession,runStart,recoveryPid:process.pid})
   if(evidence.ownerVerified !== true || evidence.oldHostAbsent !== true || !classified.absent) {
     const failure=Object.assign(new Error('host_recovery_process_evidence_unavailable'),{code:'host_recovery_process_evidence_unavailable',evidenceStage:'process_absence'})
     failure.processReason=classified.reason; failure.blockingProcess=classified.blocked; throw failure
