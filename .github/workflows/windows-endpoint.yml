@@ -59,6 +59,8 @@ jobs:
             if ($errors.Count -ne 0) { throw 'TLS fixture PowerShell parse failed' }
           }
           Add-Type -Path ./official-smoke/fixture-job.cs
+          node ./official-smoke/private-fixture-encoding.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Private fixture Unicode roundtrip failed' }
       - name: Verify native PowerShell bootstrap and hash rejection
         if: runner.os == 'Windows'
         shell: powershell

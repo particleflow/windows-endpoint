@@ -41,6 +41,7 @@ export async function installedFixture(t) {
 export async function nativeInstalledFixture(t) {
   const f = await installedFixture(t), config = f.config
   config.schema = 3
+  config.runtimeId = config.deviceId
   delete config.agenvoConfigDir
   config.connector = { kind: 'memoh-runtime', enrollmentFile: path.join(f.base, 'native-enrollment/runtime.json') }
   const legacyRun = f.run

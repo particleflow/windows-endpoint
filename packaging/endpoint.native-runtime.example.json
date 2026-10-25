@@ -15,8 +15,8 @@
   "herdrConfigRoot": "<existing absolute Herdr configuration directory ending in herdr>",
   "herdrStateRoot": "<existing absolute Herdr state directory ending in herdr>",
   "piConfigDir": "<existing absolute Pi configuration directory>",
-  "deviceId": "<existing device UUID>",
-  "runtimeId": "<NAS-authorized Runtime UUID>",
+  "deviceId": "<same registered native Runtime UUID>",
+  "runtimeId": "<same registered native Runtime UUID>",
   "instanceId": "<existing Herdr instance ID>",
   "session": "<existing dedicated non-default Herdr service session>",
   "transfer": {

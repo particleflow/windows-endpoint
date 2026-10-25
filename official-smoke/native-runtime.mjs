@@ -22,7 +22,7 @@ const root = await fs.realpath(process.argv[4]), candidate = process.argv[5] ? a
 const node = path.join(bundle, 'node/node.exe'), hostRoot = path.join(root, 'host'), external = path.join(root, 'official configuration')
 const powershell = path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe')
 const endpoint = path.join(candidate || path.dirname(fileURLToPath(new URL('../endpoint.mjs', import.meta.url))), 'endpoint.mjs')
-const key = `mrk_${'c'.repeat(64)}`, teamId = randomUUID()
+const key = `mrk_${'c'.repeat(64)}`, teamId = randomUUID(), runtimeId = randomUUID()
 const { default: WebSocket } = await import(pathToFileURL(path.join(bundle, 'node_modules/ws/index.js')))
 const peer = await createRuntimePeer({ WebSocket, key, teamId, version: catalog.nativeRuntime.version, workspaceBase: await fs.realpath(os.homedir()) })
 const config = {
@@ -31,7 +31,7 @@ const config = {
     piBin: path.join(bundle, 'node_modules/.bin'), gitRoot: path.join(bundle, 'git'), connectorPackage: runtimePackage },
   connector: { kind: 'memoh-runtime', enrollmentFile: path.join(external, 'runtime/runtime.json') },
   sourceRoot: path.join(external, 'work'), herdrConfigRoot: path.join(external, 'config/herdr'), herdrStateRoot: path.join(external, 'state/herdr'),
-  piConfigDir: path.join(external, 'pi'), deviceId: randomUUID(), runtimeId: randomUUID(), instanceId: 'native-runtime-fixture', session: 'native-runtime-fixture',
+  piConfigDir: path.join(external, 'pi'), deviceId: runtimeId, runtimeId, instanceId: 'native-runtime-fixture', session: 'native-runtime-fixture',
   transfer: { pluginRoot: path.join(candidate || bundle, 'transfer'), nasOrigin: 'https://127.0.0.1:1/api' },
 }
 const transfer = transferLocations(config), credential = 'synthetic-native-runtime-empty-queue'
@@ -152,6 +152,7 @@ async function ping(generation) {
 async function progress() { try { return Number(await fs.readFile(path.join(config.sourceRoot, 'progress.txt'), 'utf8')) } catch (error) { if (error.code === 'ENOENT') return 0; throw error } }
 try {
   await stage('required_inputs', async () => {
+    for (const [file, content] of original) assert.deepEqual(await fs.readFile(file), Buffer.from(content), 'private fixture must preserve every original configuration byte')
     const p = programPaths(config)
     for (const file of [...original.keys(), p.node, p.herdr, p.pi, p.connector, p.git, path.join(p.gitRoot, 'cmd/git.exe'),
       path.join(p.piBin, 'pi'), path.join(p.piBin, 'pi.cmd'), path.join(config.programs.piPackage, 'package.json'), path.join(runtimePackage, 'package.json')]) assert.ok((await fs.stat(file)).isFile())

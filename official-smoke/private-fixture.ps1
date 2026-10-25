@@ -46,7 +46,9 @@ public static class FreshPrivateFixture {
 '@
 Trace-PrivateFixture 'compile' 'completed'
 Trace-PrivateFixture 'read_input' 'started'
-$inputData = Get-Content -Raw -LiteralPath $InputFile | ConvertFrom-Json
+# Node writes UTF-8 without a BOM. Windows PowerShell 5.1 otherwise decodes
+# this as the system ANSI code page, corrupting referenced Unicode paths.
+$inputData = Get-Content -Raw -Encoding UTF8 -LiteralPath $InputFile | ConvertFrom-Json
 $root = [IO.Path]::GetFullPath($inputData.root).TrimEnd('\') + '\'
 Trace-PrivateFixture 'read_input' 'completed'
 $objectIndex = 0

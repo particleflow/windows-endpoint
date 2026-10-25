@@ -35,6 +35,12 @@ enrollment file. Omitting `programs.connectorPackage` selects the connector in
 the current candidate, so a compatible program update needs no second path edit.
 The configured device/runtime mapping remains a declaration until verified by
 the NAS; a connected process does not grant task stopping authority.
+Schema 3 requires `deviceId` and `runtimeId` to contain the same registered native
+Runtime UUID. The proposed native file contract uses that UUID for both
+`connection_id` and `device_id`, and `herdr.instance_id` for `instance_id`; its
+source implementation has not yet been released or qualified here. This local
+declaration check does not clear the file-mapping diagnostic below or migrate
+any existing Agenvo identity, credential, HostBinding or queue.
 For legacy Agenvo use `examples/endpoint.references.example.json`; its Herdr
 binary still comes from the single matching instance in Agenvo `config.json`.
 The producer API base must match existing `transfer.json.origin` byte for byte.

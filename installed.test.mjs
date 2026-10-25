@@ -2,12 +2,36 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { inspectInstalled, inspectInstalledTransfer, compareProducerTarget, validateInstalledConfiguration, installedDoctor } from './installed.mjs'
 import { catalog, digest, validateConfig, managedEnvironment, programPaths, configure, main, transferLocations, transferEnvironment, componentRoots, connectorConfigReference, installationReferences, launchPlan } from './endpoint.mjs'
 import { validateRuntimeRequest, createExplicitRuntime } from './runtime.mjs'
 import { NativeDriver, LifecycleError, leaseKeys } from './lifecycle.mjs'
 import { transferCommand } from './transfer-lifecycle.mjs'
 import { installedFixture, nativeInstalledFixture } from './test-support/installed-fixture.mjs'
+import { deploymentReferences } from './deployment.mjs'
+
+test('native declarations require one registered Runtime UUID without rewriting an identity mismatch', async t => {
+  const f = await nativeInstalledFixture(t)
+  assert.equal(f.config.deviceId, f.config.runtimeId)
+  assert.equal(validateConfig(f.config), f.config)
+  const mismatch = { ...f.config, runtimeId: randomUUID() }, raw = JSON.stringify(mismatch)
+  assert.throws(() => validateConfig(mismatch), { code: 'native_runtime_identity_mismatch' })
+  assert.equal(JSON.stringify(mismatch), raw)
+})
+
+test('legacy schema1 and schema2 retain their distinct device and Runtime declarations', async t => {
+  const f = await installedFixture(t)
+  assert.notEqual(f.config.deviceId, f.config.runtimeId)
+  assert.equal(validateConfig(f.config), f.config)
+  const legacy = deploymentReferences(path.join(f.base, 'legacy-host'), {
+    manifestSha256: 'a'.repeat(64), nasOrigin: 'https://nas.example.test',
+    deviceId: f.config.deviceId, runtimeId: f.config.runtimeId, instanceId: f.config.instanceId, session: f.config.session,
+  })
+  assert.equal(legacy.schema, 1)
+  assert.equal(legacy.deviceId, f.config.deviceId); assert.equal(legacy.runtimeId, f.config.runtimeId)
+  assert.equal(validateConfig(legacy), legacy)
+})
 
 test('native Runtime references retain official programs and external state without reading enrollment or copying configuration', async t => {
   const f = await nativeInstalledFixture(t), original = JSON.stringify(f.config)

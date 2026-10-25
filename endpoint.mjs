@@ -115,6 +115,7 @@ export function validateConfig(config) {
     keys(config.programs, ['node', 'piPackage', 'piBin', 'gitRoot', ...(native ? ['herdr'] : ['connectorPackage'])], native ? ['connectorPackage'] : ['herdr'])
     for (const value of [...roots.map(k => config[k]), ...Object.values(config.programs)]) absolute(value)
     requireThat(uuidPattern.test(config.deviceId) && uuidPattern.test(config.runtimeId) && idPattern.test(config.instanceId) && idPattern.test(config.session) && config.session !== 'default', 'dedicated_session_required')
+    if (native) requireThat(config.deviceId === config.runtimeId, 'native_runtime_identity_mismatch')
     requireThat(path.basename(config.herdrConfigRoot) === 'herdr' && path.basename(config.herdrStateRoot) === 'herdr', 'herdr_root_name_required')
     const programs = programPaths(config)
     const programRoots = [path.dirname(programs.node), ...(programs.herdr ? [path.dirname(programs.herdr)] : []), config.programs.piPackage, config.programs.piBin, config.programs.gitRoot, connectorPackageRoot(config)]
