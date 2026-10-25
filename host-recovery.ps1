@@ -59,6 +59,18 @@ public static class RecoveryArgv {
     $records = @()
     $currentSession = [Diagnostics.Process]::GetCurrentProcess().SessionId
     foreach ($p in @(Get-CimInstance Win32_Process)) {
+        # Win32_Process can retain an exiting row with empty detail fields.
+        # One same-provider/same-generation recheck; a live unreadable process
+        # or PID reuse remains unknown. No looping, stop, or alternate arg read.
+        if ($p.Name -in @('node.exe','herdr.exe') -and (-not $p.ExecutablePath -or -not $p.CommandLine)) {
+            $fresh = @(Get-CimInstance Win32_Process -Filter ("ProcessId="+[int]$p.ProcessId) -OperationTimeoutSec 3)
+            if ($fresh.Count -eq 0) {
+                try { $live=[Diagnostics.Process]::GetProcessById([int]$p.ProcessId); $live.Dispose() }
+                catch [ArgumentException] { continue } # Observed absent, not merely unreadable.
+            } elseif ($fresh.Count -eq 1 -and $null -ne $p.CreationDate -and $fresh[0].CreationDate -eq $p.CreationDate -and $fresh[0].ParentProcessId -eq $p.ParentProcessId) {
+                $p = $fresh[0]
+            }
+        }
         $role = 'other'; $scope = 'unknown'; $referencesOriginal = $false
         $created = $null
         if ($null -ne $p.CreationDate) { $created = ([DateTimeOffset]$p.CreationDate.ToUniversalTime()).ToUnixTimeMilliseconds() }
