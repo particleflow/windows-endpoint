@@ -15,7 +15,7 @@ import { createRuntimePeer } from './native-runtime-peer.mjs'
 import { isFreshPiShellPrompt } from './pi-workload-diagnostics.mjs'
 
 assert.equal(process.platform, 'win32', 'native runtime fixture requires Windows')
-assert.ok(process.argv.length === 5 || process.argv.length === 6, 'official bundle, runtime package, fresh root, optional candidate')
+assert.ok(process.argv.length >= 5 && process.argv.length <= 7, 'official bundle, runtime package, fresh root, optional candidate and source file probe')
 const bundle = await fs.realpath(process.argv[2]), runtimePackage = await fs.realpath(process.argv[3])
 await fs.mkdir(process.argv[4])
 const root = await fs.realpath(process.argv[4]), candidate = process.argv[5] ? await fs.realpath(process.argv[5]) : null
@@ -160,6 +160,25 @@ try {
   })
   const installation = await stage('official_installation_preflight', () => inspectInstalled(config))
   process.stdout.write(JSON.stringify({ nativeRuntimePreflightVersions: installation.versions }) + '\n')
+  if (process.argv[6]) await stage('official_enrollment_read', async () => {
+    // This unchanged fixed-source reader is built only for CI, never shipped or
+    // substituted for the real CLI. It checks bytes/ACLs without writes/network.
+    const { readPrivateFile } = await import(pathToFileURL(await fs.realpath(process.argv[6])))
+    try { assert.equal(await readPrivateFile(config.connector.enrollmentFile), original.get(config.connector.enrollmentFile)) }
+    catch (error) {
+      const diagnostic = String(error.stderr || error.message || '')
+      const reasons = [
+        ['Runtime path cannot be a reparse point', 'runtime_enrollment_reparse'],
+        ['Runtime path has an untrusted owner', 'runtime_enrollment_owner'],
+        ['Runtime path grants unsafe access to another account', 'runtime_enrollment_access'],
+        ['runtime file changed while opening', 'runtime_enrollment_changed'],
+      ]
+      // Original PowerShell errors can contain their whole encoded command.
+      // Output only a known category; never emit paths, ACLs or file content.
+      const code = reasons.find(([text]) => diagnostic.includes(text))?.[1] || 'runtime_enrollment_read_unclassified'
+      throw Object.assign(new Error(code), { code })
+    }
+  })
   // Summary deliberately opens existing storage only. The native probe creates
   // this fresh empty queue; neither action admits work or sends a NAS request.
   assert.equal((await stage('transfer_inventory_preflight', () => inspectInstalledTransfer(config))).source, catalog.components.transfer.revision)

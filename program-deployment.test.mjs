@@ -175,7 +175,7 @@ test('an unresolved handoff acknowledgement prevents program switching without c
 test('native configuration refuses rollback to an Agenvo-only candidate without changing selection or external state', async t => {
   const f = await fixture(t)
   await apply(f, f.a); await apply(f, f.b, 'update')
-  const configuration = { ...f.config, schema: 3, programs: { ...f.config.programs, herdr: f.p.herdr },
+  const configuration = { ...f.config, schema: 3, runtimeId: f.config.deviceId, programs: { ...f.config.programs, herdr: f.p.herdr },
     connector: { kind: 'memoh-runtime', enrollmentFile: path.join(f.base, 'native/runtime.json') } }
   delete configuration.agenvoConfigDir
   await fs.writeFile(f.manager.configFile, JSON.stringify(configuration))

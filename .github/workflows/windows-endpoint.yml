@@ -144,6 +144,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Runtime locked dependency install failed' }
           pnpm --filter @memohai/runtime build
           if ($LASTEXITCODE -ne 0) { throw 'Official Runtime build failed' }
+          # Read-only diagnosis uses unchanged source, outside the product package.
+          pnpm --filter @memohai/runtime exec esbuild src/secure-files.ts --bundle --platform=node --format=esm --outfile='${{ runner.temp }}/endpoint-runtime-file-probe.mjs'
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime file probe build failed' }
       - name: Inventory fixed Runtime build without enrolling or starting it
         shell: pwsh
         run: |
@@ -174,7 +177,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Explicit component inventory failed' }
       - name: Exercise packaged native Runtime and independent owned Herdr across reconnect
         shell: pwsh
-        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint native Runtime host' -UntrustedOnly -NativeRuntime -RuntimePackage '${{ runner.temp }}/endpoint extracted candidate Unicode 空格/runtime-connector' -CandidateRoot '${{ runner.temp }}/endpoint extracted candidate Unicode 空格' | Tee-Object -FilePath '${{ runner.temp }}/endpoint-candidate-output/native-runtime-host.log'
+        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint native Runtime host' -UntrustedOnly -NativeRuntime -RuntimePackage '${{ runner.temp }}/endpoint extracted candidate Unicode 空格/runtime-connector' -RuntimeFileProbe '${{ runner.temp }}/endpoint-runtime-file-probe.mjs' -CandidateRoot '${{ runner.temp }}/endpoint extracted candidate Unicode 空格' | Tee-Object -FilePath '${{ runner.temp }}/endpoint-candidate-output/native-runtime-host.log'
       - name: Verify producer native fixtures (test dispatcher has fixture-only CA injection)
         shell: pwsh
         run: |

@@ -1,7 +1,7 @@
 # Opt-in, disposable GitHub-hosted CI ONLY. Changes only CurrentUser Root.
 # The test CA is never exported as an artifact or installed on a PC/NAS.
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$BundleRoot, [Parameter(Mandatory=$true)][string]$Root, [switch]$UntrustedOnly, [switch]$ExistingInstallations, [switch]$ReferencedTransfer, [switch]$PiWorkload, [switch]$NativeRuntime, [string]$RuntimePackage, [string]$ProducerSource, [string]$CandidateRoot)
+param([Parameter(Mandatory=$true)][string]$BundleRoot, [Parameter(Mandatory=$true)][string]$Root, [switch]$UntrustedOnly, [switch]$ExistingInstallations, [switch]$ReferencedTransfer, [switch]$PiWorkload, [switch]$NativeRuntime, [string]$RuntimePackage, [string]$RuntimeFileProbe, [string]$ProducerSource, [string]$CandidateRoot)
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows') { throw 'Disposable Windows GitHub runner required' }
 if ($ExistingInstallations -and -not $UntrustedOnly) { throw 'Installation references do not use OS trust mutation' }
@@ -98,6 +98,7 @@ if ($UntrustedOnly) {
     $scenarioArguments += (Join-Path $Root 'data')
     if ($ReferencedTransfer) { $scenarioArguments += '--existing-installations' }
     if ($CandidateRoot) { $scenarioArguments += (Resolve-Path -LiteralPath $CandidateRoot).Path }
+    if ($NativeRuntime -and $RuntimeFileProbe) { $scenarioArguments += (Resolve-Path -LiteralPath $RuntimeFileProbe).Path }
     if ($PiWorkload) { $scenarioArguments += (Resolve-Path -LiteralPath $ProducerSource).Path }
     Invoke-BoundedFixture -Stage 'untrusted_host' -Program $node -Arguments $scenarioArguments -Seconds 300
     return
