@@ -30,13 +30,15 @@ const powershell = path.join(process.env.SystemRoot, 'System32/WindowsPowerShell
 const endpoint = path.join(candidate || path.dirname(fileURLToPath(new URL('../endpoint.mjs', import.meta.url))), 'endpoint.mjs')
 const key = `mrk_${'c'.repeat(64)}`, teamId = randomUUID(), runtimeId = randomUUID()
 const { default: WebSocket } = await import(pathToFileURL(path.join(bundle, 'node_modules/ws/index.js')))
-const peer = await createRuntimePeer({ WebSocket, key, teamId, version: catalog.nativeRuntime.version, workspaceBase: await fs.realpath(os.homedir()) })
+const sourceRoot = path.join(external, 'work')
+assert.notEqual(sourceRoot, await fs.realpath(os.homedir()), 'project root must not be the user home')
+const peer = await createRuntimePeer({ WebSocket, key, teamId, version: catalog.nativeRuntime.version, workspaceBase: sourceRoot })
 const config = {
   schema: 3,
   programs: { node, herdr: path.join(bundle, 'herdr/herdr.exe'), piPackage: path.join(bundle, 'node_modules/@earendil-works/pi-coding-agent'),
     piBin: path.join(bundle, 'node_modules/.bin'), gitRoot: path.join(bundle, 'git'), connectorPackage: runtimePackage },
   connector: { kind: 'memoh-runtime', enrollmentFile: path.join(enrollmentRoot, 'runtime.json') },
-  sourceRoot: path.join(external, 'work'), herdrConfigRoot: path.join(external, 'config/herdr'), herdrStateRoot: path.join(external, 'state/herdr'),
+  sourceRoot, herdrConfigRoot: path.join(external, 'config/herdr'), herdrStateRoot: path.join(external, 'state/herdr'),
   piConfigDir: path.join(external, 'pi'), deviceId: runtimeId, runtimeId, instanceId: 'native-runtime-fixture', session: 'native-runtime-fixture',
   transfer: { pluginRoot: path.join(candidate || bundle, 'transfer'), nasOrigin: 'https://127.0.0.1:1/api' },
   transferConfigDir: path.join(external, 'native-file/config'), transferStateDir: path.join(external, 'native-file/state'),

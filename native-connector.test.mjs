@@ -14,6 +14,22 @@ async function fixture(t, body) {
   const entry = path.join(root, 'cli.mjs'), enrollmentFile = path.join(root, 'runtime.json')
   const credential = JSON.stringify({ synthetic: 'UNCHANGED NEVER READ BY THE ADAPTER' })
   await fs.writeFile(enrollmentFile, credential); await fs.writeFile(entry, body)
+  await fs.writeFile(path.join(root, 'endpoint-host-api.mjs'), `
+import assert from 'node:assert/strict'; import { writeFileSync } from 'node:fs'; import os from 'node:os';
+export class RuntimeSession { constructor(config, options) {
+  assert.equal(config.syntheticEnrollment, 'retained'); assert.deepEqual(options, { syntheticOption: true });
+  writeFileSync('session-reference.json', JSON.stringify({ config, home: os.homedir(), envHome: process.env.HOME, userProfile: process.env.USERPROFILE }));
+} }
+export const formatCLIError = e => e.message;
+export function runCLI(args, context) {
+  assert.deepEqual(args, ['run', '--config', process.argv[4]]);
+  context.createSession({ workspaceBase: os.homedir(), syntheticEnrollment: 'retained' }, { syntheticOption: true });
+  // Preserve the early-stop test while loading the synthetic CLI body. The
+  // actual official run installs its handler synchronously before first await.
+  let early = false; const pending = () => { early = true }; process.once('SIGTERM', pending);
+  return import('./cli.mjs').then(() => { process.off('SIGTERM', pending); if (early) process.emit('SIGTERM'); return process.exitCode || 0 });
+}
+`)
   const connector = new NativeRuntimeConnector({ node: process.execPath, entry, enrollmentFile, cwd: root, env: { ...process.env },
     deviceId: 'synthetic-device', runtimeId: 'synthetic-runtime', version: '0.22.0' })
   t.after(async () => {
@@ -86,6 +102,16 @@ test('bridge runs the original CLI arguments and graceful stop waits for actual 
   assert.equal(connector.confirmedExit(), true); assert.equal(connector.alive(), false)
   const next = connector.start(); assert.notEqual(next.process.pid, c.process.pid)
   await until(() => connector.status()?.state === 'online'); await connector.stop()
+})
+
+test('session factory maps the project root without changing enrollment or the real home environment', async t => {
+  const { connector, root } = await fixture(t, normal)
+  connector.start(); await until(() => connector.status()?.state === 'online')
+  const observed = JSON.parse(await fs.readFile(path.join(root, 'session-reference.json')))
+  assert.equal(observed.config.workspaceBase, root); assert.notEqual(root, os.homedir())
+  assert.equal(observed.config.syntheticEnrollment, 'retained')
+  assert.equal(observed.home, os.homedir()); assert.equal(observed.envHome, process.env.HOME); assert.equal(observed.userProfile, process.env.USERPROFILE)
+  await connector.stop()
 })
 
 test('stop sent before CLI import remains pending and does not skip its own cleanup', async t => {

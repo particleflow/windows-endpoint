@@ -1,4 +1,4 @@
-// Product-local IPC bridge to the unchanged official foreground CLI. The IPC
+// Product-local IPC bridge to the unchanged official foreground CLI logic. The IPC
 // channel belongs to the spawning host; it is not a remote stop/auth endpoint.
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -33,13 +33,21 @@ if (!process.send || !path.isAbsolute(entry || '') || !path.isAbsolute(enrollmen
 } else {
   try {
     process.argv = [process.execPath, entry, 'run', '--config', enrollmentFile]
-    // cli.ts starts runCLI without top-level await. Its run installs signal
-    // handlers before awaiting the official secure enrollment reader. An early
-    // IPC stop remains pending until those handlers are installed.
-    await import(pathToFileURL(entry).href)
+    // This extra build entry exports unchanged official functions. runCLI has
+    // no workspace flag and otherwise uses homedir(), not cwd. Override only
+    // its existing session factory: enrollment paths, HOME/USERPROFILE, TLS,
+    // retry and signal handling stay official. cwd is the validated sourceRoot.
+    const { runCLI, formatCLIError, RuntimeSession } = await import(pathToFileURL(path.join(path.dirname(entry), 'endpoint-host-api.mjs')).href)
+    const running = runCLI(['run', '--config', enrollmentFile], {
+      createSession: (config, options) => new RuntimeSession({ ...config, workspaceBase: process.cwd() }, options),
+    })
+    // The official function installs signal handlers before its first await.
+    // Do not wait for the entire session before accepting an early stop.
     loaded = true
     report('loaded')
     if (stopping) stop()
+    running.then(code => { process.exitCode = invalidControl ? 2 : code })
+      .catch(error => { console.error(formatCLIError(error)); process.exitCode = invalidControl ? 2 : 1 })
   } catch {
     report('load_failed')
     process.exitCode = 2

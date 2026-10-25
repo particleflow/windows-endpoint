@@ -11,9 +11,15 @@ reviewed CI run. These inventories are build evidence, not release signatures.
 
 Pi, Herdr, Node and Git are **not copied into this package**. Use their existing
 official installations/configuration. The native connector uses the original
-Memoh Runtime CLI and its existing enrollment file; the host owns its foreground
+Memoh Runtime CLI logic and its existing enrollment file; the host owns its foreground
 process, with no separate Runtime daemon registration. The legacy Agenvo mode
 remains available through its existing external installation/configuration.
+The endpoint build exports the unchanged official `runCLI` session factory and
+`RuntimeSession`. The host sets that session's `workspaceBase` to its already
+configured `sourceRoot`; `/data` therefore maps to the project, not the Windows
+user home. It does not change `HOME`, enrollment, ACLs, credentials or the
+official source. This is a default path mapping, **not a filesystem sandbox**:
+official HostFS also supports absolute host paths under the existing authority.
 The producer's unchanged review
 bundle includes two test executables and its fixture script; these are identified
 in `candidate.json` and are not new services or user setup steps. The included
@@ -182,6 +188,11 @@ admission barrier or active Pi upgrade handoff is claimed. A changed program-sta
 profile or producer revision refuses compatibility; no data-format migration or
 automatic rollback follows a startup failure. Ordinary shell checkpoints and all
 original data are retained. Keep old packages; no cleanup or uninstall is added.
+Native-mode selection refuses older candidates without
+`native_runtime_project_root`, including `41ddb9be`, so rollback cannot silently
+restore the previous home mapping. Switching requires the same normal stop and
+task reconciliation as other program updates. No existing attempt's WorkDir,
+configuration root, receipt or unknown result is rewritten by this correction.
 The older `2009333` portable candidate remains runnable directly but lacks this
 managed-deployment profile and cannot be silently adopted into this journal.
 

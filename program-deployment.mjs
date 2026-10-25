@@ -27,6 +27,19 @@ const describe = result => ({ ...result, evidence: 'endpoint_program_transaction
   qualification: 'not-for-production-release', officialComponentsChanged: false, queueAdvanced: false })
 
 export class ProgramDeployment extends DeploymentTransactions {
+  async projectRoot(target) {
+    if (!isNativeRuntimeConfig(this.config)) return
+    const verified = await this.verify(path.join(this.layout.packages, target), target)
+    demand(verified.manifest.native_runtime, 'deployment_native_connector_missing')
+    demand(verified.manifest.native_runtime_project_root, 'deployment_native_project_root_unsupported')
+  }
+  async selectionCheck(state, target, mode) {
+    // Check the version to be selected, not the preserved previous inventory.
+    // Otherwise adding this requirement would also prevent upgrading the old
+    // home-mapped version to the corrected program.
+    await this.projectRoot(target)
+    return super.selectionCheck(state, target, mode)
+  }
   async unchanged() {
     demand(await optional(this.configFile) === this.configRaw && await optional(this.runtimeFile) === this.runtimeRaw, 'deployment_configuration_changed')
   }
@@ -110,6 +123,7 @@ export async function runSelectedProgram(root, { input = process.stdin, output =
     demand(state.pending === null, 'deployment_recovery_required')
     demand(state.current !== null, 'deployment_not_installed')
     const owned = await manager.owned(state, state.current)
+    await manager.projectRoot(state.current)
     demand(owned.profile === programProfileHash, 'deployment_state_profile_changed')
     await manager.unchanged()
     const target = path.join(manager.layout.packages, state.current, 'host.mjs')

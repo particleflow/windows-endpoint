@@ -37,7 +37,7 @@ class RuntimePackageTests(unittest.TestCase):
         self.commit = runtime.git(self.source, 'rev-parse', 'HEAD').decode().strip()
         self.dist = self.source / 'packages/runtime/dist'
         self.dist.mkdir()
-        for name in ['cli.mjs', 'index.mjs', 'index.d.ts', 'index.d.ts.map', 'bridge.proto']:
+        for name in ['cli.mjs', 'index.mjs', 'index.d.ts', 'index.d.ts.map', 'bridge.proto', 'endpoint-host-api.mjs']:
             (self.dist / name).write_bytes(b'INERT SOURCE FIXTURE\n')
 
     def collect(self, name='output'):
@@ -46,9 +46,11 @@ class RuntimePackageTests(unittest.TestCase):
     def test_complete_fixed_source_and_outputs_are_hashed_without_mutable_inputs(self):
         (self.source / 'credentials.json').write_text('EXCLUDED SYNTHETIC INPUT', encoding='utf-8')
         result = self.collect()
-        self.assertEqual(result['files'], 7)
+        self.assertEqual(result['files'], 8)
         proof = json.loads((self.base / 'output/SHA256SUMS.json').read_bytes())
         self.assertEqual(proof['source_commit'], self.commit)
+        self.assertEqual(proof['endpoint_adapter'], {'recipe': 'packaging/build_runtime_host.mjs',
+            'sha256': runtime.sha((ROOT / 'packaging/build_runtime_host.mjs').read_bytes().replace(b'\r\n', b'\n'))})
         self.assertIn('pnpm-lock.yaml', [item['path'] for item in proof['inputs']])
         for item in proof['files']:
             data = (self.base / 'output' / item['path']).read_bytes()
@@ -84,7 +86,7 @@ class RuntimePackageTests(unittest.TestCase):
             self.collect()
         self.assertFalse((self.base / 'output').exists())
         proto.write_bytes(original)
-        self.assertEqual(self.collect()['files'], 7)
+        self.assertEqual(self.collect()['files'], 8)
 
 
 if __name__ == '__main__':

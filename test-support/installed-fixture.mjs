@@ -47,6 +47,7 @@ export async function nativeInstalledFixture(t) {
   const legacyRun = f.run
   f.p.connector = programPaths(config).connector
   await f.write(f.p.connector, 'INERT NATIVE RUNTIME; NEVER EXECUTE')
+  await f.write(path.join(path.dirname(f.p.connector), 'endpoint-host-api.mjs'), 'INERT ENDPOINT BUILD ENTRY; NEVER EXECUTE')
   await f.write(path.join(config.programs.connectorPackage, 'package.json'), JSON.stringify({ name: '@memohai/runtime', version: '0.22.0' }))
   await f.write(config.connector.enrollmentFile, 'SYNTHETIC UNREAD ENROLLMENT')
   f.run = (file, args, env) => {

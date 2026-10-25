@@ -25,7 +25,7 @@ class CandidateTests(unittest.TestCase):
         subprocess.run(['git', 'init', '-q', str(self.source)], check=True)
         (self.source / 'LICENSE').write_bytes((ROOT / 'LICENSE').read_bytes())
         self.pin = self.commit('synthetic producer license')
-        for name in (*pack.RUNTIME_FILES, *pack.TEMPLATES):
+        for name in (*pack.RUNTIME_FILES, *pack.TEMPLATES, 'packaging/build_runtime_host.mjs'):
             destination = self.source / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, destination)
@@ -49,6 +49,7 @@ class CandidateTests(unittest.TestCase):
             'LICENSE': b'SYNTHETIC LICENSE',
             'dist/cli.mjs': b"if (process.argv[2] === 'version') console.log('0.22.0'); else process.exitCode = 2;\n",
             'dist/index.mjs': b'export class RuntimeSession {}\n',
+            'dist/endpoint-host-api.mjs': b'// INERT ENDPOINT ENTRY\n',
             'dist/index.d.ts': b'export declare class RuntimeSession {}\n',
             'dist/bridge.proto': b'INERT PROTOCOL FIXTURE\n',
         }
@@ -59,7 +60,9 @@ class CandidateTests(unittest.TestCase):
             target.write_bytes(data)
             entries.append({'path': name, 'size': len(data), 'sha256': pack.sha(data)})
         (self.runtime / 'SHA256SUMS.json').write_text(json.dumps({'schema': 1, 'kind': 'memoh-runtime-source-build', 'source_repository': 'particleflow/Memoh', 'source_commit': self.pin,
-            'package_name': '@memohai/runtime', 'package_version': '0.22.0', 'files': entries}), encoding='utf-8')
+            'package_name': '@memohai/runtime', 'package_version': '0.22.0',
+            'endpoint_adapter': {'recipe': 'packaging/build_runtime_host.mjs', 'sha256': pack.sha((self.source / 'packaging/build_runtime_host.mjs').read_bytes().replace(b'\r\n', b'\n'))},
+            'files': entries}), encoding='utf-8')
 
     def commit(self, message):
         subprocess.run(['git', '-C', str(self.source), 'add', '.'], check=True)
@@ -84,6 +87,7 @@ class CandidateTests(unittest.TestCase):
             self.assertEqual(manifest['native_runtime']['commit'], self.pin)
             self.assertTrue(manifest['native_transfer_directory_pair'])
             self.assertTrue(manifest['native_transfer_direct_cli'])
+            self.assertTrue(manifest['native_runtime_project_root'])
             self.assertIn('runtime-connector/dist/cli.mjs', names)
             self.assertEqual(set(names), {f['path'] for f in manifest['files']} | {'candidate.json'})
             for entry in manifest['files']:

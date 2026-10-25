@@ -119,6 +119,15 @@ test('native Runtime package and foreground protocol must match before being con
   await assert.rejects(inspectInstalled(f.config, f.run), { code: 'installation_package_mismatch' })
 })
 
+test('native startup rejects a CLI-only package instead of silently advertising the user home', async t => {
+  const f = await nativeInstalledFixture(t)
+  await fs.unlink(path.join(path.dirname(f.p.connector), 'endpoint-host-api.mjs'))
+  const before = await fs.readFile(f.config.connector.enrollmentFile)
+  await assert.rejects(inspectInstalled(f.config, f.run), { code: 'native_runtime_project_root_unsupported' })
+  assert.equal(f.calls.length, 0)
+  assert.deepEqual(await fs.readFile(f.config.connector.enrollmentFile), before)
+})
+
 test('native connection selection never imports an existing Herdr task or rewrites saved history', async t => {
   const f = await nativeInstalledFixture(t)
   const file = path.join(f.config.herdrConfigRoot, 'sessions', f.config.session, 'session.json')

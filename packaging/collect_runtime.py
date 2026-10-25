@@ -2,7 +2,7 @@
 """Inventory an unchanged official Runtime build from an exact public checkout.
 
 Does not fetch, install dependencies, enroll, start a runtime or change trust.
-CI first runs the package's existing locked build, then invokes this collector.
+CI runs the locked official build and endpoint's session-factory entry build.
 """
 import argparse
 import hashlib
@@ -64,7 +64,7 @@ def collect(source, commit, output):
         if not name.endswith(('.mjs', '.d.ts', '.d.ts.map', '.proto')):
             raise ValueError('unexpected Runtime output')
         payload[name] = regular(file)
-    if not {'dist/cli.mjs', 'dist/index.mjs', 'dist/index.d.ts', 'dist/bridge.proto'} <= payload.keys():
+    if not {'dist/cli.mjs', 'dist/index.mjs', 'dist/index.d.ts', 'dist/bridge.proto', 'dist/endpoint-host-api.mjs'} <= payload.keys():
         raise ValueError('incomplete official Runtime build')
     if payload['dist/bridge.proto'] != inputs['internal/workspace/bridgepb/bridge.proto']:
         raise ValueError('Runtime protocol differs from fixed source')
@@ -72,6 +72,8 @@ def collect(source, commit, output):
         'schema': 1, 'kind': 'memoh-runtime-source-build', 'source_repository': 'particleflow/Memoh',
         'source_commit': commit, 'package_name': metadata['name'], 'package_version': metadata['version'],
         'package_manager': metadata['packageManager'],
+        'endpoint_adapter': {'recipe': 'packaging/build_runtime_host.mjs',
+                             'sha256': sha(regular(Path(__file__).with_name('build_runtime_host.mjs')).replace(b'\r\n', b'\n'))},
         'inputs': [{'path': name, 'sha256': sha(data)} for name, data in inputs.items()],
         'files': [{'path': name, 'size': len(data), 'sha256': sha(data)} for name, data in sorted(payload.items())],
     }

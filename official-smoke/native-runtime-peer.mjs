@@ -19,7 +19,7 @@ export function validateRuntimeHandshake(request, expected) {
   assert.equal(metadata.version, 1)
   assert.equal(metadata.os, expected.os || 'win32'); assert.equal(metadata.arch, expected.arch || 'x64')
   assert.equal(metadata.client_version, expected.version)
-  assert.equal(metadata.workspace_base, expected.workspaceBase, 'official CLI default directory remains explicit evidence')
+  assert.equal(metadata.workspace_base, expected.workspaceBase, 'Runtime workspace must match the endpoint project root')
   assert.equal(typeof metadata.hostname, 'string'); assert.ok(metadata.hostname.length > 0)
   assert.deepEqual([...metadata.capabilities].sort(), ['exec', 'fs', 'host_fs'])
   return metadata

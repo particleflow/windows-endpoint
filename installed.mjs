@@ -175,6 +175,10 @@ export async function inspectInstalled(config, run = probe, { inspectHistoryOnly
   const pi = await json(path.join(config.programs.piPackage, 'package.json'))
   const connector = await json(path.join(config.programs.connectorPackage, 'package.json'))
   const native = isNativeRuntimeConfig(config)
+  if (native) {
+    try { await regular(path.join(config.programs.connectorPackage, 'dist/endpoint-host-api.mjs')) }
+    catch (error) { if (error.code === 'ENOENT') throw new EndpointError('native_runtime_project_root_unsupported'); throw error }
+  }
   demand(pi.name === '@earendil-works/pi-coding-agent' && connector.name === (native ? '@memohai/runtime' : '@agenvo/herdr'), 'installation_package_mismatch')
   const launcher = path.join(p.piBin, 'pi')
   demand((await regular(launcher)).size <= 16384, 'installation_launcher_invalid')

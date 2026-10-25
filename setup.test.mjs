@@ -9,6 +9,7 @@ import { setupEndpoint, setupMain } from './setup.mjs'
 import { catalog, digest } from './endpoint.mjs'
 import { acquireLeases, leaseKeys } from './lifecycle.mjs'
 import { programDeployment, programDeploymentMain } from './program-deployment.mjs'
+import { DeploymentTransactions } from './deployment.mjs'
 import { installedFixture, nativeInstalledFixture } from './test-support/installed-fixture.mjs'
 import { programPackage } from './test-support/program-package.mjs'
 
@@ -18,9 +19,10 @@ async function fixture(t, native = false) {
   const candidate = await programPackage(path.join(f.base, 'candidate'))
   if (native) {
     // Synthetic source-built inventory only; never execute these component bytes.
-    const names = ['package.json', 'dist/cli.mjs', 'dist/index.mjs', 'dist/bridge.proto']
+    const names = ['package.json', 'dist/cli.mjs', 'dist/index.mjs', 'dist/bridge.proto', 'dist/endpoint-host-api.mjs']
     const proof = { schema: 1, kind: 'memoh-runtime-source-build', source_repository: 'particleflow/Memoh', source_commit: catalog.nativeRuntime.revision,
-      package_name: '@memohai/runtime', package_version: catalog.nativeRuntime.version, files: [] }
+      package_name: '@memohai/runtime', package_version: catalog.nativeRuntime.version,
+      endpoint_adapter: { recipe: 'packaging/build_runtime_host.mjs', sha256: 'a'.repeat(64) }, files: [] }
     for (const name of names) {
       const file = path.join(candidate.directory, 'runtime-connector', name)
       await f.write(file, name === 'package.json' ? JSON.stringify({ name: proof.package_name, version: proof.package_version }) : 'SYNTHETIC NOT EXECUTABLE')
@@ -34,6 +36,7 @@ async function fixture(t, native = false) {
     }
     candidate.manifest.native_runtime = { repository: 'particleflow/Memoh', commit: catalog.nativeRuntime.revision, version: catalog.nativeRuntime.version,
       entry: catalog.nativeRuntime.entry, provenance: 'runtime-connector/SHA256SUMS.json' }
+    candidate.manifest.native_runtime_project_root = true
     await fs.writeFile(path.join(candidate.directory, 'candidate.json'), JSON.stringify(candidate.manifest))
     candidate.hash = await digest(path.join(candidate.directory, 'candidate.json'))
     delete f.config.programs.connectorPackage
@@ -73,6 +76,41 @@ test('native setup resolves its candidate connector for preflight, preserves omi
   assert.equal(JSON.parse(await fs.readFile(f.files.config)).programs.connectorPackage, undefined)
   assert.equal(await exists(f.config.connector.enrollmentFile), false)
   assert.equal(result.prerequisites, 'blocked'); assert.equal(result.credentialsWritten, false)
+})
+
+test('native setup rejects home-mapped candidates before writing configuration', async t => {
+  const f = await fixture(t, true)
+  delete f.candidate.manifest.native_runtime_project_root
+  await fs.writeFile(path.join(f.candidate.directory, 'candidate.json'), JSON.stringify(f.candidate.manifest))
+  f.options.manifestSha256 = await digest(path.join(f.candidate.directory, 'candidate.json'))
+  await assert.rejects(setupEndpoint(f.options, { doctor: blocked }), { code: 'deployment_native_project_root_unsupported' })
+  assert.equal(await exists(f.options.root), false)
+})
+
+test('stopped home-mapped inventory can upgrade, but restart and rollback cannot silently restore home mapping', async t => {
+  const f = await fixture(t, true)
+  await setupEndpoint(f.options, { doctor: blocked })
+  const currentHash = f.candidate.hash
+  delete f.candidate.manifest.native_runtime_project_root
+  const manifestFile = path.join(f.candidate.directory, 'candidate.json')
+  await fs.writeFile(manifestFile, JSON.stringify(f.candidate.manifest))
+  const oldHash = await digest(manifestFile), legacy = await programDeployment(f.options.root)
+  await legacy.stage(f.candidate.directory, oldHash)
+  // Reproduce the recorded selection made by the previous program, which had
+  // no workspace capability check. Only this isolated fixture uses that rule.
+  legacy.selectionCheck = DeploymentTransactions.prototype.selectionCheck.bind(legacy)
+  await legacy.select(oldHash, 'update')
+  const config = await fs.readFile(f.files.config), enrollment = await fs.readFile(f.config.connector.enrollmentFile)
+  await assert.rejects(programDeploymentMain(['run', '--root', f.options.root]), { code: 'deployment_native_project_root_unsupported' })
+  f.candidate.manifest.native_runtime_project_root = true
+  await fs.writeFile(manifestFile, JSON.stringify(f.candidate.manifest))
+  assert.equal(await digest(manifestFile), currentHash)
+  assert.equal((await programDeploymentMain(['update', '--root', f.options.root, '--source', f.candidate.directory, '--manifest-sha256', currentHash])).state, 'selected_review_only')
+  const manager = await programDeployment(f.options.root), journal = await fs.readFile(manager.file)
+  await assert.rejects(programDeploymentMain(['rollback', '--root', f.options.root, '--manifest-sha256', oldHash]), { code: 'deployment_native_project_root_unsupported' })
+  assert.deepEqual(await fs.readFile(manager.file), journal)
+  assert.deepEqual(await fs.readFile(f.files.config), config)
+  assert.deepEqual(await fs.readFile(f.config.connector.enrollmentFile), enrollment)
 })
 
 test('explicit native file directories reject an older candidate before creating the host root', async t => {

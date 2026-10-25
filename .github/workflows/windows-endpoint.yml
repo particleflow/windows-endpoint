@@ -144,6 +144,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Runtime locked dependency install failed' }
           pnpm --filter @memohai/runtime build
           if ($LASTEXITCODE -ne 0) { throw 'Official Runtime build failed' }
+          node ../packaging/build_runtime_host.mjs .
+          if ($LASTEXITCODE -ne 0) { throw 'Endpoint Runtime session-factory entry build failed' }
           # Read-only diagnosis uses unchanged source, outside the product package.
           pnpm --filter @memohai/runtime exec esbuild src/secure-files.ts --bundle --platform=node --format=esm --outfile='${{ runner.temp }}/endpoint-runtime-file-probe.mjs'
           if ($LASTEXITCODE -ne 0) { throw 'Runtime file probe build failed' }

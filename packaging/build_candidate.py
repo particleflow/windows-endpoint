@@ -78,7 +78,7 @@ def runtime_payload(root, pin):
         if sha(data) != entry.get('sha256') or len(data) != entry.get('size'):
             raise ValueError('Runtime hash mismatch')
         payload[name] = data
-    if not {'package.json', 'LICENSE', 'dist/cli.mjs', 'dist/index.mjs', 'dist/index.d.ts', 'dist/bridge.proto'} <= payload.keys():
+    if not {'package.json', 'LICENSE', 'dist/cli.mjs', 'dist/index.mjs', 'dist/index.d.ts', 'dist/bridge.proto', 'dist/endpoint-host-api.mjs'} <= payload.keys():
         raise ValueError('Runtime entry missing')
     actual = []
     for file in root.rglob('*'):
@@ -105,7 +105,12 @@ def build(source, commit, producer, producer_source, output, native_runtime=None
     if native:
         if native_runtime is None:
             raise ValueError('fixed-source Runtime build required')
-        payload.update(runtime_payload(native_runtime, native))
+        runtime = runtime_payload(native_runtime, native)
+        proof = json.loads(runtime['runtime-connector/SHA256SUMS.json'])
+        recipe = 'packaging/build_runtime_host.mjs'
+        if proof.get('endpoint_adapter') != {'recipe': recipe, 'sha256': sha(committed(source, commit, recipe).replace(b'\r\n', b'\n'))}:
+            raise ValueError('Runtime endpoint adapter recipe mismatch')
+        payload.update(runtime)
     pin = catalog['components']['transfer']['revision']
     proof_file = producer / 'SHA256SUMS.json'
     if proof_file.is_symlink():
@@ -155,6 +160,7 @@ def build(source, commit, producer, producer_source, output, native_runtime=None
                                       'entry': native['entry'], 'provenance': 'runtime-connector/SHA256SUMS.json'}
         manifest['native_transfer_directory_pair'] = True
         manifest['native_transfer_direct_cli'] = True
+        manifest['native_runtime_project_root'] = True
     manifest_bytes = (json.dumps(manifest, indent=2) + '\n').encode()
     payload['candidate.json'] = manifest_bytes
     output.mkdir(parents=True, exist_ok=False)
