@@ -8,8 +8,8 @@ import { validateDirectory, programPaths, managedEnvironment } from './endpoint.
 
 const stamp = s => [s.dev, s.ino, s.size, s.mtimeMs, s.ctimeMs, s.nlink].join(':')
 const fail = code => { throw Object.assign(new Error(code), { code }) }
-export async function boundedRead(file, limit) {
-  await validateDirectory(path.dirname(file))
+export async function boundedRead(file, limit, { workspace = false } = {}) {
+  await validateDirectory(path.dirname(file), { workspace })
   const before = await fs.lstat(file)
   if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1) fail('unsafe_path')
   if (before.size > limit) fail('over_read_limit')

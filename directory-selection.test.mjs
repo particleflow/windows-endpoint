@@ -6,7 +6,7 @@ import os from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { pickDirectory } from './directory-selection.mjs'
-import { configure, main } from './endpoint.mjs'
+import { configure, main, isWindowsUNCWorkspacePath, validateConfig } from './endpoint.mjs'
 import { nativeInstalledFixture } from './test-support/installed-fixture.mjs'
 
 test('directory selection returns the exact existing Unicode path without writing or granting a binding', async t => {
@@ -74,6 +74,36 @@ test('a picker cannot bypass the existing overlap guard or introduce arbitrary p
     chooseDirectory: async () => ({ state: 'selected', path: f.config.piConfigDir }) }), { code: 'component_data_overlap' })
   await assert.rejects(fs.stat(output), { code: 'ENOENT' })
   await assert.rejects(main(['configure', '--from', input, '--config', output, '--browse-source-root', 'arbitrary.exe']), { code: 'invalid_arguments' })
+})
+
+test('changing the reference input while the folder dialog is open never saves a stale binding', async t => {
+  const f = await nativeInstalledFixture(t), input = path.join(f.base, 'input.json'), output = path.join(f.base, 'output.json')
+  await fs.writeFile(input, JSON.stringify(f.config))
+  const current = { ...f.config, session: 'changed-by-owner' }
+  await assert.rejects(configure(input, output, undefined, { browseSourceRoot: true, chooseDirectory: async () => {
+    await fs.writeFile(input, JSON.stringify(current)); return { state: 'selected', path: f.config.sourceRoot }
+  } }), { code: 'directory_picker_configuration_changed' })
+  await assert.rejects(fs.stat(output), { code: 'ENOENT' })
+  assert.deepEqual(JSON.parse(await fs.readFile(input)), current)
+})
+
+test('UNC workspace syntax accepts shares without drive mappings and rejects URLs, device namespaces and aliases', () => {
+  for (const value of ['\\\\synthetic-server\\share', '\\\\synthetic-server\\share\\', '\\\\192.0.2.20\\share\\work 空格'])
+    assert.equal(isWindowsUNCWorkspacePath(value), true, value)
+  for (const value of ['https://example.test/work', '192.0.2.20', '\\\\server', '\\\\?\\C:\\work', '\\\\.\\pipe\\name',
+    '\\\\server\\share\\..\\other', '\\\\server\\share\\folder.', '\\\\server\\share\\file:stream', '\\\\server\\share\\a\u0000b'])
+    assert.equal(isWindowsUNCWorkspacePath(value), false, value)
+})
+
+if (process.platform === 'win32') test('UNC is a workspace reference only; component paths and original config remain protected', async t => {
+  const f = await nativeInstalledFixture(t), original = JSON.stringify(f.config), share = '\\\\synthetic-server\\existing-share\\work'
+  // Syntax/config checks only: never contact or create a share in CI.
+  const config = { ...f.config, sourceRoot: share }
+  assert.equal(validateConfig(config).sourceRoot, share)
+  for (const key of ['herdrConfigRoot', 'herdrStateRoot', 'piConfigDir'])
+    assert.throws(() => validateConfig({ ...config, [key]: share + '\\herdr' }), { code: 'local_drive_required' })
+  assert.throws(() => validateConfig({ ...config, programs: { ...config.programs, node: share + '\\node.exe' } }), { code: 'local_drive_required' })
+  assert.equal(JSON.stringify(f.config), original)
 })
 
 if (process.platform === 'win32') test('official Windows folder dialog assembly is available without opening UI or changing configuration', () => {

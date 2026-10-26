@@ -65,11 +65,17 @@ access. This batch does not implement that NAS admission decision. Off LAN must
 disable that NAS action, not local directory selection. Neither a saved
 label nor a selected path proves LAN/authentication or grants task execution.
 
-Compatibility gap to coordinate: Memoh workdir browsing accepts Windows UNC,
-but the endpoint's `absolute()` still requires a drive path for `sourceRoot`,
-and the existing native task target validator also requires a drive path.
-Picker success therefore does **not** claim UNC task activation. Do not remove
-program/config/identity path checks globally to add workspace UNC support.
+Memoh workdir browsing and task `WorkDir` validation already accept Windows UNC.
+The endpoint now accepts UNC only for schema 2/3 `sourceRoot` and the associated
+workspace/attempt reads. Program paths, private component configuration and host
+installation paths keep their original local-drive restrictions. Existing
+filesystem/canonical/reparse checks still run; a selected or syntactically valid
+UNC path alone does not prove the share is reachable or authenticated. No old
+queue binding or task root is rewritten to the new selection.
+The existing candidate manifest marks `workspace_unc_source_root`; selecting or
+starting an older reader without this capability refuses before changing the
+program selector. It is a program compatibility check, not a new approval or
+storage registry.
 The NAS/Web owner owns the settings persistence, LAN decision and task-side
 contract; this repository owns the foreground chooser/configure integration.
 
@@ -79,7 +85,8 @@ reported. A task actively using an unavailable NAS share cannot be promised to
 continue filesystem I/O. W04 remains same-task reconnect without replay. No
 offline replica or replacement task is created to conceal a failed dependency.
 
-Automated tests cover selection/cancel/error contracts, existing config and
-data preservation, overlap checks, and Windows dialog assembly loading without
+Automated tests cover selection/cancel/error contracts, input changes while the
+dialog is open, existing config/data preservation, UNC workspace scope, overlap
+checks, and Windows dialog assembly loading without
 opening UI. Actual interactive clicks, a user's mapped share/UNC credentials,
 LAN admission and NAS settings composition still require their own acceptance.

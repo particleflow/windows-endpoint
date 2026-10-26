@@ -24,13 +24,13 @@ export async function attemptEvidence(config) {
   const root = path.join(config.sourceRoot, '.memoh-computer', 'attempts'), files = []
   let bytes = 0
   async function walk(directory, prefix = '') {
-    await validateDirectory(directory)
+    await validateDirectory(directory, { workspace: true })
     for (const entry of (await fs.readdir(directory, {withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))) {
       demand(!entry.isSymbolicLink(), 'host_recovery_attempt_unsafe')
       const name = prefix + entry.name, file = path.join(directory,entry.name)
       if (entry.isDirectory()) await walk(file,name+'/')
       else {
-        const text = await boundedRead(file, 1024*1024), raw = await fs.readFile(file)
+        const text = await boundedRead(file, 1024*1024, { workspace: true }), raw = await fs.readFile(file)
         demand(raw.toString('utf8') === text && raw.length <= 1024*1024,'host_recovery_attempt_changed')
         bytes += raw.length; demand(bytes <= 16*1024*1024 && files.length < 10000,'host_recovery_attempt_evidence_too_large')
         files.push([name,hash(raw)])

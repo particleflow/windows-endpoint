@@ -114,7 +114,7 @@ async function capture(config, binding) {
 export async function validateInstalledConfiguration(config, { inspectHistoryOnly = false, sessionContinuation = null } = {}) {
   validateConfig(config)
   demand([2, 3].includes(config.schema), 'existing_installation_config_required')
-  for (const directory of componentRoots(config)) await validateDirectory(directory)
+  for (const directory of componentRoots(config)) await validateDirectory(directory, { workspace: directory === config.sourceRoot })
   await regular(path.join(config.herdrConfigRoot, 'config.toml'))
   const native = isNativeRuntimeConfig(config), file = connectorConfigReference(config)
   let before

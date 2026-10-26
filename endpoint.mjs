@@ -30,9 +30,18 @@ function samePath(a, b) {
 function overlaps(a, b) {
   return [path.relative(a, b), path.relative(b, a)].some(r => r === '' || (!path.isAbsolute(r) && r !== '..' && !r.startsWith(`..${path.sep}`)))
 }
-function absolute(value) {
-  requireThat(typeof value === 'string' && path.isAbsolute(value) && value === path.normalize(value) && !/[\x00-\x1f]/.test(value), 'absolute_clean_path_required')
-  if (process.platform === 'win32') requireThat(/^[a-z]:\\/i.test(value) && !value.slice(2).includes(':'), 'local_drive_required')
+export function isWindowsUNCWorkspacePath(value) {
+  if (typeof value !== 'string' || !value.startsWith('\\\\') || /^\\\\[?.]\\/.test(value)) return false
+  const parts = value.slice(2).split('\\')
+  if (parts.at(-1) === '') parts.pop()
+  return parts.length >= 2 && parts.every(part => part && !/[<>:"/|?*\x00-\x1f]/.test(part) &&
+    !['.', '..'].includes(part) && !/[. ]$/.test(part)) &&
+    (value === path.win32.normalize(value) || value + '\\' === path.win32.normalize(value))
+}
+function absolute(value, workspace = false) {
+  const unc = process.platform === 'win32' && workspace && isWindowsUNCWorkspacePath(value)
+  requireThat(typeof value === 'string' && path.isAbsolute(value) && (value === path.normalize(value) || unc) && !/[\x00-\x1f]/.test(value), 'absolute_clean_path_required')
+  if (process.platform === 'win32') requireThat(/^[a-z]:\\/i.test(value) && !value.slice(2).includes(':') || unc, 'local_drive_required')
   return value
 }
 function relative(value) {
@@ -44,17 +53,18 @@ async function regular(file) {
   requireThat(st.isFile() && !st.isSymbolicLink() && st.nlink === 1, 'regular_private_copy_required')
   return st
 }
-async function canonical(file) {
-  requireThat(samePath(await fs.realpath(file), file), 'noncanonical_path')
+async function canonical(file, workspace = false) {
+  const resolved = await fs.realpath(file)
+  requireThat(samePath(resolved, file) || workspace && samePath(path.normalize(resolved), path.normalize(file)), 'noncanonical_path')
   // Check every ancestor, including junctions; no package traversal through links.
   for (let p = file; ; p = path.dirname(p)) {
     requireThat(!(await fs.lstat(p)).isSymbolicLink(), 'reparse_point_rejected')
     if (p === path.dirname(p)) break
   }
 }
-export async function validateDirectory(directory) {
-  absolute(directory)
-  await canonical(directory)
+export async function validateDirectory(directory, { workspace = false } = {}) {
+  absolute(directory, workspace)
+  await canonical(directory, workspace)
   requireThat((await fs.stat(directory)).isDirectory(), 'directory_required')
 }
 async function readJSON(file, limit = 65536) {
@@ -114,7 +124,8 @@ export function validateConfig(config) {
     // Legacy omitted Herdr resolves from its selected official Agenvo instance.
     // Native mode keeps one explicit official installation reference.
     keys(config.programs, ['node', 'piPackage', 'piBin', 'gitRoot', ...(native ? ['herdr'] : ['connectorPackage'])], native ? ['connectorPackage'] : ['herdr'])
-    for (const value of [...roots.map(k => config[k]), ...Object.values(config.programs)]) absolute(value)
+    for (const key of roots) absolute(config[key], key === 'sourceRoot')
+    for (const value of Object.values(config.programs)) absolute(value)
     requireThat(uuidPattern.test(config.deviceId) && uuidPattern.test(config.runtimeId) && idPattern.test(config.instanceId) && idPattern.test(config.session) && config.session !== 'default', 'dedicated_session_required')
     if (native) requireThat(config.deviceId === config.runtimeId, 'native_runtime_identity_mismatch')
     requireThat(path.basename(config.herdrConfigRoot) === 'herdr' && path.basename(config.herdrStateRoot) === 'herdr', 'herdr_root_name_required')
@@ -274,10 +285,12 @@ export async function configure(from, to, root, { browseSourceRoot = false, choo
   let input = await readJSON(from)
   if (browseSourceRoot) {
     requireThat([2, 3].includes(input?.schema), 'directory_picker_reference_configuration_required')
+    const originalInput = JSON.stringify(input)
     const { pickDirectory } = await import('./directory-selection.mjs')
     const selection = await pickDirectory({ initialPath: typeof input.sourceRoot === 'string' && path.isAbsolute(input.sourceRoot) ? input.sourceRoot : null },
       chooseDirectory ? { choose: chooseDirectory } : undefined)
     if (selection.state === 'cancelled') return selection
+    requireThat(JSON.stringify(await readJSON(from)) === originalInput, 'directory_picker_configuration_changed')
     input = { ...input, sourceRoot: selection.path }
   }
   let config, layout
@@ -357,7 +370,7 @@ export async function validateTransferConfiguration(config) {
   validateConfig(config)
   const locations = transferLocations(config)
   for (const directory of [config.sourceRoot, locations.config, locations.state]) {
-    await canonical(directory)
+    await canonical(directory, directory === config.sourceRoot)
     requireThat((await fs.stat(directory)).isDirectory(), 'directory_required')
   }
   const file = path.join(locations.config, 'transfer.json')

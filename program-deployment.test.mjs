@@ -190,6 +190,20 @@ test('native configuration refuses rollback to an Agenvo-only candidate without 
   assert.equal((await f.manager.read()).current, f.b.hash)
 })
 
+test('UNC references refuse an old program reader before any workspace access or selector mutation', async t => {
+  const f = await fixture(t, { native: true }); await apply(f, f.a)
+  delete f.b.manifest.workspace_unc_source_root
+  await fs.writeFile(path.join(f.b.directory, 'candidate.json'), JSON.stringify(f.b.manifest))
+  const hash = await digest(path.join(f.b.directory, 'candidate.json'))
+  await f.manager.stage(f.b.directory, hash)
+  const before = await fs.readFile(f.manager.file)
+  // Source-test injection only: do not mount or contact an invented share.
+  f.manager.config = { ...f.config, sourceRoot: '\\\\synthetic-server\\share\\work' }
+  await assert.rejects(f.manager.projectRoot(hash), { code: 'deployment_unc_workspace_unsupported' })
+  assert.deepEqual(await fs.readFile(f.manager.file), before)
+  await preserve(f)
+})
+
 async function retainedFixture(t) {
   const f = await fixture(t, { native: true }); await apply(f, f.a)
   const attempt = path.join(f.config.sourceRoot, '.memoh-computer/attempts/original/receipt.json')

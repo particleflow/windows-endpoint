@@ -65,10 +65,11 @@ For **fresh** schema 2/3 references, `configure --from FILE --root DIR
 --browse-source-root native` uses that dialog and saves the chosen `sourceRoot`
 through the existing exclusive configuration writer. Cancel leaves all files
 unchanged. An existing binding is never overwritten; this command is not a
-workspace/queue migration. The current drive-path validation still applies.
+workspace/queue migration. Program/config paths retain their local-drive guards;
+an existing accessible UNC workspace path is accepted only as schema 2/3 `sourceRoot`.
 NAS storage selection is separate: use already accessible mapped/UNC filesystem
-paths, not HTTP URLs. UNC task activation and NAS storage settings are not
-completed by this picker; see [the cross-module contract](https://github.com/particleflow/windows-endpoint/blob/feat/explicit-component-runtime/docs/workspace-directory-selection.md).
+paths, not HTTP URLs. Actual share access, LAN admission and NAS storage settings
+are not verified by this picker; see [the cross-module contract](https://github.com/particleflow/windows-endpoint/blob/feat/explicit-component-runtime/docs/workspace-directory-selection.md).
 
 ```powershell
 $Summary = Get-Content -Raw $SummaryFile | ConvertFrom-Json

@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createHash } from 'node:crypto'
-import { validateConfig, validateDirectory, installationReferences, isNativeRuntimeConfig } from './endpoint.mjs'
+import { validateConfig, validateDirectory, installationReferences, isNativeRuntimeConfig, isWindowsUNCWorkspacePath } from './endpoint.mjs'
 import { DeploymentTransactions, DeploymentError, deploymentLayout } from './deployment.mjs'
 import { acquireLeases } from './lifecycle.mjs'
 import { boundedRead, readSessionHistory } from './session-diagnostics.mjs'
@@ -104,8 +104,11 @@ export class ProgramDeployment extends DeploymentTransactions {
     return null
   }
   async projectRoot(target) {
-    if (!isNativeRuntimeConfig(this.config)) return
+    const unc = isWindowsUNCWorkspacePath(this.config.sourceRoot)
+    if (!isNativeRuntimeConfig(this.config) && !unc) return
     const verified = await this.verify(path.join(this.layout.packages, target), target)
+    if (unc) demand(verified.manifest.workspace_unc_source_root === true, 'deployment_unc_workspace_unsupported')
+    if (!isNativeRuntimeConfig(this.config)) return
     demand(verified.manifest.native_runtime, 'deployment_native_connector_missing')
     demand(verified.manifest.native_runtime_project_root, 'deployment_native_project_root_unsupported')
     const lifecycle = await this.lifecycleStore.load()
@@ -147,7 +150,7 @@ export class ProgramDeployment extends DeploymentTransactions {
     const attempts = path.join(this.config.sourceRoot, '.memoh-computer/attempts')
     let nonempty = false
     if (await exists(attempts)) {
-      await validateDirectory(attempts)
+      await validateDirectory(attempts, { workspace: true })
       const handle = await fs.opendir(attempts)
       try { nonempty = !!(await handle.read()) } finally { await handle.close() }
     }
