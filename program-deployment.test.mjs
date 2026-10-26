@@ -11,19 +11,22 @@ import { digest } from './endpoint.mjs'
 import { StateStore, acquireLeases } from './lifecycle.mjs'
 import { captureSessionContinuation } from './session-continuation.mjs'
 import { ForegroundHost } from './host.mjs'
-import { installedFixture } from './test-support/installed-fixture.mjs'
+import { installedFixture, nativeInstalledFixture } from './test-support/installed-fixture.mjs'
+import { attemptEvidence, recoveryConfigurationHash } from './host-recovery.mjs'
 import { programPackage } from './test-support/program-package.mjs'
+import { randomUUID } from 'node:crypto'
 
-async function fixture(t) {
-  const f = await installedFixture(t), root = path.join(f.base, 'host')
-  delete f.config.programs.herdr
+async function fixture(t, { native = false } = {}) {
+  const f = await (native ? nativeInstalledFixture(t) : installedFixture(t)), root = path.join(f.base, 'host')
+  if (!native) delete f.config.programs.herdr
   await fs.mkdir(path.join(root, 'config'), { recursive: true })
   const configFile = path.join(root, 'config/endpoint.json')
   await fs.writeFile(configFile, JSON.stringify(f.config))
-  const a = await programPackage(path.join(f.base, 'package a'))
-  const b = await programPackage(path.join(f.base, 'package b'), 'b')
+  if (native) await fs.writeFile(path.join(root, 'config/runtime.json'), JSON.stringify({ schema: 2, mode: 'existing-installations', transfer: 'disabled' }))
+  const a = await programPackage(path.join(f.base, 'package a'), 'a', { native })
+  const b = await programPackage(path.join(f.base, 'package b'), 'b', { native })
   const manager = await programDeployment(root, { prepare: true })
-  const originalFiles = [configFile, path.join(f.config.agenvoConfigDir, 'config.json'), path.join(f.config.piConfigDir, 'auth.json')]
+  const originalFiles = [configFile, native ? f.config.connector.enrollmentFile : path.join(f.config.agenvoConfigDir, 'config.json'), path.join(f.config.piConfigDir, 'auth.json'), ...(native ? [path.join(root, 'config/runtime.json')] : [])]
   const originals = await Promise.all(originalFiles.map(p => fs.readFile(p)))
   return { ...f, root, a, b, manager, originalFiles, originals }
 }
@@ -185,4 +188,125 @@ test('native configuration refuses rollback to an Agenvo-only candidate without 
   assert.deepEqual(await fs.readFile(f.manager.file), before)
   assert.deepEqual(await Promise.all(f.originalFiles.map(file => fs.readFile(file))), references)
   assert.equal((await f.manager.read()).current, f.b.hash)
+})
+
+async function retainedFixture(t) {
+  const f = await fixture(t, { native: true }); await apply(f, f.a)
+  const attempt = path.join(f.config.sourceRoot, '.memoh-computer/attempts/original/receipt.json')
+  const raw = '{"state":"unknown","prompt_submitted":false,"attempt":1,"pi_session":"original","receipt":"retained-original"}'
+  await fs.mkdir(path.dirname(attempt), { recursive: true }); await fs.writeFile(attempt, raw)
+  const run = randomUUID(), statusFile = path.join(f.manager.lifecycleDirectory, 'host-status.json')
+  const child = spawn(process.execPath, ['-e', 'process.exit(0)']); await new Promise(resolve => child.once('exit', resolve))
+  const status = { schema: 1, owner: 'windows-endpoint-host', runId: run, pid: child.pid, phase: 'stopped', attention: null, updatedAt: Date.now() }
+  await fs.writeFile(statusFile, JSON.stringify(status))
+  const logFile = path.join(f.root, 'logs/endpoint-host', run + '.jsonl')
+  await fs.mkdir(path.dirname(logFile), { recursive: true })
+  await fs.writeFile(logFile, JSON.stringify({ schema: 1, runId: run, phase: 'starting', at: status.updatedAt - 10000 }) + '\n')
+  const state = await f.manager.lifecycleStore.load()
+  await f.manager.lifecycleStore.save({ ...state, sessionContinuation: await captureSessionContinuation(f.config), infrastructureRecovery: {
+    schema: 1, fromState: 'a'.repeat(64), run: randomUUID(), configuration: recoveryConfigurationHash(await fs.readFile(f.manager.configFile, 'utf8'), await fs.readFile(f.manager.runtimeFile, 'utf8')),
+    attempts: await attemptEvidence(f.config), previousPhase: 'needs_attention', previousAttention: 'herdr_observation_unknown', businessReplayed: false } })
+  let observations = 0
+  const options = { inspect: async () => ({ config: f.config, assertUnchanged() {} }),
+    observe: async () => { observations++; return { ownerVerified: true, oldHostAbsent: true, referencedProcessesAbsent: true } } }
+  const manager = await programDeployment(f.root, options)
+  await manager.stage(f.b.directory, f.b.hash)
+  return { ...f, manager, options, attempt, raw, statusFile, logFile, observations: () => observations }
+}
+
+test('compatible stopped program switch retains the original durable unknown checkpoint and never claims a business handoff', async t => {
+  const f = await retainedFixture(t), before = await fs.readFile(f.manager.lifecycleStore.file)
+  assert.equal((await f.manager.select(f.b.hash, 'update')).state, 'selected_review_only')
+  assert.equal((await f.manager.read()).current, f.b.hash)
+  assert.equal(f.observations(), 5, 'both work observations and all three atomic publications recheck native absence')
+  assert.equal(f.manager.retained.attempts, await attemptEvidence(f.config))
+  assert.equal(await fs.readFile(f.attempt, 'utf8'), f.raw)
+  assert.deepEqual(await fs.readFile(f.manager.lifecycleStore.file), before)
+  // A fresh updater can recover/read the same durable evidence; no new ledger.
+  const fresh = await programDeployment(f.root, f.options)
+  assert.equal((await fresh.select(f.b.hash, 'update')).state, 'already_selected')
+  assert.equal(await fs.readFile(f.attempt, 'utf8'), f.raw)
+  await preserve(f)
+})
+
+test('a component appearing at atomic selector publication still blocks a historical program switch', async t => {
+  const f = await retainedFixture(t), before = await fs.readFile(f.manager.file)
+  let calls = 0
+  f.manager.observe = async () => ({ ownerVerified: true, oldHostAbsent: ++calls < 2, referencedProcessesAbsent: true })
+  await assert.rejects(f.manager.select(f.b.hash, 'update'), { code: 'deployment_retained_processes_unknown' })
+  assert.deepEqual(await fs.readFile(f.manager.file), before)
+  assert.equal(await fs.readFile(f.attempt, 'utf8'), f.raw)
+})
+
+test('interrupted retained-history selection requires recovery and preserves the same unknown bytes across a fresh updater', async t => {
+  const f = await retainedFixture(t), interrupted = await programDeployment(f.root, { ...f.options, checkpoint: async phase => {
+    if (phase === 'switch_selected') throw new Error('synthetic process interruption after selection')
+  } })
+  await assert.rejects(interrupted.select(f.b.hash, 'update'))
+  const pending = await interrupted.read(); assert.equal(pending.current, f.b.hash); assert.equal(pending.pending.phase, 'selected')
+  const fresh = await programDeployment(f.root, f.options)
+  assert.equal((await fresh.recover()).state, 'recovered_review_only')
+  assert.equal((await fresh.read()).pending, null)
+  assert.equal(await fs.readFile(f.attempt, 'utf8'), f.raw)
+  await preserve(f)
+})
+
+for (const kind of ['no_recovery', 'wrong_configuration', 'changed_attempt', 'status_running', 'status_attention', 'agent_history', 'native_unknown', 'unverified_principal']) test(`historical retention refuses ${kind} without changing original task or selection`, async t => {
+  const f = await retainedFixture(t), state = await f.manager.lifecycleStore.load()
+  if (kind === 'no_recovery') { delete state.infrastructureRecovery; await f.manager.lifecycleStore.save(state) }
+  if (kind === 'wrong_configuration') { state.infrastructureRecovery.configuration = 'b'.repeat(64); await f.manager.lifecycleStore.save(state) }
+  if (kind === 'changed_attempt') await fs.writeFile(f.attempt, f.raw + '\n')
+  if (kind.startsWith('status_')) { const status = JSON.parse(await fs.readFile(f.statusFile)); if (kind === 'status_running') status.phase = 'running'; else status.attention = 'connector_authentication_required'; await fs.writeFile(f.statusFile, JSON.stringify(status)) }
+  if (kind === 'agent_history') { const snapshot = path.join(f.config.herdrConfigRoot, 'sessions', f.config.session, 'session.json'); await fs.mkdir(path.dirname(snapshot), { recursive: true }); await fs.writeFile(snapshot, JSON.stringify({ version: 3, workspaces: [{ id: 'original', tabs: [{ panes: { p: { cwd: f.config.sourceRoot, agent_session: { original: true } } } }] }] })) }
+  if (kind === 'native_unknown') f.manager.observe = async () => { throw new Error('synthetic unknown native ownership') }
+  if (kind === 'unverified_principal') f.manager.observe = async () => ({ ownerVerified: false, oldHostAbsent: true, referencedProcessesAbsent: true })
+  const attempt = await fs.readFile(f.attempt), journal = await fs.readFile(f.manager.lifecycleStore.file)
+  try { const result = await f.manager.select(f.b.hash, 'update'); assert.equal(result.state, 'deferred') }
+  catch (error) { assert.ok(['native_unknown', 'unverified_principal'].includes(kind)); assert.ok(error.code) }
+  assert.equal((await f.manager.read()).current, f.a.hash)
+  assert.deepEqual(await fs.readFile(f.attempt), attempt); assert.deepEqual(await fs.readFile(f.manager.lifecycleStore.file), journal)
+  await preserve(f)
+})
+
+for (const changed of ['attempt', 'status', 'run_log', 'configuration', 'lifecycle']) test(`retained evidence CAS rejects ${changed} changed after native observation`, async t => {
+  const f = await retainedFixture(t)
+  f.manager.observe = async () => {
+    const file = { attempt: f.attempt, status: f.statusFile, run_log: f.logFile, configuration: f.manager.configFile, lifecycle: f.manager.lifecycleStore.file }[changed]
+    await fs.appendFile(file, '\n')
+    return { ownerVerified: true, oldHostAbsent: true, referencedProcessesAbsent: true }
+  }
+  await assert.rejects(f.manager.select(f.b.hash, 'update'), error => /^deployment_(retained_work_changed|configuration_changed)$/.test(error.code))
+  assert.equal((await f.manager.read()).current, f.a.hash)
+})
+
+test('attempt created after selector fsync cannot race the stopped-program switch even from an initially empty history', async t => {
+  const f = await fixture(t); await apply(f, f.a); await f.manager.stage(f.b.directory, f.b.hash)
+  const receipt = path.join(f.config.sourceRoot, '.memoh-computer/attempts/concurrent/receipt.json')
+  const manager = await programDeployment(f.root, { checkpoint: async phase => {
+    if (phase === 'journal_file_synced') { await fs.mkdir(path.dirname(receipt), { recursive: true }); await fs.writeFile(receipt, 'CONCURRENT ORIGINAL; DO NOT DELETE') }
+  } })
+  const before = await fs.readFile(manager.file)
+  await assert.rejects(manager.select(f.b.hash, 'update'), { code: 'deployment_retained_work_changed' })
+  assert.deepEqual(await fs.readFile(manager.file), before)
+  assert.equal(await fs.readFile(receipt, 'utf8'), 'CONCURRENT ORIGINAL; DO NOT DELETE')
+})
+
+test('actual CLI reports deferred with exit2 and completed selection with exit0', async t => {
+  const f = await fixture(t); await apply(f, f.a)
+  async function cli() {
+    const child = spawn(process.execPath, [fileURLToPath(new URL('./endpoint.mjs', import.meta.url)), 'deploy', 'update', '--root', f.root, '--source', f.b.directory, '--manifest-sha256', f.b.hash], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = '', err = ''; child.stdout.on('data', x => { out += x }); child.stderr.on('data', x => { err += x })
+    const timer = setTimeout(() => child.kill(), 15000)
+    try { const code = await new Promise(resolve => child.once('close', resolve)); assert.equal(err, ''); return { code, result: JSON.parse(out) } }
+    finally { clearTimeout(timer) }
+  }
+  const release = await acquireLeases([`host:${f.root}`], f.manager.lifecycleDirectory)
+  try { const denied = await cli(); assert.equal(denied.code, 2); assert.equal(denied.result.state, 'deferred'); assert.equal(denied.result.reason, 'endpoint_owned') }
+  finally { await release() }
+  const selected = await cli(); assert.equal(selected.code, 0); assert.equal(selected.result.state, 'selected_review_only')
+  const attempt = path.join(f.config.sourceRoot, '.memoh-computer/attempts/unverified/receipt.json')
+  await fs.mkdir(path.dirname(attempt), { recursive: true }); await fs.writeFile(attempt, 'UNVERIFIED ORIGINAL')
+  const history = await cli(); assert.equal(history.code, 2); assert.equal(history.result.reason, 'task_handoff_unverified')
+  assert.equal(await fs.readFile(attempt, 'utf8'), 'UNVERIFIED ORIGINAL')
+  await preserve(f)
 })

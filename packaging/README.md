@@ -180,10 +180,25 @@ startup is registered. `deploy recover --root DIR` reconciles an interrupted
 transaction, retaining its selected version, incomplete copies and unknown files.
 `deploy status --root DIR` reports the retained inventory.
 
-Running/draining hosts, attention, changed/unknown history, external lock/marker
-evidence and existing producer attempt records defer switching. Attempt records
-are **unreconciled**, not declared active or deleted: the task owner's handoff is
-still needed even if a record may describe a completed task. No global task
+Running/draining hosts, attention, changed/unknown history and external lock/marker
+evidence defer switching. Attempt records are **unreconciled**, not declared active
+or deleted. A native endpoint may retain unchanged historical attempts across a
+compatible program-only switch when the existing infrastructure-recovery record
+binds their exact bytes and the unchanged endpoint/runtime configuration. It also
+requires the normal stopped status, verified ordinary session checkpoint, original
+process absence and current trusted Windows file ownership through the existing
+native recheck. It starts/stops no component, moves no execution and does not
+complete or replay an unknown task. Missing/changed recovery evidence remains
+`task_handoff_unverified`; an unverified handoff or owner observation cannot enable
+this path. No HTTP identity, file credential or local JSON declaration is added
+as a stop/upgrade permit. Selection output explicitly says
+`taskHistory:preserved_unreconciled`, `businessReplayed:false`, `stopAuthority:false`.
+The first configuration/lifecycle/attempt/session evidence is frozen through
+both selection checks and fsync-to-rename publication; native absence is rechecked
+before each selector publication. Changed evidence rejects publication and pending
+transactions require the normal `deploy recover`; originals are retained.
+The original task owner's handoff is still required for execution migration,
+Agent history or changed/unknown evidence. No global task
 admission barrier or active Pi upgrade handoff is claimed. A changed program-state
 profile or producer revision refuses compatibility; no data-format migration or
 automatic rollback follows a startup failure. Ordinary shell checkpoints and all
@@ -195,6 +210,11 @@ task reconciliation as other program updates. No existing attempt's WorkDir,
 configuration root, receipt or unknown result is rewritten by this correction.
 The older `2009333` portable candidate remains runnable directly but lacks this
 managed-deployment profile and cannot be silently adopted into this journal.
+
+The CLI preserves deployment JSON result fields but returns exit **2** for
+`state:deferred`, as it already does for unavailable prerequisites. Successful
+selection remains exit0. Scripts must still check the exact `state`, `reason` and
+selected manifest; exit0 alone is not a readiness or release qualification claim.
 
 ## Qualification boundary
 

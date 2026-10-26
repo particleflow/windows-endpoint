@@ -7,14 +7,16 @@ import { validateConfig, validateDirectory, installationReferences, isNativeRunt
 import { DeploymentTransactions, DeploymentError, deploymentLayout } from './deployment.mjs'
 import { acquireLeases } from './lifecycle.mjs'
 import { boundedRead, readSessionHistory } from './session-diagnostics.mjs'
-import { verifySessionContinuation } from './session-continuation.mjs'
+import { captureSessionContinuation, verifySessionContinuation } from './session-continuation.mjs'
 import { validateRuntimeRequest } from './runtime.mjs'
 import { verifyCandidate, stageCandidate, programProfileHash } from './candidate.mjs'
+import { attemptEvidence, nativeRecoveryEvidence, recoveryConfigurationHash } from './host-recovery.mjs'
+import { inspectInstalled } from './installed.mjs'
 
 const demand = (ok, code) => { if (!ok) throw new DeploymentError(code) }
 const overlaps = (a, b) => [path.relative(a, b), path.relative(b, a)].some(r => r === '' || !path.isAbsolute(r) && r !== '..' && !r.startsWith(`..${path.sep}`))
-async function optional(file) {
-  try { return await boundedRead(file, 65536) } catch (error) { if (error.code === 'ENOENT') return null; throw error }
+async function optional(file, limit = 65536) {
+  try { return await boundedRead(file, limit) } catch (error) { if (error.code === 'ENOENT') return null; throw error }
 }
 async function exists(file) {
   try { await fs.lstat(file); return true } catch (error) { if (error.code === 'ENOENT') return false; throw error }
@@ -23,10 +25,66 @@ async function directory(file) {
   try { await fs.mkdir(file) } catch (error) { if (error.code !== 'EEXIST') throw error }
   await validateDirectory(file)
 }
-const describe = result => ({ ...result, evidence: 'endpoint_program_transaction', activation: 'explicit_foreground_only',
-  qualification: 'not-for-production-release', officialComponentsChanged: false, queueAdvanced: false })
+const describe = (result, retained = null) => ({ ...result, evidence: 'endpoint_program_transaction', activation: 'explicit_foreground_only',
+  qualification: 'not-for-production-release', officialComponentsChanged: false, queueAdvanced: false,
+  ...(retained ? { taskHistory: 'preserved_unreconciled', retainedAttemptEvidenceSha256: retained.attempts, businessReplayed: false, stopAuthority: false } : {}) })
 
 export class ProgramDeployment extends DeploymentTransactions {
+  async freezeWork(state) {
+    if (this.workBaseline) { await this.workBaseline(); return }
+    const raw = await optional(this.lifecycleStore.file, 262144)
+    const original = raw === null ? { schema: 1, identity: this.config.deviceId, phase: 'stopped', restarts: [], attention: null } : JSON.parse(raw)
+    demand(JSON.stringify(original) === JSON.stringify(state), 'deployment_retained_work_changed')
+    const attempts = await attemptEvidence(this.config), continuation = await captureSessionContinuation(this.config)
+    this.workBaseline = async () => {
+      await this.unchanged()
+      demand(await optional(this.lifecycleStore.file, 262144) === raw && await attemptEvidence(this.config) === attempts, 'deployment_retained_work_changed')
+      await verifySessionContinuation(this.config, continuation)
+      await this.retained?.unchanged()
+    }
+    await this.workBaseline()
+  }
+  async retainedHistory(state) {
+    // A stopped, compatible PROGRAM switch need not delete or complete old
+    // tasks. Consume only the original durable infrastructure-recovery digest,
+    // never a caller-supplied owner/idle declaration or an unverified handoff.
+    const recovery = state.infrastructureRecovery
+    if (!isNativeRuntimeConfig(this.config) || !state.sessionContinuation || !recovery ||
+        recovery.configuration !== recoveryConfigurationHash(this.configRaw, this.runtimeRaw)) return 'task_handoff_unverified'
+    if (await attemptEvidence(this.config) !== recovery.attempts) return 'task_handoff_unverified'
+    const files = { root: this.root, config: this.configFile, runtime: this.runtimeFile,
+      state: this.lifecycleStore.file, status: path.join(this.lifecycleDirectory, 'host-status.json') }
+    const stateRaw = await boundedRead(files.state, 262144), statusRaw = await boundedRead(files.status, 32768)
+    demand(JSON.stringify(JSON.parse(stateRaw)) === JSON.stringify(state), 'deployment_retained_work_changed')
+    const status = JSON.parse(statusRaw)
+    if (status.schema !== 1 || status.owner !== 'windows-endpoint-host' || status.phase !== 'stopped' || status.attention !== null ||
+        !/^[a-f0-9-]{36}$/.test(status.runId) || !Number.isSafeInteger(status.pid) || status.pid < 1 || !Number.isSafeInteger(status.updatedAt)) return 'task_handoff_unverified'
+    const inspected = await this.inspect(this.config, undefined, { inspectHistoryOnly: true })
+    if (this.observe === nativeRecoveryEvidence && path.resolve(process.execPath).toLowerCase() !== path.resolve(inspected.config.programs.node).toLowerCase()) return 'task_handoff_unverified'
+    const logFile = path.join(this.root, 'logs/endpoint-host', `${status.runId}.jsonl`)
+    const logRaw = await boundedRead(logFile, 65536)
+    const unchanged = async () => {
+      await this.unchanged(); inspected.assertUnchanged()
+      demand(await boundedRead(files.state, 262144) === stateRaw && await boundedRead(files.status, 32768) === statusRaw &&
+        await boundedRead(logFile, 65536) === logRaw && await attemptEvidence(this.config) === recovery.attempts, 'deployment_retained_work_changed')
+      await verifySessionContinuation(this.config, state.sessionContinuation)
+    }
+    // Preserve the FIRST comparison through both work checks and every atomic
+    // selector publication. A later observation cannot silently adopt a change.
+    if (this.retained) await this.retained.unchanged()
+    await unchanged()
+    const observed = await this.observe({ config: inspected.config, status, files })
+    demand(observed?.ownerVerified === true && observed.oldHostAbsent === true && observed.referencedProcessesAbsent === true, 'deployment_retained_processes_unknown')
+    await unchanged()
+    const reobserve = async () => {
+      await unchanged()
+      const current = await this.observe({ config: inspected.config, status, files })
+      demand(current?.ownerVerified === true && current.oldHostAbsent === true && current.referencedProcessesAbsent === true, 'deployment_retained_processes_unknown')
+      await unchanged()
+    }
+    this.retained ||= { attempts: recovery.attempts, unchanged, reobserve }
+    return null
+  }
   async projectRoot(target) {
     if (!isNativeRuntimeConfig(this.config)) return
     const verified = await this.verify(path.join(this.layout.packages, target), target)
@@ -45,6 +103,7 @@ export class ProgramDeployment extends DeploymentTransactions {
   }
   async work(profile) {
     await this.unchanged()
+    await this.workBaseline?.()
     if (profile !== programProfileHash) return 'state_profile_incompatible'
     const state = await this.lifecycleStore.load()
     if (state.handoff) return 'host_handoff_unverified'
@@ -59,21 +118,28 @@ export class ProgramDeployment extends DeploymentTransactions {
       const history = await readSessionHistory(this.config)
       if (!['no_saved_history', 'no_saved_workspaces'].includes(history.startup)) return 'existing_herdr_session_requires_handoff'
     }
-    // The task owner must reconcile attempt evidence. Do not infer that an
-    // absent pane, an idle queue or a saved ordinary shell means a Pi task ended.
+    // A task-owner handoff is still required for execution migration. A verified
+    // unchanged recovery baseline can instead retain history verbatim across a
+    // stopped program-only switch; it does not claim a Pi task ended.
     const attempts = path.join(this.config.sourceRoot, '.memoh-computer/attempts')
     if (await exists(attempts)) {
       await validateDirectory(attempts)
       const handle = await fs.opendir(attempts)
-      try { if (await handle.read()) return 'task_handoff_unverified' } finally { await handle.close() }
+      let nonempty
+      try { nonempty = !!(await handle.read()) } finally { await handle.close() }
+      if (nonempty) {
+        const reason = await this.retainedHistory(state)
+        if (reason) return reason
+      }
     }
     if (await exists(path.join(this.config.herdrConfigRoot, 'sessions', this.config.session, 'herdr.sock')) ||
         !isNativeRuntimeConfig(this.config) && await exists(path.join(this.config.agenvoConfigDir, 'run.lock'))) return 'external_component_state_unverified'
+    await this.freezeWork(state)
     return null
   }
 }
 
-export async function programDeployment(root, { prepare = false, io = fs, checkpoint } = {}) {
+export async function programDeployment(root, { prepare = false, io = fs, checkpoint, inspect = inspectInstalled, observe = nativeRecoveryEvidence } = {}) {
   const layout = deploymentLayout(root)
   await validateDirectory(root); await validateDirectory(layout.config)
   const configFile = path.join(layout.config, 'endpoint.json'), runtimeFile = path.join(layout.config, 'runtime.json')
@@ -107,6 +173,15 @@ export async function programDeployment(root, { prepare = false, io = fs, checkp
       return { schema: 1, stateProfileSha256: programProfileHash }
     } })
   Object.assign(manager, { configFile, runtimeFile, configRaw, runtimeRaw })
+  // Source-only test injection, not a public config/CLI proof provider.
+  Object.assign(manager, { inspect, observe })
+  manager.checkpoint = async phase => {
+    await checkpoint?.(phase)
+    if (phase === 'journal_file_synced') {
+      await manager.retained?.reobserve()
+      await manager.workBaseline?.()
+    }
+  }
   return manager
 }
 
@@ -144,7 +219,7 @@ export async function programDeploymentMain(args) {
   if (action === 'run') return { hostExitCode: await runSelectedProgram(root) }
   const manager = await programDeployment(root, { prepare: action === 'install' })
   if (action === 'status') return describe(await manager.inventory())
-  if (action === 'recover') return describe(await manager.recover())
+  if (action === 'recover') return describe(await manager.recover(), manager.retained)
   if (action === 'install') {
     const initialized = await manager.initialize()
     if (initialized.state === 'deferred') return describe(initialized)
@@ -153,5 +228,5 @@ export async function programDeploymentMain(args) {
     const staged = await manager.stage(options['--source'], target)
     if (staged.state === 'deferred') return describe(staged)
   }
-  return describe(await manager.select(target, action))
+  return describe(await manager.select(target, action), manager.retained)
 }

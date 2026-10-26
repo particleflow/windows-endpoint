@@ -97,6 +97,7 @@ export class DeploymentTransactions {
     const temporary = path.join(this.layout.control, `.deployment-${randomUUID()}.tmp`)
     const handle = await this.io.open(temporary, 'wx')
     try { await handle.writeFile(`${JSON.stringify(state)}\n`); await handle.sync() } finally { await handle.close() }
+    await this.checkpoint('journal_file_synced')
     await this.io.rename(temporary, this.file)
   }
   async space(bytes = 65536) {

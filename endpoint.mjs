@@ -533,7 +533,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   main(process.argv.slice(2)).then(result => {
     if (Object.hasOwn(result, 'hostExitCode')) { process.exitCode = result.hostExitCode; return }
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
-    if (result.ready === false) process.exitCode = 2
+    if (result.ready === false || result.state === 'deferred') process.exitCode = 2
   }).catch(e => {
     // Do not echo input, paths, native stdout/stderr, config or credentials.
     process.stderr.write(`${JSON.stringify({ error: e instanceof EndpointError ? e.code : 'operation_failed' })}\n`)
