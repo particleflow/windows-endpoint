@@ -174,7 +174,7 @@ if(process.platform === 'win32')test('native Herdr scope parser recognizes the e
  ]
  const input=path.join(base,'cases.json'),script=path.join(base,'scope.ps1')
  await fs.writeFile(input,JSON.stringify(cases.map(c=>c[0])))
- await fs.writeFile(script,`param([string]$InputFile)\n$ErrorActionPreference='Stop'\n${decoder}\n${flag}\n$HerdrSession='original-session'\n$scopes=@()\nforeach($line in @(Get-Content -LiteralPath $InputFile -Raw | ConvertFrom-Json)) {\n$p=[pscustomobject]@{Name='herdr.exe'}\n$argv=[RecoveryArgv]::Decode($line)\n$scope='unknown'\n${block}\n$scopes += $scope\n}\nConvertTo-Json -InputObject $scopes -Compress\n`)
+ await fs.writeFile(script,`param([string]$InputFile)\n$ErrorActionPreference='Stop'\n${decoder}\n${flag}\n$HerdrSession='original-session'\n$scopes=@()\n$lines=Get-Content -LiteralPath $InputFile -Raw | ConvertFrom-Json\nforeach($line in $lines) {\n$p=[pscustomobject]@{Name='herdr.exe'}\n$argv=[RecoveryArgv]::Decode($line)\n$scope='unknown'\n${block}\n$scopes += $scope\n}\nConvertTo-Json -InputObject $scopes -Compress\n`)
  const ps=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe')
  const result=spawnSync(ps,['-NoLogo','-NoProfile','-NonInteractive','-File',script,'-InputFile',input],{encoding:'utf8',timeout:10000,maxBuffer:4096,windowsHide:true})
  assert.equal(result.status,0,'bounded read-only PowerShell parser must succeed')
