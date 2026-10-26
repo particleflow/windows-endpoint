@@ -408,13 +408,20 @@ try {
   await fs.writeFile(marker, generation, { flag: 'wx' })
   const { programDeployment } = await import(pathToFileURL(path.join(path.dirname(endpoint), 'program-deployment.mjs')))
   const { programProfileHash } = await import(pathToFileURL(path.join(path.dirname(endpoint), 'candidate.mjs')))
+  const { nativeRecoveryEvidence } = await import(pathToFileURL(path.join(path.dirname(endpoint), 'host-recovery.mjs')))
+  const absence = await nativeRecoveryEvidence({ config, status: cached, files: { root: hostRoot,
+    config: hostConfig, runtime: activation, state: lifecycleFile, status: hostStatusFile } })
+  assert.equal(absence.herdrAbsent, true)
   const updater = await programDeployment(hostRoot)
-  assert.equal(await updater.work(programProfileHash), null)
-  await updater.retained.reobserve(); await updater.workBaseline()
+  // The earlier 401 scenario deliberately retains authentication attention in
+  // its real host cache. Infrastructure recovery cannot launder that into an
+  // eligible update, even though the residual marker has no live owner.
+  assert.equal(cached.attention, 'connector_authentication_required')
+  assert.equal(await updater.work(programProfileHash), 'task_handoff_unverified')
   assert.equal(await fs.readFile(marker, 'utf8'), generation)
   assert.equal(await fs.readFile(lifecycleFile, 'utf8'), unchangedJournal)
   assert.equal(await fs.readFile(originalAttempt, 'utf8'), unknownReceipt)
-  checked('stopped_program_preflight_retains_stale_official_marker_with_real_native_absence_evidence')
+  checked('native_absence_proof_retains_stale_official_marker_without_clearing_unrelated_authentication_attention')
   const recovered = launch()
   await recovered.until(s => s.attention === 'connector_authentication_required')
   assert.equal(await recovered.stop(), 2) // Peer still refuses auth; never fake online.
@@ -433,6 +440,9 @@ try {
     serverIdentity: 'synthetic_peer_not_memoh_owner', stopAuthority: false, taskRecovery: 'not_exercised', fileTransferTLS: 'not_exercised', realPCandNAS: 'not_run' }) + '\n')
 } catch (error) {
   primaryError = error
+  process.stdout.write(JSON.stringify({ nativeRuntimeHostEvidence: [...hosts].map(host => host.states.slice(-8).map(s => ({
+    phase: s.phase, attention: s.attention, connection: s.connection, transfer: s.transfer,
+    componentLifecycle: s.componentLifecycle }))), peerCounts: { ...peer.counts }, activeControlConnections: peer.activeConnections() }) + '\n')
   process.stdout.write(JSON.stringify({ activePiReconnectEvidence: await piWorkloadEvidence(piWork, [root, bundle]), phase: piReconnectPhase, model: model.snapshot() }) + '\n')
 } finally {
   const [modelCleanup] = await Promise.allSettled([bounded(model.close(), 5000, 'Pi model fixture close deadline')])
