@@ -173,3 +173,63 @@ test('older recovery caller requires a real child edge, distinct scope and Windo
  assert.equal(classifyRecoveryProcesses([{...priorCaller,role:'unknown'},invoker],{...scopeContext,recoveryPid:70}).absent,false)
  assert.equal(classifyRecoveryProcesses([{...priorCaller,created:4000},invoker],{...scopeContext,recoveryPid:70}).absent,false)
 })
+
+const originalRunStart=Date.parse('2020-01-06T12:00:00.000Z')
+const preexistingOrphan={id:900,parent:800,created:Date.parse('2020-01-01T12:00:00.000Z'),windowsSession:1,role:'node',scope:'external_entry',originalReference:false}
+test('preexisting concrete generic Node/npx entry need not reconstruct an absent parent to recheck components',()=>{
+ const result=classifyRecoveryProcesses([preexistingOrphan],{oldPid:100,currentSession:1,runStart:originalRunStart})
+ assert.equal(result.absent,true)
+ assert.deepEqual(result.excluded,[{pid:900,role:'node',reason:'preexisting_generic_entry_not_managed_component',businessRelationship:'not_inferred'}])
+})
+for(const [name,record,extra] of [
+ ['project reference',{...preexistingOrphan,originalReference:true},[]],
+ ['unreadable entry',{...preexistingOrphan,role:'unknown'},[]],
+ ['managed Pi',{...preexistingOrphan,role:'pi',scope:'interactive'},[]],
+ ['managed Runtime',{...preexistingOrphan,role:'connector',scope:'different_enrollment'},[]],
+ ['post-start generic orphan',{...preexistingOrphan,created:originalRunStart+1},[]],
+ ['unknown start time',preexistingOrphan,[]],
+ ['direct original host child',{...preexistingOrphan,parent:100},[]],
+ ['observed original-root ancestor',{...preexistingOrphan,parent:200},[{id:200,parent:999,created:preexistingOrphan.created-1,role:'node',originalReference:true}]],
+])test(`preexisting generic entry cannot waive ${name}`,()=>{
+ const result=classifyRecoveryProcesses([record,...extra],{oldPid:100,currentSession:1,runStart:name==='unknown start time'?null:originalRunStart})
+ assert.equal(result.absent,false)
+})
+if(process.platform === 'win32')test('native orphaned generic script predating the run is left live; an original root argument still blocks',{timeout:90000},async t=>{
+ const f=await fixture(t),config={...f.config,programs:{...f.config.programs,node:process.execPath}}
+ const files={root:f.root,state:f.stateFile,config:path.join(f.root,'config/endpoint.json'),runtime:path.join(f.root,'config/runtime.json'),status:f.statusFile}
+ const audit=path.join(f.base,'orphan-audit'),input=path.join(f.base,'orphan-input.json'),items=[{kind:'directory',path:audit}]
+ for(const key of ['state','config','runtime','status']) {const content=await fs.readFile(files[key],'utf8');files[key]=path.join(audit,key+'.json');items.push({kind:'file',path:files[key],content})}
+ await fs.writeFile(input,JSON.stringify({root:f.base,items}))
+ const ps=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe')
+ assert.equal(spawnSync(ps,['-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./official-smoke/private-fixture.ps1',import.meta.url)),'-InputFile',input],{timeout:30000,maxBuffer:4096}).status,0)
+ const external=path.join(f.base,'another application');await fs.mkdir(external)
+ const entry=path.join(external,'npx-cli.js')
+ await fs.writeFile(entry,"const fs=require('node:fs');fs.writeFileSync(process.argv[3],'ready');setInterval(()=>{if(fs.existsSync(process.argv[2]))process.exit(0)},20)")
+ async function orphan(related) {
+   const stop=path.join(external,related?'related-stop':'plain-stop'),ready=stop+'-ready'
+   const args=[entry,stop,ready,...(related?['--prefix='+f.config.sourceRoot]:[])]
+   const code=`const {spawn}=require('node:child_process');const c=spawn(process.execPath,${JSON.stringify(args)},{detached:true,stdio:'ignore'});c.unref();console.log(JSON.stringify({pid:c.pid}));`
+   const launched=spawnSync(process.execPath,['-e',code],{encoding:'utf8',timeout:10000,maxBuffer:4096})
+   assert.equal(launched.status,0);const pid=JSON.parse(launched.stdout).pid
+   async function wait(predicate) {const end=Date.now()+10000;while(Date.now()<end){if(await predicate())return;await new Promise(r=>setTimeout(r,25))}throw new Error('owned orphan fixture deadline')}
+   try {
+     await wait(async()=>{try{return await fs.readFile(ready,'utf8')==='ready'}catch{return false}})
+     const started=Date.now();f.status.updatedAt=started
+     await fs.writeFile(files.status,JSON.stringify(f.status))
+     await fs.writeFile(path.join(f.root,'logs/endpoint-host',f.options.expectedRun+'.jsonl'),JSON.stringify({schema:1,runId:f.options.expectedRun,phase:'starting',at:started})+'\n')
+     await assert.rejects(nativeRecoveryEvidence({config,status:f.status,files}),error=>{
+       assert.equal(error.code,related?'host_recovery_process_evidence_unavailable':'herdr_observation_unknown',`orphan stage: ${error.evidenceStage}; reason: ${error.processReason}; pid: ${JSON.stringify(error.blockingProcess)}`)
+       if(related)assert.equal(error.processReason,'original_process_reference')
+       return true
+     })
+     assert.doesNotThrow(()=>process.kill(pid,0),'recovery must leave the unrelated and related orphan untouched')
+     assert.equal(await fs.readFile(f.stateFile,'utf8'),f.raw)
+     assert.equal(JSON.parse(await fs.readFile(f.receipt)).state,'unknown')
+   } finally {
+     // Cooperative exit of only the disposable program created above. No PID kill.
+     await fs.writeFile(stop,'stop')
+     await wait(()=>{try{process.kill(pid,0);return false}catch(e){if(e.code==='ESRCH')return true;throw e}})
+   }
+ }
+ await orphan(false);await orphan(true)
+})

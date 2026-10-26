@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param([string]$LifecycleFile,[string]$ConfigurationFile,[string]$StatusFile,[string]$RuntimeFile,
       [int]$OldProcessId,[int]$RecoveryProcessId,[string]$NodePath,[string]$HerdrPath,
-      [string]$PiEntry,[string]$EnrollmentFile,[string]$HostRoot,[string]$SourceRoot,[string]$HerdrSession,[string]$RuntimeEntry)
+      [string]$PiEntry,[string]$EnrollmentFile,[string]$HostRoot,[string]$SourceRoot,[string]$HerdrSession,[string]$RuntimeEntry,[string]$HerdrSessionRoot)
 $ErrorActionPreference = 'Stop'
 $stage = 'file_owner'
 try {
@@ -46,6 +46,20 @@ public static class RecoveryArgv {
         } catch { return $false }
     }
     function Base-Name([string]$value) { try { return [IO.Path]::GetFileName($value) } catch { return '' } }
+    function Text-References-Root([string]$value,[string]$root) {
+        # Also recognize a path inside a JSON/command argument, without retaining
+        # or emitting that argument. A sibling project with a shared prefix is not a match.
+        if ([string]::IsNullOrEmpty($root)) { return $false }
+        $text=$value.Replace('/','\').Replace('\\','\')
+        $needle=$root.TrimEnd('\').Replace('/','\').Replace('\\','\')
+        $at=$text.IndexOf($needle,[StringComparison]::OrdinalIgnoreCase)
+        while ($at -ge 0) {
+            $end=$at+$needle.Length
+            if ($end -eq $text.Length -or [char]::IsWhiteSpace($text[$end]) -or $text[$end] -in @([char]92,[char]34,[char]39)) { return $true }
+            $at=$text.IndexOf($needle,$at+1,[StringComparison]::OrdinalIgnoreCase)
+        }
+        return $false
+    }
     function Flag-Value($argv,[string]$flag) {
         $values = @()
         for ($i=1;$i -lt $argv.Count;$i++) {
@@ -83,7 +97,11 @@ public static class RecoveryArgv {
                 $argv = [RecoveryArgv]::Decode($p.CommandLine)
                 $role = 'node'
                 foreach ($arg in $argv) {
-                    if ((Inside-Path $arg $HostRoot) -or (Inside-Path $arg $SourceRoot) -or (Same-Path $arg $EnrollmentFile)) { $referencesOriginal = $true }
+                    # Flags may carry path values as --prefix=DIR/--cwd=DIR.
+                    $pathArg = $arg
+                    if ($arg.StartsWith('--') -and $arg.Contains('=')) { $pathArg=$arg.Substring($arg.IndexOf('=')+1) }
+                    if ((Inside-Path $pathArg $HostRoot) -or (Inside-Path $pathArg $SourceRoot) -or (Same-Path $pathArg $EnrollmentFile)) { $referencesOriginal = $true }
+                    if ((Text-References-Root $arg $HostRoot) -or (Text-References-Root $arg $SourceRoot) -or (Text-References-Root $arg $HerdrSessionRoot) -or (Text-References-Root $arg $EnrollmentFile) -or (Same-Path $pathArg $EnrollmentFile)) { $referencesOriginal=$true }
                     if (Same-Path $arg $PiEntry) { $role = 'pi' }
                 }
                 if ($role -eq 'node') {
@@ -110,7 +128,15 @@ public static class RecoveryArgv {
                     $selected = Flag-Value $argv '--config'
                     if ($argv.Count -eq 4 -and (Base-Name $argv[1]) -eq 'native-connector-child.mjs') { $selected=$argv[3] }
                     if ($selected -and [IO.Path]::IsPathRooted($selected) -and -not (Same-Path $selected $EnrollmentFile) -and -not (Inside-Path $selected $HostRoot)) { $scope='different_enrollment' }
-                } else { $scope='other_program' }
+                } else {
+                    $scope='other_program'
+                    # Concrete Node script, not eval/unknown options. Pi and
+                    # Runtime roles and all original references were checked first.
+                    if ($argv.Count -ge 2 -and $argv[1] -match '^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+\\)') {
+                        $extension=[IO.Path]::GetExtension((Base-Name $argv[1]))
+                        if ($extension -in @('.js','.cjs','.mjs')) { $scope='external_entry' }
+                    }
+                }
             }
         }
         $records += [ordered]@{ id=[int]$p.ProcessId; parent=[int]$p.ParentProcessId; created=$created; windowsSession=[int]$p.SessionId;

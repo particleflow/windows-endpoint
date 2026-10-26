@@ -73,12 +73,32 @@ export function classifyRecoveryProcesses(records, {oldPid, currentSession, runS
     }
     return false
   }
+  function observedOriginalAncestry(process) {
+    const seen=new Set(); let child=process
+    for(let n=0;n<64;n++) {
+      if(child.parent === oldPid) return true
+      const parent=byId.get(child.parent)
+      if(!parent || seen.has(parent.id) || !Number.isSafeInteger(parent.created) || !Number.isSafeInteger(child.created) || parent.created > child.created) return false
+      seen.add(parent.id)
+      if(parent.originalReference || parent.scope === 'same') return true
+      child=parent
+    }
+    return false
+  }
   for(const p of records) {
     if(p.role === 'other') continue
     if(p.role === 'unknown' || p.windowsSession !== currentSession) return refuse('process_identity_unknown',p)
     if(p.originalReference || p.scope === 'same') return refuse('original_process_reference',p)
+    if(observedOriginalAncestry(p)) return refuse('original_process_reference',p)
+    // A pre-run, concrete JS entry outside the configured component/project
+    // roots is not a managed host component. Its business association may be
+    // unknown; that is not permission to stop it or replay/complete any task.
+    if(p.role === 'node' && p.scope === 'external_entry' && Number.isSafeInteger(p.created) && Number.isSafeInteger(runStart) && runStart > 0 && p.created > 0 && p.created < runStart) {
+      excluded.push({pid:p.id,role:p.role,reason:'preexisting_generic_entry_not_managed_component',businessRelationship:'not_inferred'})
+      continue
+    }
     if(!Number.isSafeInteger(runStart) || runStart <= 0 || !externalChain(p)) return refuse('process_ancestry_unknown_or_related',p)
-    if(p.role === 'herdr' && p.scope !== 'different_session' || p.role === 'pi' && !['different_task_root','interactive'].includes(p.scope) || p.role === 'node' && p.scope !== 'other_program' || p.role === 'connector' && p.scope !== 'different_enrollment') return refuse('process_scope_unknown',p)
+    if(p.role === 'herdr' && p.scope !== 'different_session' || p.role === 'pi' && !['different_task_root','interactive'].includes(p.scope) || p.role === 'node' && !['other_program','external_entry'].includes(p.scope) || p.role === 'connector' && p.scope !== 'different_enrollment') return refuse('process_scope_unknown',p)
     excluded.push({pid:p.id,role:p.role,reason:'verified_external_ancestry_and_scope'})
   }
   return {absent:true,excluded}
@@ -95,7 +115,7 @@ export async function nativeRecoveryEvidence({config,status,files}) {
     const result = await promisify(execFile)(powershell,['-NoLogo','-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./host-recovery.ps1',import.meta.url)),
       '-LifecycleFile',files.state,'-ConfigurationFile',files.config,'-RuntimeFile',files.runtime,'-StatusFile',files.status,
       '-OldProcessId',String(status.pid),'-RecoveryProcessId',String(process.pid),'-NodePath',p.node,'-HerdrPath',p.herdr,
-      '-PiEntry',p.pi,'-EnrollmentFile',connectorConfigReference(config),'-HostRoot',files.root,'-SourceRoot',config.sourceRoot,'-HerdrSession',config.session,'-RuntimeEntry',p.connector],
+      '-PiEntry',p.pi,'-EnrollmentFile',connectorConfigReference(config),'-HostRoot',files.root,'-SourceRoot',config.sourceRoot,'-HerdrSession',config.session,'-RuntimeEntry',p.connector,'-HerdrSessionRoot',path.join(config.herdrConfigRoot,'sessions',config.session)],
     {cwd:config.sourceRoot,env,windowsHide:true,shell:false,timeout:15000,maxBuffer:262144,encoding:'utf8'})
     evidence = JSON.parse(result.stdout)
   } catch(error) {

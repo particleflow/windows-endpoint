@@ -314,3 +314,22 @@ The caller's original file trust, exact identity/configuration binding, leases a
 official original-session absence checks remain unchanged. A live ancestor older
 than the run can also be established by a verified edge from the recovery invoker;
 its own subsequently exited parent is not guessed or reconstructed.
+
+
+### Pre-run generic script with an exited parent
+
+The process check is not a machine-wide business drain. A readable concrete Node
+JS entry outside the configured component and original project/session references,
+created before this run's first starting event, is not a managed component of
+that run. Its missing historical parent does not alone block infrastructure
+recheck. No process names or PID allowlists are configured. Pi/Runtime entries,
+original references (including --flag=PATH forms), an observed original ancestor,
+and unreadable or post-start ambiguous invocations keep their existing fences.
+
+Such an exclusion is reported as
+`preexisting_generic_entry_not_managed_component` with
+`businessRelationship:not_inferred`. It does not assert that the script's working
+directory or business is unrelated, that an old task finished, or that any process
+may be stopped. Original attempts, unknown receipts, ordinary-history admission,
+CAS/backup and `task_handoff_unverified` remain unchanged. This permits coordinator
+recovery without requiring ownership histories for unrelated older Node tools.
