@@ -162,9 +162,12 @@ export async function recoverHost({root,expectedRun,expectedState,expectedConfig
       return {state:'already_rechecked',lifecyclePhase:state.phase,attention:state.attention,ready:false,started:false,businessReplayed:false,stopAuthority:false}
     }
     demand(hash(stateRaw) === expectedState,'host_recovery_state_changed')
-    demand(state.phase === 'needs_attention' && state.attention === 'herdr_observation_unknown' && !state.handoff,'host_recovery_state_not_eligible')
+    const orphanedRunning = state.phase === 'running' && state.attention === null
+    demand((orphanedRunning || state.phase === 'needs_attention' && state.attention === 'herdr_observation_unknown') && !state.handoff,'host_recovery_state_not_eligible')
     const statusRaw = await boundedRead(files.status,32768), status = JSON.parse(statusRaw)
     demand(status.schema === 1 && status.owner === 'windows-endpoint-host' && status.runId === expectedRun && Number.isSafeInteger(status.pid) && status.pid > 0 && status.pid !== process.pid && Number.isSafeInteger(status.updatedAt) && Date.now()-status.updatedAt > 5000,'host_recovery_status_not_eligible')
+    // A later rejected launch must not stand in for the original running run.
+    if (orphanedRunning) demand(status.phase === 'running' && status.attention === null, 'host_recovery_status_not_eligible')
     const inspected = await inspect(config,undefined,{inspectHistoryOnly:true})
     const effective = inspected.config
     demand(path.resolve(process.execPath).toLowerCase() === path.resolve(effective.programs.node).toLowerCase() || observe !== nativeRecoveryEvidence,'host_recovery_node_mismatch')
@@ -174,6 +177,11 @@ export async function recoverHost({root,expectedRun,expectedState,expectedConfig
     const logFile=path.join(root,'logs/endpoint-host',`${status.runId}.jsonl`)
     const readLog=async()=>{try{return await boundedRead(logFile,65536)}catch(error){if(error.code === 'ENOENT')return null;throw error}}
     const logRaw = await readLog()
+    if (orphanedRunning) {
+      let first
+      try { first = JSON.parse(logRaw?.split('\n')[0]) } catch { /* Reject absent/unreadable original run binding below. */ }
+      demand(first?.schema === 1 && first.runId === expectedRun && first.phase === 'starting' && Number.isSafeInteger(first.at) && first.at <= status.updatedAt, 'host_recovery_run_binding_unavailable')
+    }
     let observed = null
     const verifyBytes = async()=>{
       inspected.assertUnchanged()

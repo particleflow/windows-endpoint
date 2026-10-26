@@ -240,8 +240,13 @@ unimplemented or unverified. No service, production PC or NAS is used by these t
 
 `host recover --root ROOT --expected-run UUID --expected-state-sha256 HASH
 --expected-configuration-sha256 HASH` is a finite **native Windows** infrastructure
-recheck, not a task resume, process stop or journal reset. Only the exact
-`needs_attention/herdr_observation_unknown` case is eligible, with no handoff.
+recheck, not a task resume, process stop or journal reset. The exact
+`needs_attention/herdr_observation_unknown` case is eligible, as is a stale
+`running` journal with null attention after the original host has disappeared;
+both reject any handoff. The running case additionally requires that same run's
+cached status still names the original running/null-attention observation and
+its matching first `starting` event. A later rejected launch, a missing PID alone,
+unreadable evidence or another attention reason cannot authorize this transition.
 Use the original reviewed configuration and run; do not infer identity from a
 label, a missing PID or an idle queue. The configuration hash is SHA256 of UTF-8
 `JSON.stringify([rawEndpointJson, rawRuntimeJson])`; the state hash covers the exact
@@ -269,6 +274,15 @@ inspect that same record before any next action. Original unknown tasks, receipt
 Pi session, queue and source files are not edited, moved or replayed. There is no
 automatic rollback/reset command; the retained original bytes support diagnosis
 without granting permission to erase later work.
+
+For the running case, `infrastructureRecovery` records the truthful prior
+`running`/null-attention pair and retains the exact original journal backup. The
+cached status is not rewritten to fabricate a normal exit. A compatible program
+switch can consume this verified recheck without restarting the old program:
+it verifies that same run and exact backup, then repeats the existing native
+absence and immutable-data checks. Candidates advertise `native_running_recovery`;
+selection refuses an older reader that cannot preserve this record. No Agent
+continuation, process adoption or business replay follows the recheck.
 
 Success means **infrastructure rechecked, no process started**. Explicit foreground
 start remains separate, through the existing selected program and same HostRoot.

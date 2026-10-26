@@ -5,7 +5,7 @@ import path from 'node:path'
 import {createHash,randomUUID} from 'node:crypto'
 import {recoverHost,recoveryConfigurationHash,nativeRecoveryEvidence,classifyRecoveryProcesses} from './host-recovery.mjs'
 import {nativeInstalledFixture} from './test-support/installed-fixture.mjs'
-import {acquireLeases,leaseKeys} from './lifecycle.mjs'
+import {acquireLeases,leaseKeys,StateStore} from './lifecycle.mjs'
 import {spawn,spawnSync} from 'node:child_process'
 import {fileURLToPath} from 'node:url'
 const hash = v=>createHash('sha256').update(v).digest('hex')
@@ -30,6 +30,67 @@ async function fixture(t) {
   const deps={inspect:async()=>({config:f.config,assertUnchanged(){}}),observe:async()=>({ownerVerified:true,oldHostAbsent:true,referencedProcessesAbsent:true})}
   return {...f,root,dir,stateFile,statusFile,state,raw,status,receipt,snapshot,options,deps}
 }
+async function runningFixture(t) {
+ const f=await fixture(t)
+ f.state.phase='running';f.state.attention=null
+ f.raw=JSON.stringify(f.state);await fs.writeFile(f.stateFile,f.raw);f.options.expectedState=hash(f.raw)
+ f.status.attention=null;await fs.writeFile(f.statusFile,JSON.stringify(f.status))
+ return f
+}
+test('stale running journal with confirmed original absence is rechecked without inventing a clean exit or replay',async t=>{
+ const f=await runningFixture(t),receipt=await fs.readFile(f.receipt),snapshot=await fs.readFile(f.snapshot)
+ const result=await recoverHost(f.options,f.deps)
+ assert.equal(result.state,'infrastructure_rechecked');assert.equal(result.started,false);assert.equal(result.stopAuthority,false);assert.equal(result.businessReplayed,false)
+ const saved=await new StateStore(f.dir,f.config.deviceId).load()
+ assert.equal(saved.phase,'stopped');assert.equal(saved.attention,null)
+ assert.equal(saved.infrastructureRecovery.previousPhase,'running');assert.equal(saved.infrastructureRecovery.previousAttention,null)
+ assert.equal(await fs.readFile(path.join(f.dir,`lifecycle-before-recheck-${f.options.expectedState}.json`),'utf8'),f.raw)
+ assert.deepEqual(await fs.readFile(f.receipt),receipt);assert.deepEqual(await fs.readFile(f.snapshot),snapshot)
+ assert.equal(JSON.parse(await fs.readFile(f.statusFile)).phase,'running','cached observation is retained, not fabricated as a graceful stop')
+ const before=await fs.readFile(f.stateFile)
+ assert.equal((await recoverHost(f.options,f.deps)).state,'already_rechecked');assert.deepEqual(await fs.readFile(f.stateFile),before)
+})
+for(const kind of ['starting','stopping','stopped','other_attention','handoff','agent_history','later_rejected_launch','wrong_status_run','missing_log','wrong_log_run','late_log_start','caller_pid','live_lease','pid_reuse','related_component','unreadable_process','attempt_during_observation','component_before_publish'])test(`running-journal recheck preserves ${kind} rejection`,async t=>{
+ const f=await runningFixture(t),log=path.join(f.root,'logs/endpoint-host',f.options.expectedRun+'.jsonl')
+ let release
+ if(['starting','stopping','stopped'].includes(kind)){f.state.phase=kind;await fs.writeFile(f.stateFile,JSON.stringify(f.state));f.options.expectedState=hash(JSON.stringify(f.state))}
+ if(kind==='other_attention'){f.state.attention='transfer_feedback_unavailable';await fs.writeFile(f.stateFile,JSON.stringify(f.state));f.options.expectedState=hash(JSON.stringify(f.state))}
+ if(kind==='handoff'){
+  const {payload}=JSON.parse(await fs.readFile(new URL('./test-support/handoff-v1.json',import.meta.url)))
+  payload.native.device_id=f.config.deviceId;payload.gate.device_id=f.config.deviceId
+  await new StateStore(f.dir,f.config.deviceId).recordHandoff(payload)
+  f.options.expectedState=hash(await fs.readFile(f.stateFile))
+ }
+ if(kind==='agent_history'){const s=JSON.parse(await fs.readFile(f.snapshot));s.workspaces[0].tabs[0].panes.p1.agent_session={value:'original'};await fs.writeFile(f.snapshot,JSON.stringify(s))}
+ if(kind==='later_rejected_launch'){f.status.phase='stopped';f.status.attention='host_previous_runtime_uncertain';await fs.writeFile(f.statusFile,JSON.stringify(f.status))}
+ if(kind==='wrong_status_run'){f.status.runId=randomUUID();await fs.writeFile(f.statusFile,JSON.stringify(f.status))}
+ if(kind==='caller_pid'){f.status.pid=process.pid;await fs.writeFile(f.statusFile,JSON.stringify(f.status))}
+ if(kind==='missing_log')await fs.unlink(log)
+ if(['wrong_log_run','late_log_start'].includes(kind))await fs.writeFile(log,JSON.stringify({schema:1,runId:kind==='wrong_log_run'?randomUUID():f.options.expectedRun,phase:'starting',at:f.status.updatedAt+(kind==='late_log_start'?1:-1)})+'\n')
+ if(kind==='live_lease')release=await acquireLeases([`host:${f.root}`,...leaseKeys(f.config)],f.dir)
+ if(['pid_reuse','related_component','unreadable_process'].includes(kind))f.deps.observe=async()=>{
+  const record=kind==='pid_reuse'?{id:f.status.pid,parent:0,created:Date.now(),windowsSession:1,role:'other'}:
+   {id:f.status.pid+1,parent:0,created:Date.now(),windowsSession:1,role:kind==='unreadable_process'?'unknown':'pi',scope:'same',originalReference:kind==='related_component'}
+  const result=classifyRecoveryProcesses([record],{oldPid:f.status.pid,currentSession:1,runStart:f.status.updatedAt-10000})
+  assert.equal(result.absent,false)
+  throw Object.assign(new Error('native evidence rejected'),{code:'host_recovery_process_evidence_unavailable'})
+ }
+ if(kind==='attempt_during_observation')f.deps.observe=async()=>{await fs.appendFile(f.receipt,'\n');return {ownerVerified:true,oldHostAbsent:true,referencedProcessesAbsent:true}}
+ if(kind==='component_before_publish'){let n=0;f.deps.observe=async()=>{if(++n===3)throw Object.assign(new Error('owned process appeared'),{code:'host_recovery_process_evidence_unavailable'});return {ownerVerified:true,oldHostAbsent:true,referencedProcessesAbsent:true}}}
+ const state=await fs.readFile(f.stateFile),receipt=await fs.readFile(f.receipt)
+ try{await assert.rejects(recoverHost(f.options,f.deps))}finally{await release?.()}
+ assert.deepEqual(await fs.readFile(f.stateFile),state)
+ if(kind!=='attempt_during_observation')assert.deepEqual(await fs.readFile(f.receipt),receipt)
+ assert.equal(JSON.parse(await fs.readFile(f.receipt)).state,'unknown')
+})
+test('running recovery record validation does not accept a different prior attention or an invented phase',async t=>{
+ const f=await runningFixture(t);await recoverHost(f.options,f.deps)
+ const store=new StateStore(f.dir,f.config.deviceId),saved=await store.load()
+ for(const record of [{...saved.infrastructureRecovery,previousAttention:'herdr_observation_unknown'},{...saved.infrastructureRecovery,previousPhase:'starting'}]){
+  await fs.writeFile(f.stateFile,JSON.stringify({...saved,infrastructureRecovery:record}))
+  await assert.rejects(store.load(),{code:'lifecycle_recovery_mismatch'})
+ }
+})
 test('explicit recheck retains original unknown attempt, journal backup and ordinary workspace; repeat does not write',async t=>{
  const f=await fixture(t),before=await fs.readFile(f.receipt),snapshot=await fs.readFile(f.snapshot)
  const result=await recoverHost(f.options,f.deps);assert.equal(result.state,'infrastructure_rechecked');assert.equal(result.started,false);assert.equal(result.businessReplayed,false)

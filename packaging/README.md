@@ -185,7 +185,8 @@ evidence defer switching. Attempt records are **unreconciled**, not declared act
 or deleted. A native endpoint may retain unchanged historical attempts across a
 compatible program-only switch when the existing infrastructure-recovery record
 binds their exact bytes and the unchanged endpoint/runtime configuration. It also
-requires the normal stopped status, verified ordinary session checkpoint, original
+requires the normal stopped status (or that same run's explicitly rechecked
+running/null-attention record and exact original backup), verified ordinary session checkpoint, original
 process absence and current trusted Windows file ownership through the existing
 native recheck. It starts/stops no component, moves no execution and does not
 complete or replay an unknown task. Missing/changed recovery evidence remains
@@ -205,8 +206,12 @@ automatic rollback follows a startup failure. Ordinary shell checkpoints and all
 original data are retained. Keep old packages; no cleanup or uninstall is added.
 Native-mode selection refuses older candidates without
 `native_runtime_project_root`, including `41ddb9be`, so rollback cannot silently
-restore the previous home mapping. Switching requires the same normal stop and
-task reconciliation as other program updates. No existing attempt's WorkDir,
+restore the previous home mapping. A journal rechecked from `running` additionally
+requires `native_running_recovery` on the target; this prevents rollback to an
+older reader, including ba63f47, that cannot load that prior-state record. This
+capability is build metadata, not a user configuration or permission flag.
+Switching requires the same verified stopped ownership and history preservation
+or task handoff as other program updates. No existing attempt's WorkDir,
 configuration root, receipt or unknown result is rewritten by this correction.
 The older `2009333` portable candidate remains runnable directly but lacks this
 managed-deployment profile and cannot be silently adopted into this journal.

@@ -14,7 +14,7 @@ import { ForegroundHost } from './host.mjs'
 import { installedFixture, nativeInstalledFixture } from './test-support/installed-fixture.mjs'
 import { attemptEvidence, recoveryConfigurationHash } from './host-recovery.mjs'
 import { programPackage } from './test-support/program-package.mjs'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 
 async function fixture(t, { native = false } = {}) {
   const f = await (native ? nativeInstalledFixture(t) : installedFixture(t)), root = path.join(f.base, 'host')
@@ -213,6 +213,51 @@ async function retainedFixture(t) {
   await manager.stage(f.b.directory, f.b.hash)
   return { ...f, manager, options, attempt, raw, statusFile, logFile, observations: () => observations }
 }
+
+async function orphanRetentionFixture(t) {
+  const f = await retainedFixture(t), state = await f.manager.lifecycleStore.load(), status = JSON.parse(await fs.readFile(f.statusFile))
+  status.phase = 'running'; await fs.writeFile(f.statusFile, JSON.stringify(status))
+  const prior = { ...state, phase: 'running', attention: null }; delete prior.sessionContinuation
+  const original = JSON.stringify(prior), fromState = createHash('sha256').update(original).digest('hex')
+  const backup = path.join(f.manager.lifecycleDirectory, `lifecycle-before-recheck-${fromState}.json`)
+  await fs.writeFile(backup, original)
+  await f.manager.lifecycleStore.save({ ...state, infrastructureRecovery: { ...state.infrastructureRecovery, run: status.runId,
+    fromState, previousPhase: 'running', previousAttention: null } })
+  return { ...f, backup }
+}
+
+test('orphaned-running recovery permits the compatible program switch without restarting the old home-mapped host', async t => {
+  const f = await orphanRetentionFixture(t), before = await fs.readFile(f.manager.lifecycleStore.file), backup = await fs.readFile(f.backup)
+  assert.equal((await f.manager.select(f.b.hash, 'update')).state, 'selected_review_only')
+  assert.equal((await f.manager.read()).current, f.b.hash)
+  assert.deepEqual(await fs.readFile(f.manager.lifecycleStore.file), before); assert.deepEqual(await fs.readFile(f.backup), backup)
+  assert.equal(JSON.parse(await fs.readFile(f.statusFile)).phase, 'running', 'never fabricate an original clean exit')
+  assert.equal(await fs.readFile(f.attempt, 'utf8'), f.raw)
+})
+
+test('orphaned-running recovery refuses old-reader rollback before changing the selected program', async t => {
+  const f = await orphanRetentionFixture(t)
+  delete f.b.manifest.native_running_recovery
+  await fs.writeFile(path.join(f.b.directory, 'candidate.json'), JSON.stringify(f.b.manifest))
+  const hash = await digest(path.join(f.b.directory, 'candidate.json'))
+  await f.manager.stage(f.b.directory, hash)
+  const before = await fs.readFile(f.manager.file)
+  await assert.rejects(f.manager.select(hash, 'update'), { code: 'deployment_running_recovery_unsupported' })
+  assert.deepEqual(await fs.readFile(f.manager.file), before)
+  assert.equal(await fs.readFile(f.attempt, 'utf8'), f.raw)
+})
+
+test('orphaned-running recovery cannot use a changed backup or a different cached run as retention evidence', async t => {
+  for (const kind of ['backup', 'run']) {
+    const f = await orphanRetentionFixture(t), before = await fs.readFile(f.manager.file)
+    if (kind === 'backup') await fs.appendFile(f.backup, '\n')
+    else { const status = JSON.parse(await fs.readFile(f.statusFile)); status.runId = randomUUID(); await fs.writeFile(f.statusFile, JSON.stringify(status)) }
+    if (kind === 'backup') await assert.rejects(f.manager.select(f.b.hash, 'update'), { code: 'deployment_retained_recovery_mismatch' })
+    else assert.equal((await f.manager.select(f.b.hash, 'update')).reason, 'task_handoff_unverified')
+    assert.deepEqual(await fs.readFile(f.manager.file), before)
+    assert.equal(await fs.readFile(f.attempt, 'utf8'), f.raw)
+  }
+})
 
 test('compatible stopped program switch retains the original durable unknown checkpoint and never claims a business handoff', async t => {
   const f = await retainedFixture(t), before = await fs.readFile(f.manager.lifecycleStore.file)

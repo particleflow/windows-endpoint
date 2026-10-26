@@ -3,6 +3,7 @@
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { createHash } from 'node:crypto'
 import { validateConfig, validateDirectory, installationReferences, isNativeRuntimeConfig } from './endpoint.mjs'
 import { DeploymentTransactions, DeploymentError, deploymentLayout } from './deployment.mjs'
 import { acquireLeases } from './lifecycle.mjs'
@@ -57,8 +58,17 @@ export class ProgramDeployment extends DeploymentTransactions {
     const stateRaw = await boundedRead(files.state, 262144), statusRaw = await boundedRead(files.status, 32768)
     demand(JSON.stringify(JSON.parse(stateRaw)) === JSON.stringify(state), 'deployment_retained_work_changed')
     const status = JSON.parse(statusRaw)
-    if (status.schema !== 1 || status.owner !== 'windows-endpoint-host' || status.phase !== 'stopped' || status.attention !== null ||
+    const recheckedRunning = recovery.previousPhase === 'running' && recovery.previousAttention === null && status.phase === 'running' && status.runId === recovery.run
+    if (status.schema !== 1 || status.owner !== 'windows-endpoint-host' || (status.phase !== 'stopped' && !recheckedRunning) || status.attention !== null ||
         !/^[a-f0-9-]{36}$/.test(status.runId) || !Number.isSafeInteger(status.pid) || status.pid < 1 || !Number.isSafeInteger(status.updatedAt)) return 'task_handoff_unverified'
+    let backupFile, backupRaw
+    if (recheckedRunning) {
+      backupFile = path.join(this.lifecycleDirectory, `lifecycle-before-recheck-${recovery.fromState}.json`)
+      backupRaw = await boundedRead(backupFile, 262144)
+      const original = JSON.parse(backupRaw)
+      demand(createHash('sha256').update(backupRaw).digest('hex') === recovery.fromState && original.identity === this.config.deviceId &&
+        original.phase === 'running' && original.attention === null && !original.handoff, 'deployment_retained_recovery_mismatch')
+    }
     const inspected = await this.inspect(this.config, undefined, { inspectHistoryOnly: true })
     if (this.observe === nativeRecoveryEvidence && path.resolve(process.execPath).toLowerCase() !== path.resolve(inspected.config.programs.node).toLowerCase()) return 'task_handoff_unverified'
     const logFile = path.join(this.root, 'logs/endpoint-host', `${status.runId}.jsonl`)
@@ -67,6 +77,7 @@ export class ProgramDeployment extends DeploymentTransactions {
       await this.unchanged(); inspected.assertUnchanged()
       demand(await boundedRead(files.state, 262144) === stateRaw && await boundedRead(files.status, 32768) === statusRaw &&
         await boundedRead(logFile, 65536) === logRaw && await attemptEvidence(this.config) === recovery.attempts, 'deployment_retained_work_changed')
+      if (backupFile) demand(await boundedRead(backupFile, 262144) === backupRaw, 'deployment_retained_work_changed')
       await verifySessionContinuation(this.config, state.sessionContinuation)
     }
     // Preserve the FIRST comparison through both work checks and every atomic
@@ -90,6 +101,8 @@ export class ProgramDeployment extends DeploymentTransactions {
     const verified = await this.verify(path.join(this.layout.packages, target), target)
     demand(verified.manifest.native_runtime, 'deployment_native_connector_missing')
     demand(verified.manifest.native_runtime_project_root, 'deployment_native_project_root_unsupported')
+    const lifecycle = await this.lifecycleStore.load()
+    if (lifecycle.infrastructureRecovery?.previousPhase === 'running') demand(verified.manifest.native_running_recovery === true, 'deployment_running_recovery_unsupported')
   }
   async selectionCheck(state, target, mode) {
     // Check the version to be selected, not the preserved previous inventory.
