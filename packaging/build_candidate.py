@@ -13,6 +13,7 @@ import zipfile
 RUNTIME_FILES = (
     'endpoint.mjs', 'endpoint.ps1', 'host.mjs', 'runtime.mjs', 'installed.mjs',
     'native-connector.mjs', 'native-connector-child.mjs', 'setup.mjs', 'host-recovery.mjs', 'host-recovery.ps1',
+    'directory-selection.mjs', 'directory-selection.ps1',
     'lifecycle.mjs', 'handoff.mjs', 'owned-herdr.ps1', 'session-continuation.mjs',
     'session-diagnostics.mjs', 'transfer-contract.mjs', 'transfer-lifecycle.mjs',
     'deployment.mjs', 'deployment-layout.json', 'candidate.mjs', 'program-deployment.mjs', 'dependencies.json', 'LICENSE',

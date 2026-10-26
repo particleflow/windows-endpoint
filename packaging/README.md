@@ -54,6 +54,22 @@ Do not change a populated queue's binding or replace its original IDs.
 
 From PowerShell, using the existing absolute Node path:
 
+To browse instead of typing the Windows default working directory, run
+`directory-pick --config FILE` (or `directory-pick` before configuration). This
+opens Windows' foreground folder dialog under the current account. Its JSON is
+either `{ "state": "selected", "path": "...", "configurationChanged": false }`
+or `{ "state": "cancelled", "configurationChanged": false }`. Selection alone
+does not save, grant access, start a component or move existing files.
+
+For **fresh** schema 2/3 references, `configure --from FILE --root DIR
+--browse-source-root native` uses that dialog and saves the chosen `sourceRoot`
+through the existing exclusive configuration writer. Cancel leaves all files
+unchanged. An existing binding is never overwritten; this command is not a
+workspace/queue migration. The current drive-path validation still applies.
+NAS storage selection is separate: use already accessible mapped/UNC filesystem
+paths, not HTTP URLs. UNC task activation and NAS storage settings are not
+completed by this picker; see [the cross-module contract](https://github.com/particleflow/windows-endpoint/blob/feat/explicit-component-runtime/docs/workspace-directory-selection.md).
+
 ```powershell
 $Summary = Get-Content -Raw $SummaryFile | ConvertFrom-Json
 & $NodePath (Join-Path $Candidate 'endpoint.mjs') setup --from $References --root $HostRoot --source $Candidate --manifest-sha256 $Summary.manifest_sha256 --transfer existing-queue

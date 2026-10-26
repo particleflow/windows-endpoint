@@ -270,8 +270,16 @@ export async function stageBundle(source, destination, expectedHash, { checkpoin
   return { state: 'staged_review_only', manifestSha256: expectedHash }
 }
 
-export async function configure(from, to, root) {
-  const input = await readJSON(from)
+export async function configure(from, to, root, { browseSourceRoot = false, chooseDirectory } = {}) {
+  let input = await readJSON(from)
+  if (browseSourceRoot) {
+    requireThat([2, 3].includes(input?.schema), 'directory_picker_reference_configuration_required')
+    const { pickDirectory } = await import('./directory-selection.mjs')
+    const selection = await pickDirectory({ initialPath: typeof input.sourceRoot === 'string' && path.isAbsolute(input.sourceRoot) ? input.sourceRoot : null },
+      chooseDirectory ? { choose: chooseDirectory } : undefined)
+    if (selection.state === 'cancelled') return selection
+    input = { ...input, sourceRoot: selection.path }
+  }
   let config, layout
   if (root !== undefined) {
     const { DeploymentError, deploymentLayout, deploymentReferences } = await import('./deployment.mjs')
@@ -503,12 +511,19 @@ export async function main(args) {
     requireThat(/^--[a-z][a-z0-9-]*$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'invalid_arguments')
     options[rest[i]] = rest[i + 1]
   }
-  if (command === 'help' || !command) return { commands: ['setup --from FILE --root DIR --source DIR --manifest-sha256 SHA256 --transfer disabled|existing-queue', 'configure --from FILE --root DIR', 'configure --from FILE --config FILE', 'doctor --config FILE', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR', 'host recover --root DIR --expected-run UUID --expected-state-sha256 SHA256 --expected-configuration-sha256 SHA256', 'host handoff-status --root DIR --request-id UUID', 'deploy install|update --root DIR --source DIR --manifest-sha256 SHA256', 'deploy rollback --root DIR --manifest-sha256 SHA256', 'deploy run|recover|status --root DIR'], status: 'portable program deployment and foreground review available; production release and active-task handoff remain unqualified' }
+  if (command === 'help' || !command) return { commands: ['setup --from FILE --root DIR --source DIR --manifest-sha256 SHA256 --transfer disabled|existing-queue', 'configure --from FILE --root DIR [--browse-source-root native]', 'directory-pick [--config FILE]', 'configure --from FILE --config FILE', 'doctor --config FILE', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR', 'host recover --root DIR --expected-run UUID --expected-state-sha256 SHA256 --expected-configuration-sha256 SHA256', 'host handoff-status --root DIR --request-id UUID', 'deploy install|update --root DIR --source DIR --manifest-sha256 SHA256', 'deploy rollback --root DIR --manifest-sha256 SHA256', 'deploy run|recover|status --root DIR'], status: 'portable program deployment and foreground review available; production release and active-task handoff remain unqualified' }
   if (['start', 'activate', 'update', 'rollback', 'uninstall'].includes(command)) throw new EndpointError('qualification_required_no_runtime_or_data_changed')
+  if (command === 'directory-pick') {
+    keys(options, [], ['--config'])
+    const { pickDirectory } = await import('./directory-selection.mjs')
+    const initialPath = options['--config'] ? validateConfig(await readJSON(options['--config'])).sourceRoot : null
+    return pickDirectory({ initialPath })
+  }
   if (command === 'configure') {
-    keys(options, ['--from'], ['--config', '--root'])
+    keys(options, ['--from'], ['--config', '--root', '--browse-source-root'])
     requireThat(Object.hasOwn(options, '--config') !== Object.hasOwn(options, '--root'), 'invalid_arguments')
-    return configure(options['--from'], options['--config'], options['--root'])
+    requireThat(options['--browse-source-root'] === undefined || options['--browse-source-root'] === 'native', 'invalid_arguments')
+    return configure(options['--from'], options['--config'], options['--root'], { browseSourceRoot: options['--browse-source-root'] === 'native' })
   }
   if (command === 'stage') { keys(options, ['--source', '--destination', '--manifest-sha256']); return stageBundle(options['--source'], options['--destination'], options['--manifest-sha256']) }
   requireThat(['doctor', 'plan'].includes(command), 'unknown_command')
@@ -536,7 +551,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (result.ready === false || result.state === 'deferred') process.exitCode = 2
   }).catch(e => {
     // Do not echo input, paths, native stdout/stderr, config or credentials.
-    process.stderr.write(`${JSON.stringify({ error: e instanceof EndpointError ? e.code : 'operation_failed' })}\n`)
+    process.stderr.write(`${JSON.stringify({ error: e instanceof EndpointError || /^directory_picker_[a-z_]+$/.test(e.code) ? e.code : 'operation_failed' })}\n`)
     process.exitCode = 2
   })
 }

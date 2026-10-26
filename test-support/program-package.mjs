@@ -10,7 +10,7 @@ export async function programPackage(directory, label = 'a', { native = false } 
   await fs.mkdir(directory, { recursive: true })
   const source = fileURLToPath(new URL('..', import.meta.url))
   const names = (await fs.readdir(source)).filter(n => n.endsWith('.mjs') && !n.endsWith('.test.mjs'))
-  names.push('owned-herdr.ps1', 'host-recovery.ps1', 'deployment-layout.json', 'dependencies.json', 'LICENSE')
+  names.push('owned-herdr.ps1', 'host-recovery.ps1', 'directory-selection.ps1', 'deployment-layout.json', 'dependencies.json', 'LICENSE')
   for (const name of names) await fs.copyFile(path.join(source, name), path.join(directory, name))
   await fs.writeFile(path.join(directory, 'README.md'), `INERT REVIEW REVISION ${label}`)
   await fs.mkdir(path.join(directory, 'transfer'))
