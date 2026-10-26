@@ -402,6 +402,19 @@ try {
   const unchangedJournal = await fs.readFile(lifecycleFile, 'utf8')
   assert.equal(JSON.parse((await promisify(execFile)(node, recoveryArgs, { timeout: 60000, maxBuffer: 16384, windowsHide: true, shell: false })).stdout).state, 'already_rechecked')
   assert.equal(await fs.readFile(lifecycleFile, 'utf8'), unchangedJournal)
+  // Isolated residual-marker reproduction after our exact owned server has
+  // exited. The updater must retain these original generation bytes, require
+  // real owner/process/status evidence, and never delete the official marker.
+  await fs.writeFile(marker, generation, { flag: 'wx' })
+  const { programDeployment } = await import(pathToFileURL(path.join(path.dirname(endpoint), 'program-deployment.mjs')))
+  const { programProfileHash } = await import(pathToFileURL(path.join(path.dirname(endpoint), 'candidate.mjs')))
+  const updater = await programDeployment(hostRoot)
+  assert.equal(await updater.work(programProfileHash), null)
+  await updater.retained.reobserve(); await updater.workBaseline()
+  assert.equal(await fs.readFile(marker, 'utf8'), generation)
+  assert.equal(await fs.readFile(lifecycleFile, 'utf8'), unchangedJournal)
+  assert.equal(await fs.readFile(originalAttempt, 'utf8'), unknownReceipt)
+  checked('stopped_program_preflight_retains_stale_official_marker_with_real_native_absence_evidence')
   const recovered = launch()
   await recovered.until(s => s.attention === 'connector_authentication_required')
   assert.equal(await recovered.stop(), 2) // Peer still refuses auth; never fake online.

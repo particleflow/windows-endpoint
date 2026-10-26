@@ -106,6 +106,12 @@ export function classifyRecoveryProcesses(records, {oldPid, currentSession, runS
 
 export async function nativeRecoveryEvidence({config,status,files}) {
   demand(process.platform === 'win32' && process.arch === 'x64','host_recovery_windows_required')
+  const driver = new NativeDriver(config)
+  const markerRead = async () => {
+    try { return await boundedRead(driver.marker,80) } catch(error) { if(error.code === 'ENOENT') return null; throw error }
+  }
+  const marker = await markerRead()
+  demand(marker === null || /^\d+:\d+$/.test(marker),'host_recovery_herdr_marker_unknown')
   const p = programPaths(config), powershell = path.join(process.env.SystemRoot || 'C:\\Windows','System32/WindowsPowerShell/v1.0/powershell.exe')
   // Reuse the official Runtime's Windows PowerShell environment rule: a
   // PowerShell 7 parent must not redirect PS5 built-in module resolution.
@@ -134,9 +140,15 @@ export async function nativeRecoveryEvidence({config,status,files}) {
     const failure=Object.assign(new Error('host_recovery_process_evidence_unavailable'),{code:'host_recovery_process_evidence_unavailable',evidenceStage:'process_absence'})
     failure.processReason=classified.reason; failure.blockingProcess=classified.blocked; throw failure
   }
-  const driver = new NativeDriver(config)
+  // A residual marker is not an active Windows pipe, but a still-present PID
+  // (including reuse) or changed marker is not evidence of an absent owner.
+  if(marker !== null) {
+    const markerPid = Number(marker.split(':')[0])
+    demand(Number.isSafeInteger(markerPid) && markerPid > 0 && !evidence.processes.some(p=>p.id === markerPid),'host_recovery_herdr_marker_owner_present')
+  }
   demand(driver.hostStatus().running === false,'host_recovery_herdr_present')
-  return {ownerVerified:true,oldHostAbsent:true,referencedProcessesAbsent:true,excludedProcesses:classified.excluded}
+  demand(await markerRead() === marker,'host_recovery_herdr_marker_changed')
+  return {ownerVerified:true,oldHostAbsent:true,referencedProcessesAbsent:true,herdrAbsent:true,excludedProcesses:classified.excluded}
 }
 
 // Injection is internal test support, never a config/CLI field.

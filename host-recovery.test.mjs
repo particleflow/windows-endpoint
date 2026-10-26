@@ -159,6 +159,12 @@ if (process.platform === 'win32') test('native read-only owner/process probe acc
  // Helper succeeds, then the inert Herdr command fails; this is not real Herdr qualification.
  await assert.rejects(nativeRecoveryEvidence({config,status:f.status,files}),error=>{ assert.equal(error.code,'herdr_observation_unknown',`probe stage: ${error.evidenceStage || 'herdr_status'}; reason: ${error.processReason}; blocking: ${JSON.stringify(error.blockingProcess)}`); return true })
  await assert.rejects(nativeRecoveryEvidence({config,status:{...f.status,pid:process.pid},files}),{code:'host_recovery_process_evidence_unavailable'})
+ const marker=path.join(config.herdrConfigRoot,'sessions',config.session,'herdr.sock')
+ await fs.mkdir(path.dirname(marker),{recursive:true})
+ const generation=process.pid+':1770000000000000000'
+ await fs.writeFile(marker,generation)
+ await assert.rejects(nativeRecoveryEvidence({config,status:f.status,files}),{code:'host_recovery_herdr_marker_owner_present'})
+ assert.equal(await fs.readFile(marker,'utf8'),generation,'live marker owner is never stopped or unlinked')
 })
 if(process.platform === 'win32')test('actual recovery process exit after durable backup does not publish or replay; same evidence retries safely',async t=>{
  const f=await fixture(t),entry=new URL('./host-recovery.mjs',import.meta.url).href

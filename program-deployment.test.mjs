@@ -226,6 +226,75 @@ async function orphanRetentionFixture(t) {
   return { ...f, backup }
 }
 
+test('a verified stopped native program update retains a stale official marker without deleting it or replaying unknown history', async t => {
+  const f = await retainedFixture(t)
+  const marker = path.join(f.config.herdrConfigRoot, 'sessions', f.config.session, 'herdr.sock')
+  const generation = '12345:1770000000000000000'
+  await fs.mkdir(path.dirname(marker), { recursive: true }); await fs.writeFile(marker, generation)
+  f.manager.observe = async () => ({ ownerVerified: true, oldHostAbsent: true, referencedProcessesAbsent: true, herdrAbsent: true })
+  const state = await fs.readFile(f.manager.lifecycleStore.file)
+  assert.equal((await f.manager.select(f.b.hash, 'update')).state, 'selected_review_only')
+  assert.equal(await fs.readFile(marker, 'utf8'), generation)
+  assert.deepEqual(await fs.readFile(f.manager.lifecycleStore.file), state)
+  assert.equal(await fs.readFile(f.attempt, 'utf8'), f.raw)
+  await preserve(f)
+})
+
+for (const kind of ['no_recovery', 'missing_status_proof', 'live_server', 'unknown_probe', 'malformed_marker']) test(`a retained Herdr marker refuses ${kind} without altering selection or task evidence`, async t => {
+  const f = await retainedFixture(t), marker = path.join(f.config.herdrConfigRoot, 'sessions', f.config.session, 'herdr.sock')
+  const generation = kind === 'malformed_marker' ? 'not-an-official-marker' : '12345:1770000000000000000'
+  await fs.mkdir(path.dirname(marker), { recursive: true }); await fs.writeFile(marker, generation)
+  if (kind === 'no_recovery') {
+    const state = await f.manager.lifecycleStore.load(); delete state.infrastructureRecovery
+    await f.manager.lifecycleStore.save(state)
+  }
+  f.manager.observe = async () => {
+    if (kind === 'unknown_probe') throw new Error('synthetic unreadable native status')
+    return { ownerVerified: true, oldHostAbsent: true, referencedProcessesAbsent: true,
+      ...(kind === 'missing_status_proof' ? {} : { herdrAbsent: kind !== 'live_server' }) }
+  }
+  const journal = await fs.readFile(f.manager.file), state = await fs.readFile(f.manager.lifecycleStore.file)
+  if (['live_server', 'missing_status_proof', 'unknown_probe'].includes(kind)) await assert.rejects(f.manager.select(f.b.hash, 'update'))
+  else assert.equal((await f.manager.select(f.b.hash, 'update')).state, 'deferred')
+  assert.deepEqual(await fs.readFile(f.manager.file), journal)
+  assert.deepEqual(await fs.readFile(f.manager.lifecycleStore.file), state)
+  assert.equal(await fs.readFile(marker, 'utf8'), generation)
+  assert.equal(await fs.readFile(f.attempt, 'utf8'), f.raw)
+})
+
+for (const kind of ['generation', 'removed', 'live_server', 'attempt']) test(`a retained Herdr marker rechecks ${kind} at selector publication`, async t => {
+  const f = await retainedFixture(t), marker = path.join(f.config.herdrConfigRoot, 'sessions', f.config.session, 'herdr.sock')
+  await fs.mkdir(path.dirname(marker), { recursive: true }); await fs.writeFile(marker, '12345:1770000000000000000')
+  let changed = false
+  f.manager.observe = async () => ({ ownerVerified: true, oldHostAbsent: true, referencedProcessesAbsent: true, herdrAbsent: !(changed && kind === 'live_server') })
+  f.manager.checkpoint = async phase => {
+    if (phase !== 'journal_file_synced') return
+    changed = true
+    if (kind === 'generation') await fs.writeFile(marker, '12345:1770000000000000001')
+    if (kind === 'removed') await fs.unlink(marker)
+    if (kind === 'attempt') await fs.appendFile(f.attempt, '\n')
+    await f.manager.retained.reobserve()
+    await f.manager.workBaseline()
+  }
+  const journal = await fs.readFile(f.manager.file), state = await fs.readFile(f.manager.lifecycleStore.file)
+  await assert.rejects(f.manager.select(f.b.hash, 'update'), { code: kind === 'live_server' ? 'deployment_retained_processes_unknown' :
+    kind === 'attempt' ? 'deployment_retained_work_changed' : 'deployment_herdr_marker_changed' })
+  assert.deepEqual(await fs.readFile(f.manager.file), journal)
+  assert.deepEqual(await fs.readFile(f.manager.lifecycleStore.file), state)
+  assert.equal(await fs.readFile(f.attempt, 'utf8'), f.raw + (kind === 'attempt' ? '\n' : ''))
+})
+
+test('a retained marker needs the same recovery proof even when the attempt directory is empty', async t => {
+  const f = await retainedFixture(t), marker = path.join(f.config.herdrConfigRoot, 'sessions', f.config.session, 'herdr.sock')
+  await fs.rm(path.dirname(path.dirname(f.attempt)), { recursive: true }) // this fixture's own synthetic task only
+  const state = await f.manager.lifecycleStore.load(); state.infrastructureRecovery.attempts = await attemptEvidence(f.config)
+  await f.manager.lifecycleStore.save(state)
+  await fs.mkdir(path.dirname(marker), { recursive: true }); await fs.writeFile(marker, '12345:1770000000000000000')
+  f.manager.observe = async () => ({ ownerVerified: true, oldHostAbsent: true, referencedProcessesAbsent: true, herdrAbsent: true })
+  assert.equal((await f.manager.select(f.b.hash, 'update')).state, 'selected_review_only')
+  assert.equal(await fs.readFile(marker, 'utf8'), '12345:1770000000000000000')
+})
+
 test('orphaned-running recovery permits the compatible program switch without restarting the old home-mapped host', async t => {
   const f = await orphanRetentionFixture(t), before = await fs.readFile(f.manager.lifecycleStore.file), backup = await fs.readFile(f.backup)
   assert.equal((await f.manager.select(f.b.hash, 'update')).state, 'selected_review_only')

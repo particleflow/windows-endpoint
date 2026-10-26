@@ -31,7 +31,11 @@ const describe = (result, retained = null) => ({ ...result, evidence: 'endpoint_
   ...(retained ? { taskHistory: 'preserved_unreconciled', retainedAttemptEvidenceSha256: retained.attempts, businessReplayed: false, stopAuthority: false } : {}) })
 
 export class ProgramDeployment extends DeploymentTransactions {
-  async freezeWork(state) {
+  herdrMarker() {
+    return this.config.session === 'default' ? path.join(this.config.herdrConfigRoot, 'herdr.sock') :
+      path.join(this.config.herdrConfigRoot, 'sessions', this.config.session, 'herdr.sock')
+  }
+  async freezeWork(state, marker) {
     if (this.workBaseline) { await this.workBaseline(); return }
     const raw = await optional(this.lifecycleStore.file, 262144)
     const original = raw === null ? { schema: 1, identity: this.config.deviceId, phase: 'stopped', restarts: [], attention: null } : JSON.parse(raw)
@@ -40,12 +44,13 @@ export class ProgramDeployment extends DeploymentTransactions {
     this.workBaseline = async () => {
       await this.unchanged()
       demand(await optional(this.lifecycleStore.file, 262144) === raw && await attemptEvidence(this.config) === attempts, 'deployment_retained_work_changed')
+      demand(await optional(this.herdrMarker(), 80) === marker, 'deployment_herdr_marker_changed')
       await verifySessionContinuation(this.config, continuation)
       await this.retained?.unchanged()
     }
     await this.workBaseline()
   }
-  async retainedHistory(state) {
+  async retainedHistory(state, requireHerdrAbsent = false) {
     // A stopped, compatible PROGRAM switch need not delete or complete old
     // tasks. Consume only the original durable infrastructure-recovery digest,
     // never a caller-supplied owner/idle declaration or an unverified handoff.
@@ -85,12 +90,14 @@ export class ProgramDeployment extends DeploymentTransactions {
     if (this.retained) await this.retained.unchanged()
     await unchanged()
     const observed = await this.observe({ config: inspected.config, status, files })
-    demand(observed?.ownerVerified === true && observed.oldHostAbsent === true && observed.referencedProcessesAbsent === true, 'deployment_retained_processes_unknown')
+    const absent = evidence => evidence?.ownerVerified === true && evidence.oldHostAbsent === true &&
+      evidence.referencedProcessesAbsent === true && (!requireHerdrAbsent || evidence.herdrAbsent === true)
+    demand(absent(observed), 'deployment_retained_processes_unknown')
     await unchanged()
     const reobserve = async () => {
       await unchanged()
       const current = await this.observe({ config: inspected.config, status, files })
-      demand(current?.ownerVerified === true && current.oldHostAbsent === true && current.referencedProcessesAbsent === true, 'deployment_retained_processes_unknown')
+      demand(absent(current), 'deployment_retained_processes_unknown')
       await unchanged()
     }
     this.retained ||= { attempts: recovery.attempts, unchanged, reobserve }
@@ -134,20 +141,26 @@ export class ProgramDeployment extends DeploymentTransactions {
     // A task-owner handoff is still required for execution migration. A verified
     // unchanged recovery baseline can instead retain history verbatim across a
     // stopped program-only switch; it does not claim a Pi task ended.
+    const marker = await optional(this.herdrMarker(), 80)
+    const retainedMarker = marker !== null && isNativeRuntimeConfig(this.config)
+    if (marker !== null && !/^\d+:\d+$/.test(marker)) return 'external_component_state_unverified'
     const attempts = path.join(this.config.sourceRoot, '.memoh-computer/attempts')
+    let nonempty = false
     if (await exists(attempts)) {
       await validateDirectory(attempts)
       const handle = await fs.opendir(attempts)
-      let nonempty
       try { nonempty = !!(await handle.read()) } finally { await handle.close() }
-      if (nonempty) {
-        const reason = await this.retainedHistory(state)
-        if (reason) return reason
-      }
     }
-    if (await exists(path.join(this.config.herdrConfigRoot, 'sessions', this.config.session, 'herdr.sock')) ||
+    if (nonempty || retainedMarker) {
+      const reason = await this.retainedHistory(state, retainedMarker)
+      if (reason) return reason
+    }
+    // Windows herdr.sock is a PID:nonce marker, not the named-pipe listener.
+    // Only the existing native recovery/identity/process/status proof can retain
+    // it across a program-only switch. Never remove it or infer task completion.
+    if (marker !== null && !retainedMarker ||
         !isNativeRuntimeConfig(this.config) && await exists(path.join(this.config.agenvoConfigDir, 'run.lock'))) return 'external_component_state_unverified'
-    await this.freezeWork(state)
+    await this.freezeWork(state, marker)
     return null
   }
 }
