@@ -144,6 +144,49 @@ test('unknown identity is reported separately from an observed original task ref
  assert.equal(classifyRecoveryProcesses([scopeAnchor,{...externalHerdr,role:'unknown'}],scopeContext).reason,'process_identity_unknown')
  assert.equal(classifyRecoveryProcesses([scopeAnchor,externalHerdr,{...externalPi,originalReference:true}],scopeContext).reason,'original_process_reference')
 })
+if(process.platform === 'win32')test('native Herdr scope parser recognizes the existing official server modifier without accepting unknown or duplicate arguments',{timeout:15000},async t=>{
+ const base=await fs.mkdtemp(path.join(process.env.TEMP,'herdr-scope-'))
+ t.after(()=>fs.rm(base,{recursive:true,force:true}))
+ const source=await fs.readFile(new URL('./host-recovery.ps1',import.meta.url),'utf8')
+ // Exercise the production PowerShell block and OS argv decoder; no Herdr
+ // process is started and no security modifier is enabled by this test.
+ const decoder=source.slice(source.indexOf('    Add-Type -TypeDefinition'),source.indexOf('    function Same-Path'))
+ const flag=source.slice(source.indexOf('    function Flag-Value'),source.indexOf('    $records ='))
+ const start=source.indexOf("                if ($p.Name -eq 'herdr.exe') {")
+ const end=source.indexOf("                } elseif ($role -eq 'pi') {",start)
+ assert.ok(start>0 && end>start)
+ const block=source.slice(start,end)+'\n}'
+ const exe='"C:\\official tools\\herdr.exe"',prefix=exe+' --session other-session server',modifier=' --allow-unelevated-clients'
+ const cases=[
+  [prefix,'different_session'],
+  [prefix+modifier,'different_session'],
+  [exe+' --session=other-session server'+modifier,'different_session'],
+  [exe+' server'+modifier,'different_session'],
+  [exe+' --session original-session server'+modifier,'same'],
+  [prefix+modifier+modifier,'unknown'],
+  [prefix+' --unknown','unknown'],
+  [prefix+' --unknown'+modifier,'unknown'],
+  [exe+' --session other-session --session original-session server'+modifier,'unknown'],
+  [exe+' --session server'+modifier,'unknown'],
+  [exe+' --session other-session'+modifier+' server','unknown'],
+  [prefix+' stop'+modifier,'unknown'],
+  [prefix+' --allow-unelevated-clients=true','unknown'],
+ ]
+ const input=path.join(base,'cases.json'),script=path.join(base,'scope.ps1')
+ await fs.writeFile(input,JSON.stringify(cases.map(c=>c[0])))
+ await fs.writeFile(script,`param([string]$InputFile)\n$ErrorActionPreference='Stop'\n${decoder}\n${flag}\n$HerdrSession='original-session'\n$scopes=@()\nforeach($line in @(Get-Content -LiteralPath $InputFile -Raw | ConvertFrom-Json)) {\n$p=[pscustomobject]@{Name='herdr.exe'}\n$argv=[RecoveryArgv]::Decode($line)\n$scope='unknown'\n${block}\n$scopes += $scope\n}\nConvertTo-Json -InputObject $scopes -Compress\n`)
+ const ps=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe')
+ const result=spawnSync(ps,['-NoLogo','-NoProfile','-NonInteractive','-File',script,'-InputFile',input],{encoding:'utf8',timeout:10000,maxBuffer:4096,windowsHide:true})
+ assert.equal(result.status,0,'bounded read-only PowerShell parser must succeed')
+ const scopes=JSON.parse(result.stdout)
+ assert.deepEqual(scopes,cases.map(c=>c[1]))
+ for(const scope of scopes){
+  const record={...externalHerdr,scope}
+  assert.equal(classifyRecoveryProcesses([scopeAnchor,record],scopeContext).absent,scope==='different_session')
+  assert.equal(classifyRecoveryProcesses([scopeAnchor,{...record,originalReference:true}],scopeContext).absent,false)
+  assert.equal(classifyRecoveryProcesses([scopeAnchor,{...record,role:'unknown'}],scopeContext).absent,false)
+ }
+})
 if(process.platform === 'win32')test('native scoped probe excludes a live unrelated Pi-style process but rejects the same binary with original task roots',{timeout:60000},async t=>{
  const f=await fixture(t),config={...f.config,programs:{...f.config.programs,node:process.execPath}}
  // Disposable test program, not a modified official Pi installation.

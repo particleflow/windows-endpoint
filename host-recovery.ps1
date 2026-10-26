@@ -111,11 +111,16 @@ public static class RecoveryArgv {
                 }
                 if ($p.Name -eq 'herdr.exe') {
                     $role = 'herdr'; $session = Flag-Value $argv '--session'
-                    $canonical = ($argv.Count -eq 4 -and $argv[1] -eq '--session' -and $argv[3] -eq 'server') -or
-                        ($argv.Count -eq 3 -and $argv[1].StartsWith('--session=') -and $argv[2] -eq 'server') -or
-                        ($argv.Count -eq 2 -and $argv[1] -eq 'server')
+                    # Official 0.9.5 accepts this single Windows server modifier.
+                    # Recognize an existing invocation only; never enable it or
+                    # remove it from the original-reference checks above.
+                    $serverArgv = $argv
+                    if ($argv.Count -ge 3 -and $argv[-1] -eq '--allow-unelevated-clients') { $serverArgv = @($argv[0..($argv.Count-2)]) }
+                    $canonical = ($serverArgv.Count -eq 4 -and $serverArgv[1] -eq '--session' -and $serverArgv[3] -eq 'server') -or
+                        ($serverArgv.Count -eq 3 -and $serverArgv[1].StartsWith('--session=') -and $serverArgv[2] -eq 'server') -or
+                        ($serverArgv.Count -eq 2 -and $serverArgv[1] -eq 'server')
                     if (-not $canonical) { $session='!unknown' }
-                    elseif (-not $session) { if ($argv.Count -eq 2) { $session = 'default' } else { $session='!unknown' } }
+                    elseif (-not $session) { if ($serverArgv.Count -eq 2) { $session = 'default' } else { $session='!unknown' } }
                     if ($session -eq $HerdrSession) { $scope = 'same' }
                     elseif ($session -ne '!unknown' -and $argv -contains 'server') { $scope = 'different_session' }
                 } elseif ($role -eq 'pi') {
