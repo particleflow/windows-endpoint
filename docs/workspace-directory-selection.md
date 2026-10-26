@@ -50,6 +50,9 @@ as the local default `sourceRoot` for **fresh** schema 2/3 references using the
 existing writer and validation. Cancel writes nothing. Existing configurations
 remain exclusive and all overlap checks remain in place. An installed default
 cannot be silently changed under old sessions/queues with this command.
+The same option on the existing `setup` command performs that selection once
+before any host directory is made and reuses the same writer. It does not add
+another installation flow. A changed reference input is rejected before writes.
 
 ## NAS workspace and remaining composition
 

@@ -2,7 +2,7 @@
 // No service registration, credential write, component install or process start.
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
-import { validateConfig, validateDirectory, configure, installationReferences, isNativeRuntimeConfig, catalog } from './endpoint.mjs'
+import { validateConfig, validateDirectory, configure, installationReferences, isNativeRuntimeConfig, isWindowsUNCWorkspacePath, catalog } from './endpoint.mjs'
 import { verifyCandidate } from './candidate.mjs'
 import { deploymentLayout } from './deployment.mjs'
 import { programDeploymentMain } from './program-deployment.mjs'
@@ -32,16 +32,28 @@ async function directory(file) {
   await validateDirectory(file)
 }
 
-export async function setupEndpoint({ from, root, source, manifestSha256, transfer }, {
+export async function setupEndpoint({ from, root, source, manifestSha256, transfer, browseSourceRoot = false }, {
   verify = verifyCandidate, doctor = installedDoctor, install = programDeploymentMain,
-  checkpoint = async () => {}, io = fs,
+  checkpoint = async () => {}, io = fs, chooseDirectory,
 } = {}) {
   demand(['disabled', 'existing-queue'].includes(transfer), 'setup_transfer_mode_required')
   const layout = deploymentLayout(root)
   await validateDirectory(path.dirname(root))
   const verified = await verify(source, manifestSha256) // Exact inventory before any destination write.
-  const inputRaw = await boundedRead(from, 65536), config = validateConfig(parse(inputRaw))
+  const inputRaw = await boundedRead(from, 65536)
+  let input = parse(inputRaw), selection = null
+  if (browseSourceRoot) {
+    demand([2, 3].includes(input?.schema), 'setup_reference_configuration_required')
+    const { pickDirectory } = await import('./directory-selection.mjs')
+    selection = await pickDirectory({ initialPath: typeof input.sourceRoot === 'string' && path.isAbsolute(input.sourceRoot) ? input.sourceRoot : null },
+      chooseDirectory ? { choose: chooseDirectory } : undefined)
+    if (selection.state === 'cancelled') return selection
+    demand(await boundedRead(from, 65536) === inputRaw, 'setup_input_changed')
+    input = { ...input, sourceRoot: selection.path }
+  }
+  const config = validateConfig(input)
   demand([2, 3].includes(config.schema), 'setup_reference_configuration_required')
+  demand(!isWindowsUNCWorkspacePath(config.sourceRoot) || verified.manifest?.workspace_unc_source_root === true, 'deployment_unc_workspace_unsupported')
   demand(!isNativeRuntimeConfig(config) || verified.manifest?.native_runtime, 'deployment_native_connector_missing')
   demand(!isNativeRuntimeConfig(config) || verified.manifest?.native_runtime_project_root, 'deployment_native_project_root_unsupported')
   demand(!isNativeRuntimeConfig(config) || !config.transferConfigDir || verified.manifest?.native_transfer_directory_pair === true && verified.manifest.native_transfer_direct_cli === true, 'deployment_transfer_directories_unsupported')
@@ -69,7 +81,8 @@ export async function setupEndpoint({ from, root, source, manifestSha256, transf
     await match(runtimeFile, request)
     if (previous === null) {
       demand(await boundedRead(from, 65536) === inputRaw, 'setup_input_changed')
-      await configure(from, undefined, root)
+      await configure(from, undefined, root, selection ? { browseSourceRoot: true,
+        chooseDirectory: async () => ({ state: 'selected', path: selection.path }) } : undefined)
       await match(configFile, config)
     }
     await checkpoint('references_saved')
@@ -105,8 +118,9 @@ export async function setupMain(args) {
     demand(/^--[a-z][a-z0-9-]*$/.test(args[i]) && typeof args[i + 1] === 'string' && !Object.hasOwn(options, args[i]), 'setup_arguments_invalid')
     options[args[i]] = args[i + 1]
   }
-  demand(Object.keys(options).sort().join(',') === '--from,--manifest-sha256,--root,--source,--transfer', 'setup_arguments_invalid')
-  try { return await setupEndpoint({ from: options['--from'], root: options['--root'], source: options['--source'], manifestSha256: options['--manifest-sha256'], transfer: options['--transfer'] }) }
+  demand(Object.keys(options).filter(key => key !== '--browse-source-root').sort().join(',') === '--from,--manifest-sha256,--root,--source,--transfer' &&
+    (options['--browse-source-root'] === undefined || options['--browse-source-root'] === 'native'), 'setup_arguments_invalid')
+  try { return await setupEndpoint({ from: options['--from'], root: options['--root'], source: options['--source'], manifestSha256: options['--manifest-sha256'], transfer: options['--transfer'], browseSourceRoot: options['--browse-source-root'] === 'native' }) }
   catch (error) {
     if (['EACCES', 'EPERM', 'EROFS'].includes(error.code)) throw new SetupError('setup_storage_read_only')
     if (error.code === 'ENOSPC') throw new SetupError('setup_space_unavailable')

@@ -67,6 +67,10 @@ through the existing exclusive configuration writer. Cancel leaves all files
 unchanged. An existing binding is never overwritten; this command is not a
 workspace/queue migration. Program/config paths retain their local-drive guards;
 an existing accessible UNC workspace path is accepted only as schema 2/3 `sourceRoot`.
+The existing `setup` command accepts the same `--browse-source-root native`
+option, so first installation needs no separate mkdir, picker or config-writing
+steps. Cancel before setup creates no host directory; an existing different
+binding still refuses instead of moving data.
 NAS storage selection is separate: use already accessible mapped/UNC filesystem
 paths, not HTTP URLs. Actual share access, LAN admission and NAS storage settings
 are not verified by this picker; see [the cross-module contract](https://github.com/particleflow/windows-endpoint/blob/feat/explicit-component-runtime/docs/workspace-directory-selection.md).

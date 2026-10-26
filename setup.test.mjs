@@ -78,6 +78,44 @@ test('native setup resolves its candidate connector for preflight, preserves omi
   assert.equal(result.prerequisites, 'blocked'); assert.equal(result.credentialsWritten, false)
 })
 
+test('one existing setup entry browses and saves the fresh Windows default without modifying the reference template', async t => {
+  const f = await fixture(t, true), input = await fs.readFile(f.options.from), selected = path.join(f.base, 'chosen work 空格')
+  await fs.mkdir(selected)
+  let calls = 0
+  const result = await setupEndpoint({ ...f.options, browseSourceRoot: true }, { doctor: blocked, chooseDirectory: async () => {
+    calls++; return { state: 'selected', path: selected }
+  } })
+  assert.equal(calls, 1, 'the configuration writer must not open a second dialog')
+  assert.equal(result.state, 'prepared_review_only')
+  assert.equal(JSON.parse(await fs.readFile(f.files.config)).sourceRoot, selected)
+  assert.deepEqual(await fs.readFile(f.options.from), input)
+  assert.deepEqual(await fs.readdir(f.config.sourceRoot), [])
+  const binding = await fs.readFile(f.files.config)
+  await assert.rejects(setupEndpoint({ ...f.options, browseSourceRoot: true }, { doctor: blocked,
+    chooseDirectory: async () => ({ state: 'selected', path: f.config.sourceRoot }) }), { code: 'setup_existing_configuration_differs' })
+  assert.deepEqual(await fs.readFile(f.files.config), binding, 'choosing a new default never migrates an existing binding')
+})
+
+test('cancelling setup directory selection creates no host, config, enrollment or deployment', async t => {
+  const f = await fixture(t, true), input = await fs.readFile(f.options.from)
+  assert.deepEqual(await setupEndpoint({ ...f.options, browseSourceRoot: true }, { chooseDirectory: async () => ({ state: 'cancelled' }) }),
+    { state: 'cancelled', configurationChanged: false })
+  assert.equal(await exists(f.options.root), false)
+  assert.deepEqual(await fs.readFile(f.options.from), input)
+})
+
+if (process.platform === 'win32') test('UNC setup rejects an old reader before creating the host or probing an invented share', async t => {
+  const f = await fixture(t, true)
+  await fs.writeFile(f.options.from, JSON.stringify({ ...f.config, sourceRoot: '\\\\synthetic-server\\share\\work' }))
+  delete f.candidate.manifest.workspace_unc_source_root
+  await fs.writeFile(path.join(f.candidate.directory, 'candidate.json'), JSON.stringify(f.candidate.manifest))
+  const manifestSha256 = await digest(path.join(f.candidate.directory, 'candidate.json'))
+  await assert.rejects(setupEndpoint({ ...f.options, manifestSha256 }, { doctor: async () => {
+    throw new Error('unsupported reader must fail before any directory probe')
+  } }), { code: 'deployment_unc_workspace_unsupported' })
+  assert.equal(await exists(f.options.root), false)
+})
+
 test('native setup rejects home-mapped candidates before writing configuration', async t => {
   const f = await fixture(t, true)
   delete f.candidate.manifest.native_runtime_project_root
