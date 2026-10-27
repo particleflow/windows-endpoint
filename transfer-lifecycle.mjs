@@ -2,14 +2,14 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { transferLocations, transferEnvironment, validateTransferConfiguration } from './endpoint.mjs'
-import { TransferContractError, parseLifecycleSummary, parseAdvanceDecision, deadlineMilliseconds } from './transfer-contract.mjs'
+import { TransferContractError, parseLifecycleSummary, parseAdvanceDecision, parseSnapshotAdvance, deadlineMilliseconds } from './transfer-contract.mjs'
 
 export class TransferError extends Error {
   constructor(code) { super(code); this.code = code }
 }
 
 export function transferCommand(config, action) {
-  if (!['lifecycle-summary', 'advance-results'].includes(action)) throw new TransferError('transfer_action_rejected')
+  if (!['lifecycle-summary', 'advance-results', 'advance-snapshots'].includes(action)) throw new TransferError('transfer_action_rejected')
   return { file: path.join(transferLocations(config).root, 'transferqueue.exe'), args: ['-action', action] }
 }
 
@@ -110,18 +110,37 @@ export class TransferLifecycle {
     this.accept(parse(result.stdout, observedAt), result.status)
     return this.decision
   }
-  async tick() {
+  async readSnapshots() {
+    const result = await this.driver.invoke('advance-snapshots', () => !this.stopping)
+    if (!result || result.signal || result.error || result.timedOut || !Number.isInteger(result.status)) throw new TransferError('transfer_command_outcome_unknown')
+    const observed = parseSnapshotAdvance(result.stdout, result.status)
+    if (observed.state === 'failed') {
+      // No deadline is supplied by this action. Preserve the existing one-shot
+      // host hint floor; the producer remains authoritative for due selection.
+      this.decision = null
+      if (['transient', 'busy'].includes(observed.error_class) && !this.retryUsed) {
+        this.retryUsed = true; this.state = 'retry_hint'; this.nextCheck = this.clock() + 30000
+      } else this.suspend(`transfer_${observed.error_class}`)
+      return
+    }
+    // Do not project this scoped result as a global lifecycle decision or idle.
+    this.decision = null; this.state = 'unverified'
+    this.nextCheck = this.clock() + (observed.state === 'idle' ? 30000 : 1000)
+  }
+  async tick({ snapshotsOnly = false } = {}) {
+    if (typeof snapshotsOnly !== 'boolean') throw new TransferError('transfer_action_rejected')
     if (this.active) return this.active
-    this.active = this.tickOnce()
+    this.active = this.tickOnce(snapshotsOnly)
     try { return await this.active } finally { this.active = null }
   }
-  async tickOnce() {
+  async tickOnce(snapshotsOnly) {
     if (this.stopping || this.attention || (!this.pendingHint && this.clock() < this.nextCheck)) return this.snapshot()
     if ((this.state === 'retry_hint' || this.state === 'waiting' && this.decision?.error_class === 'capacity') && this.clock() < this.nextCheck) return this.snapshot()
     // Coalesce hints already received. Hints arriving during a finite invocation
     // stay pending for the next endpoint tick, never start a parallel command.
     if (this.pendingHint) { this.pendingHint = false; this.retryUsed = false }
     try {
+      if (snapshotsOnly) { await this.readSnapshots(); return this.snapshot() }
       await this.read('lifecycle-summary')
       if (!this.stopping && !this.attention && this.state === 'due' && this.clock() >= this.nextAdvance) {
         this.nextAdvance = this.clock() + 1000

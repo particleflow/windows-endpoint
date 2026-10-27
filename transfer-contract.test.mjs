@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseLifecycleSummary, parseAdvanceDecision, deadlineMilliseconds } from './transfer-contract.mjs'
+import { parseLifecycleSummary, parseAdvanceDecision, parseSnapshotAdvance, deadlineMilliseconds } from './transfer-contract.mjs'
 
 const now = Date.parse('2026-10-22T18:00:00Z')
 const summary = overrides => ({ schema: 'memoh.delivery.lifecycle.v1', state: 'idle', next_due_at: null, error_class: 'none', ...overrides })
@@ -112,3 +112,25 @@ test('pinned inbound not-applicable bypasses only feedback and preserves lifecyc
     assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, ...patch }), now))
   }
 })
+
+const snapshotEnvelope = overrides => ({ advance_scope: 'retained_upload_snapshots', delivery_id: 'original-delivery', phase: 'uploading', offset: 3, admitted: true, registered: false, associated: false, ...overrides })
+test('62d snapshot-only envelopes are separate from lifecycle and advisory feedback', () => {
+  const idle = { state: 'idle', advance_scope: 'retained_upload_snapshots' }
+  assert.equal(parseSnapshotAdvance(JSON.stringify(idle), 0).state, 'idle')
+  assert.equal(parseSnapshotAdvance(JSON.stringify(snapshotEnvelope()), 0).state, 'advanced')
+  assert.equal(parseSnapshotAdvance(JSON.stringify(snapshotEnvelope({ error_class: 'authentication' })), 1).error_class, 'authentication')
+  assert.throws(() => parseAdvanceDecision(JSON.stringify(snapshotEnvelope())), /contract/)
+  assert.throws(() => parseLifecycleSummary(JSON.stringify(idle)), /contract/)
+})
+for (const [name, value, status] of [
+  ['wrong scope', snapshotEnvelope({ advance_scope: 'all' }), 0],
+  ['missing scope', { delivery_id: 'original' }, 0],
+  ['registered source', snapshotEnvelope({ registered: true }), 0],
+  ['unadmitted source', snapshotEnvelope({ admitted: false }), 0],
+  ['unexpected feedback', snapshotEnvelope({ feedback_status: 'recorded' }), 0],
+  ['association without reference', snapshotEnvelope({ associated: true }), 0],
+  ['mismatched reference', snapshotEnvelope({ associated: true, reference: { bot_id: 'bot', operation_id: 'operation', delivery_id: 'other', content_hash: 'a'.repeat(64), size_bytes: 3, mime: 'text/plain' } }), 0],
+  ['idle with nonzero exit', { state: 'idle', advance_scope: 'retained_upload_snapshots' }, 1],
+  ['error with zero exit', snapshotEnvelope({ error_class: 'permission' }), 0],
+  ['unsupported old executable', snapshotEnvelope(), 2],
+]) test(`snapshot envelope refuses ${name}`, () => assert.throws(() => parseSnapshotAdvance(JSON.stringify(value), status)))

@@ -79,6 +79,7 @@ const code = await runForeground({ root, tickMs: 100, createTestRuntime: async (
   }
   const transfer = new TransferLifecycle({ driver: { invoke: async action => {
     notify({ event: 'transfer_action', action })
+    if (action === 'advance-snapshots') return { status: 0, stdout: JSON.stringify({ state: 'idle', advance_scope: 'retained_upload_snapshots' }) }
     const result = { schema: 'memoh.delivery.lifecycle.v1', state: 'idle', next_due_at: null, error_class: 'none' }
     if (scenario === 'unknown-transfer') { result.state = 'unknown'; result.error_class = 'unknown' }
     if (scenario === 'drain-failure') {

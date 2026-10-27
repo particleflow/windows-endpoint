@@ -624,15 +624,18 @@ const transferDecision = (state, error_class = 'none') => ({ schema: 'memoh.deli
 const transferResult = (action, value, status = 0) => ({ status, stdout: JSON.stringify(action === 'advance-results' ?
   { ...value, delivery_id: 'original-delivery', phase: 'uploading', offset: 3, admitted: true, associated: false, feedback_status: 'recorded' } : value) })
 
-test('Herdr observation failure currently fences the finite consumer even with a due producer decision', async t => {
+test('Herdr observation failure allows only retained snapshots and keeps ordinary advancement fenced', async t => {
   const actions = []
-  const transfer = new TransferLifecycle({ driver: { invoke: async action => { actions.push(action); return transferResult(action, transferDecision('due')) } } })
+  const transfer = new TransferLifecycle({ driver: { invoke: async action => {
+    actions.push(action)
+    return action === 'advance-snapshots' ? { status: 0, stdout: JSON.stringify({ state: 'idle', advance_scope: 'retained_upload_snapshots' }) } : transferResult(action, transferDecision('due'))
+  } } })
   const f = await fixture(t, { transfer })
   await f.lifecycle.start()
   f.driver.ownedHostStatus = async () => { throw new LifecycleError('herdr_observation_unknown') }
   await f.lifecycle.tick(); await f.lifecycle.tick()
   assert.equal(f.lifecycle.state.attention, 'herdr_observation_unknown')
-  assert.deepEqual(actions, [])
+  assert.deepEqual(actions, ['advance-snapshots'])
   assert.equal(transfer.snapshot().attention, null)
   assert.equal(f.calls.filter(c => c === 'start:herdr').length, 1)
 })
@@ -701,7 +704,8 @@ for (const action of ['lifecycle-summary', 'advance-results']) {
 async function latchedHerdrFixture(t) {
   const actions = []
   const transfer = new TransferLifecycle({ driver: { invoke: async action => {
-    actions.push(action); return transferResult(action, transferDecision('idle'))
+    actions.push(action)
+    return action === 'advance-snapshots' ? { status: 0, stdout: JSON.stringify({ state: 'idle', advance_scope: 'retained_upload_snapshots' }) } : transferResult(action, transferDecision('idle'))
   } } })
   const f = await fixture(t, { transfer })
   await f.lifecycle.start()
@@ -719,14 +723,14 @@ test('explicit Herdr recheck restores only the owned observation latch without r
   await fs.writeFile(history, raw)
   await f.lifecycle.tick()
   assert.equal(f.lifecycle.state.attention, 'herdr_observation_unknown')
-  assert.deepEqual(f.actions, []) // Merely becoming healthy does not clear the latch.
+  assert.deepEqual(f.actions, ['advance-snapshots']) // Merely becoming healthy does not clear the control latch.
   await f.lifecycle.recheckHerdr()
   assert.deepEqual(f.lifecycle.state, { ...before, phase: 'running', attention: null })
   assert.deepEqual(await f.store.load(), f.lifecycle.state)
-  assert.deepEqual(f.calls, calls); assert.deepEqual(f.actions, [])
+  assert.deepEqual(f.calls, calls); assert.deepEqual(f.actions, ['advance-snapshots'])
   assert.equal(await fs.readFile(history, 'utf8'), raw)
-  await f.lifecycle.tick()
-  assert.deepEqual(f.actions, ['lifecycle-summary'])
+  f.lifecycle.transferHint('owner'); await f.lifecycle.tick()
+  assert.deepEqual(f.actions, ['advance-snapshots', 'lifecycle-summary'])
   assert.deepEqual(f.calls, calls)
 })
 
@@ -801,4 +805,60 @@ test('Herdr recheck cannot clear attention when the journal write is denied befo
   assert.equal(f.lifecycle.state.attention, 'herdr_observation_unknown')
   assert.deepEqual(f.actions, [])
   f.store.checkpoint = async () => {}
+})
+
+test('closed snapshot progress never clears Herdr attention or changes unknown task bytes', async t => {
+  const f = await latchedHerdrFixture(t), calls = [...f.calls], before = await fs.readFile(f.store.file, 'utf8')
+  const original = path.join(f.directory, 'unknown-attempt.json'), raw = '{"task":"original","attempt":1,"state":"unknown"}'
+  await fs.writeFile(original, raw)
+  f.transfer.driver.invoke = async (action, mayInvoke) => {
+    assert.equal(action, 'advance-snapshots'); assert.equal(mayInvoke(), true); f.actions.push(action)
+    return { status: 0, stdout: JSON.stringify({ advance_scope: 'retained_upload_snapshots', delivery_id: 'closed-original', phase: 'uploading', offset: 3, admitted: true, registered: false, associated: false }) }
+  }
+  await f.lifecycle.tick()
+  assert.deepEqual(f.actions, ['advance-snapshots']); assert.deepEqual(f.calls, calls)
+  assert.equal(await fs.readFile(f.store.file, 'utf8'), before)
+  assert.equal(await fs.readFile(original, 'utf8'), raw)
+  assert.equal(f.lifecycle.snapshot().phase, 'needs_attention')
+  assert.equal(f.lifecycle.snapshot().attention, 'herdr_observation_unknown')
+  assert.equal(f.lifecycle.snapshot().ready, false)
+})
+
+for (const condition of ['handoff', 'journal_error', 'cleanup_error', 'stopping', 'no_lease', 'other_attention', 'program_changed']) test(`closed snapshot gate refuses ${condition}`, async t => {
+  const f = await latchedHerdrFixture(t), release = f.lifecycle.release
+  if (condition === 'handoff') f.lifecycle.state.handoff = { state: 'recorded_unverified' }
+  if (condition === 'journal_error') f.lifecycle.journalError = new Error('synthetic unknown publication')
+  if (condition === 'cleanup_error') f.lifecycle.cleanupError = new Error('synthetic unknown cleanup')
+  if (condition === 'stopping') f.lifecycle.stopping = true
+  if (condition === 'no_lease') f.lifecycle.release = null
+  if (condition === 'other_attention') await f.lifecycle.attention('connector_authentication_required')
+  if (condition === 'program_changed') f.driver.checkPrograms = () => { throw new LifecycleError('installation_changed_restart_required') }
+  await f.lifecycle.tick()
+  assert.deepEqual(f.actions, [])
+  delete f.lifecycle.state.handoff; f.lifecycle.release = release
+  f.lifecycle.cleanupError = null
+})
+
+test('stop drains a failing closed snapshot, journals its failure and rejects fresh-process replay', async t => {
+  const f = await latchedHerdrFixture(t)
+  let entered, finish
+  const ready = new Promise(resolve => { entered = resolve })
+  f.transfer.driver.invoke = async action => {
+    assert.equal(action, 'advance-snapshots'); f.actions.push(action)
+    return new Promise(resolve => { finish = () => resolve({ status: 1, stdout: JSON.stringify({ advance_scope: 'retained_upload_snapshots', delivery_id: 'closed-original', phase: 'uploading', offset: 3, admitted: true, registered: false, associated: false, error_class: 'permission' }) }); entered() })
+  }
+  const tick = f.lifecycle.tick(); await ready
+  const stop = f.lifecycle.stop(); finish(); await Promise.all([tick, stop])
+  assert.equal((await f.store.load()).attention, 'transfer_permission')
+  assert.equal(f.lifecycle.release, null)
+  await assert.rejects(f.create().start(), { code: 'transfer_permission' })
+  assert.deepEqual(f.actions, ['advance-snapshots'])
+})
+
+test('closed snapshot gate rejects a changed durable lifecycle before invoking the producer', async t => {
+  const f = await latchedHerdrFixture(t)
+  await f.store.save({ ...f.lifecycle.state, restarts: [999999] })
+  await f.lifecycle.tick()
+  assert.deepEqual(f.actions, [])
+  assert.equal(f.lifecycle.state.attention, 'transfer_snapshot_host_state_changed')
 })

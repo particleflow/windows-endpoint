@@ -5,6 +5,37 @@ production-EXE positive TLS gate and real PC/NAS acceptance remain incomplete.
 There is no second queue or legacy compatibility translation. Historical PR56
 notes below are source history, not the current producer qualification.
 
+## Closed snapshot capability
+
+Reviewed source `62d27ed995c53f405297eb0069290f3aefba2c51` adds the separate
+`advance-snapshots` action. It selects only due, already-admitted private upload
+bytes for the original HostBinding. Registered/live sources, downloads, source
+collection and producer feedback projection are outside this action.
+
+This action has its own strict response parser. Every accepted response requires
+`advance_scope: "retained_upload_snapshots"`. Idle is exactly that scope plus
+`state: "idle"`; successful steps carry the original queue status envelope with
+`admitted:true` and `registered:false`. They do not carry a lifecycle schema,
+deadline or feedback. Ordinary `advance-results` still requires its original
+lifecycle and feedback proof. An unsupported binary never falls back to that
+general action. The existing inventory/provenance, config/credential, private
+directory pair, TLS and producer queue validation apply to every invocation.
+Plugin version `0.10.1` alone is not a capability or qualification check.
+
+Only the existing lease owner's latched `herdr_observation_unknown`, with an
+unchanged durable lifecycle and no handoff/journal/cleanup uncertainty, permits
+this restricted tick. Other attention states remain fenced. The Herdr phase and
+attention are not cleared by file progress. Scoped idle/steps stay `unverified`
+in the host's global transfer projection, with no global queue-empty or business
+completion claim. The existing finite polling interval applies; due selection
+and durable retry scheduling remain producer-owned. Known waiting deadlines
+are not shortened. Issued-command failures are classified and journaled even
+when stop arrives during the command. No second queue, timer or service is added.
+
+This consumer adaptation does not qualify or install a new producer binary.
+The package source pin and installed inventory must separately accept the
+reviewed capability. No deployed old program/binary is changed by source tests.
+
 The producer exposes one finite **read-only summary** (CLI action
 `-action lifecycle-summary`) and the same decision fields on the result of the
 existing finite `advance-results` action:
