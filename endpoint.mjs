@@ -96,6 +96,10 @@ function validateAPIBase(value) {
 }
 
 export function isNativeRuntimeConfig(config) { return config?.schema === 3 }
+// Historical configurations remain decodable; they never authorize execution.
+export function requireNativeRuntime(config) {
+  requireThat(isNativeRuntimeConfig(config), 'legacy_execution_retired')
+}
 export function connectorPackageRoot(config) {
   return config.programs.connectorPackage ?? (isNativeRuntimeConfig(config) ? path.dirname(path.dirname(path.join(here, catalog.nativeRuntime.entry))) : undefined)
 }
@@ -355,7 +359,6 @@ export function managedEnvironment(config, inherited = process.env) {
   env.HERDR_CONFIG_PATH = path.join(config.herdrConfigRoot, 'config.toml')
   env.XDG_CONFIG_HOME = path.dirname(config.herdrConfigRoot)
   env.XDG_STATE_HOME = path.dirname(config.herdrStateRoot)
-  if (!isNativeRuntimeConfig(config)) env.AGENVO_CONFIG_DIR = config.agenvoConfigDir
   env.PI_CODING_AGENT_DIR = config.piConfigDir
   return env
 }
@@ -397,14 +400,15 @@ export function transferEnvironment(config, inherited = process.env) {
     HERDR_PLUGIN_STATE_DIR: locations.state }
 }
 export function launchPlan(config) {
+  requireNativeRuntime(config)
   const entry = id => programPaths(config)[id]
   return {
     activation: 'blocked', reason: 'compatibility_qualification_pending',
     commands: [
       { component: 'herdr', file: entry('herdr'), args: ['--session', config.session, 'server'] },
-      { component: 'connector', file: entry('node'), args: [entry('connector'), 'run', ...(isNativeRuntimeConfig(config) ? ['--config', connectorConfigReference(config)] : [])] },
+      { component: 'connector', file: entry('node'), args: [entry('connector'), 'run', '--config', connectorConfigReference(config)] },
     ],
-    environment: { PATH: managedEnvironment(config).PATH, HERDR_CONFIG_PATH: path.join(config.herdrConfigRoot, 'config.toml'), XDG_CONFIG_HOME: path.dirname(config.herdrConfigRoot), XDG_STATE_HOME: path.dirname(config.herdrStateRoot), ...(!isNativeRuntimeConfig(config) ? { AGENVO_CONFIG_DIR: config.agenvoConfigDir } : {}), PI_CODING_AGENT_DIR: config.piConfigDir },
+    environment: { PATH: managedEnvironment(config).PATH, HERDR_CONFIG_PATH: path.join(config.herdrConfigRoot, 'config.toml'), XDG_CONFIG_HOME: path.dirname(config.herdrConfigRoot), XDG_STATE_HOME: path.dirname(config.herdrStateRoot), PI_CODING_AGENT_DIR: config.piConfigDir },
     transfer: { owner: 'existing Herdr memoh.delivery actions', scheduler: 'existing task/result flow' },
   }
 }
@@ -482,6 +486,7 @@ export async function doctor(config, run = probe) {
 // Shared by doctor and the isolated official-binary CI harness. Callers must
 // establish artifact provenance first. This never grants endpoint qualification.
 export async function verifyToolchain(config, gitVersion, run = probe) {
+  requireNativeRuntime(config)
   requireThat(process.platform === 'win32' && process.arch === 'x64', 'windows_x64_required')
   const checks = []
   async function check(name, action) {
@@ -489,13 +494,8 @@ export async function verifyToolchain(config, gitVersion, run = probe) {
     catch (e) { checks.push({ check: name, state: 'blocked', code: e instanceof EndpointError ? e.code : 'dependency_unavailable' }) }
   }
   const env = managedEnvironment(config)
-  const entry = id => path.join(config.bundleRoot, catalog.components[id].entry)
-  await check('git_version', () => requireThat(run(path.join(config.bundleRoot, 'git/cmd/git.exe'), ['--version'], env) === `git version ${gitVersion}`, 'executable_version_mismatch'))
-  await check('connector_version', () => {
-    let version
-    try { version = JSON.parse(run(entry('node'), [entry('connector'), '--version'], env)).version } catch { throw new EndpointError('executable_version_mismatch') }
-    requireThat(version === catalog.components.connector.version, 'executable_version_mismatch')
-  })
+  const programs = programPaths(config), entry = id => programs[id]
+  await check('git_version', () => requireThat(run(path.join(programs.gitRoot, 'cmd/git.exe'), ['--version'], env) === `git version ${gitVersion}`, 'executable_version_mismatch'))
   for (const id of ['node', 'herdr']) await check(`${id}_version`, () => {
     const text = run(entry(id), ['--version'], env)
     requireThat(text === `${id === 'node' ? 'v' : 'herdr '}${catalog.components[id].version}`, 'executable_version_mismatch')
@@ -513,12 +513,12 @@ export async function main(args) {
   if (command === 'installation') {
     const { installationMain } = await import('./product-installation.mjs')
     try { return await installationMain(rest) }
-    catch (error) { if (/^(installation|candidate|deployment|setup)_/.test(error.code)) throw new EndpointError(error.code); throw error }
+    catch (error) { if (error.code === 'legacy_execution_retired' || /^(installation|candidate|deployment|setup)_/.test(error.code)) throw new EndpointError(error.code); throw error }
   }
   if (command === 'setup') {
     const { setupMain, SetupError } = await import('./setup.mjs')
     try { return await setupMain(rest) }
-    catch (error) { if (error instanceof SetupError || /^(candidate|deployment)_/.test(error.code)) throw new EndpointError(error.code); throw error }
+    catch (error) { if (error instanceof SetupError || error.code === 'legacy_execution_retired' || /^(candidate|deployment)_/.test(error.code)) throw new EndpointError(error.code); throw error }
   }
   if (command === 'deploy') {
     const { programDeploymentMain } = await import('./program-deployment.mjs')
@@ -567,6 +567,7 @@ export async function main(args) {
   }
   requireThat(!options['--target'], 'existing_installation_config_required')
   if (command === 'doctor') return doctor(config)
+  requireNativeRuntime(config)
   if ([2, 3].includes(config.schema)) {
     const { inspectInstalled } = await import('./installed.mjs')
     return launchPlan((await inspectInstalled(config)).config)

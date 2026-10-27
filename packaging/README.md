@@ -12,8 +12,9 @@ reviewed CI run. These inventories are build evidence, not release signatures.
 Pi, Herdr, Node and Git are **not copied into this package**. Use their existing
 official installations/configuration. The native connector uses the original
 Memoh Runtime CLI logic and its existing enrollment file; the host owns its foreground
-process, with no separate Runtime daemon registration. The legacy Agenvo mode
-remains available through its existing external installation/configuration.
+process, with no separate Runtime daemon registration. Schema 1/2 legacy execution
+is retired: run requests and launch plans fail with `legacy_execution_retired`.
+Original saved configuration and unknown acknowledgement readers remain available.
 The endpoint build exports the unchanged official `runCLI` session factory and
 `RuntimeSession`. The host sets that session's `workspaceBase` to its already
 configured `sourceRoot`; `/data` therefore maps to the project, not the Windows
@@ -65,8 +66,6 @@ Runtime UUID. The proposed native file contract uses that UUID for both
 source implementation has not yet been released or qualified here. This local
 declaration check does not clear the file-mapping diagnostic below or migrate
 any existing Agenvo identity, credential, HostBinding or queue.
-For legacy Agenvo use `examples/endpoint.references.example.json`; its Herdr
-binary still comes from the single matching instance in Agenvo `config.json`.
 The producer API base must match existing `transfer.json.origin` byte for byte.
 Do not change a populated queue's binding or replace its original IDs.
 
@@ -79,7 +78,7 @@ either `{ "state": "selected", "path": "...", "configurationChanged": false }`
 or `{ "state": "cancelled", "configurationChanged": false }`. Selection alone
 does not save, grant access, start a component or move existing files.
 
-For **fresh** schema 2/3 references, `configure --from FILE --root DIR
+For **fresh** schema 3 references, `configure --from FILE --root DIR
 --browse-source-root native` uses that dialog and saves the chosen `sourceRoot`
 through the existing exclusive configuration writer. Cancel leaves all files
 unchanged. An existing binding is never overwritten; this command is not a
@@ -191,13 +190,10 @@ An already-running external Herdr/connector is not adopted or stopped.
 
 ## Updates and preserved data
 
-Official owners/package managers update Pi, Herdr and legacy Agenvo. After a controlled
-stop, restart rechecks the existing program/configuration references. Herdr's
-Windows updater can change its canonical version directory: update only the
-existing Agenvo instance's `binary` mapping and complete any native scope approval
-in legacy mode. Native mode references the official installation directly and
-rechecks its recognized current selection on a fresh run. Same-path version changes are
-not themselves a new Agenvo scope. No session/history is imported or replayed.
+Official owners/package managers update Pi, Herdr, Node and Git. After a
+controlled stop, a new native run rechecks the explicit official installation
+references and Herdr's recognized current selection. No old Agenvo instance
+mapping is consulted for execution. No session/history is imported or replayed.
 
 The existing deployment journal stages and selects the **endpoint program and
 its bundled Runtime connector**
@@ -267,7 +263,9 @@ it is not a user PC installation. A successful untrusted-certificate rejection
 does not establish positive production TLS. The earlier CI CurrentUser-root
 import failed with `UI is not allowed in this operation`; this package neither
 retries that import nor changes the production trust source. The overall TLS gate
-remains unmet. `transferAutomaticRecovery:false` and `ready:false` remain truthful
+remains unmet. Native packaged transfer upload/authentication/TLS acceptance also
+remains a failing gate after withdrawing the old Agenvo host fixtures; the actual
+native empty-queue fixture is not file-upload or TLS acceptance. `transferAutomaticRecovery:false` and `ready:false` remain truthful
 product outputs. This archive must not be labelled production-ready.
 
 

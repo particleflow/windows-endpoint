@@ -83,26 +83,21 @@ mutable paths must agree with `deployment-layout.json`, resolved under this root
 | `data/endpoint/host-status.json` | Atomic, schema-checked host observation |
 | `logs/endpoint-host/<run-id>.jsonl` | Bounded state-change log for one run |
 
-Fill the non-path placeholders in `endpoint.example.json`, then use
-`node endpoint.mjs configure --from FILE --root DIR`. The existing root and its
-`config` directory must already exist. This writes `config/endpoint.json`
-exclusively, using `deploymentReferences` and `deployment-layout.json` for every
-schema-1 component path. The example is an input template, not a runtime config.
-Explicit paths in an existing input must match the selected root or configuration
-is refused; choosing another root does not relocate any existing state. The
-command does not generate credentials, create component directories or approve
-a bundle. The legacy `--config FILE` form still saves fully specified references.
-The offline package selection is
-not consumed by this host. Bundle verification is read-only and does not establish
-the missing component qualification.
+Use `packaging/endpoint.native-runtime.example.json` for schema 3 and the existing
+installation entry. It references official programs and the existing native
+Runtime enrollment without copying profiles or credentials. The old schema-1
+and schema-2 input shapes remain decodable for original metadata/history, but
+runtime requests, commands and launch plans return `legacy_execution_retired`.
+They cannot be used to activate an old connector. Historical configuration
+location checks still reject silently relocating original state.
 
-In schema 2 ([existing official installations](existing-installations-plan.md)),
+For historical schema-2 metadata,
 only the endpoint's own configuration, lifecycle/status journal and host logs use
 this root. Official programs, Herdr/Pi/Agenvo configuration, source exports and
 the existing transfer journal remain at their explicitly referenced locations.
 Those references must not overlap the host's config/data/log directories; the
 component data/program separation checks also remain in force. Do not copy user
-configuration or historical sessions into the schema-1 layout to use this mode.
+configuration or historical sessions into another layout to bypass retirement.
 Reference acceptance does not grant ownership of an external process or permission
 to resume a historical task.
 The same `configure --from FILE --root DIR` command accepts full schema-2

@@ -4,17 +4,19 @@ import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { once } from 'node:events'
-import { launchPlan, main, managedEnvironment, verifyToolchain } from '../endpoint.mjs'
+import { main, managedEnvironment, programPaths, verifyToolchain } from '../endpoint.mjs'
 
 assert.equal(process.platform, 'win32')
 const root = await fs.realpath(process.argv[2])
 const data = path.join(root, 'isolated-data')
 const config = {
-  bundleRoot: root, herdrConfigRoot: path.join(data, 'config/herdr'),
+  schema: 3, programs: { node: path.join(root, 'node/node.exe'), herdr: path.join(root, 'herdr/herdr.exe'), piPackage: path.join(root, 'node_modules/@earendil-works/pi-coding-agent'), piBin: path.join(root, 'node_modules/.bin'), gitRoot: path.join(root, 'git') },
+  connector: { kind: 'memoh-runtime', enrollmentFile: path.join(data, 'runtime/enrollment.json') },
+  sourceRoot: data, herdrConfigRoot: path.join(data, 'config/herdr'),
   herdrStateRoot: path.join(data, 'state/herdr'),
-  agenvoConfigDir: path.join(data, 'agenvo'), piConfigDir: path.join(data, 'pi'), session: 'smoke',
+  piConfigDir: path.join(data, 'pi'), session: 'smoke',
 }
-for (const p of Object.values(config).filter(v => path.isAbsolute(v))) await fs.mkdir(p, { recursive: true })
+for (const p of Object.values(config).filter(v => typeof v === 'string' && path.isAbsolute(v))) await fs.mkdir(p, { recursive: true })
 await fs.writeFile(path.join(config.herdrConfigRoot, 'config.toml'), '[update]\nversion_check = false\nmanifest_check = false\n')
 const savedPath = process.env.PATH
 process.env.PATH = path.join(process.env.SystemRoot, 'System32')
@@ -39,21 +41,14 @@ try {
       assert.equal((await verifyToolchain(config, '2.51.0.windows.1')).find(c => c.check === check).state, 'blocked')
     } finally { await fs.rename(full + '.absent', full) }
   }
-  const absent = { ...config, bundleRoot: path.join(root, 'missing-bundle') }
+  const absent = { ...config, programs: { ...config.programs, node: path.join(root, 'missing-node.exe') } }
   assert.equal((await verifyToolchain(absent, '2.51.0.windows.1')).find(c => c.check === 'node_version').state, 'blocked')
   checked('missing_node_pi_bash_rejected_without_path_fallback')
 
-  const plan = launchPlan(config)
   const env = managedEnvironment(config)
-  // No existing registration/authentication is supplied or created.
-  const connector = plan.commands[1]
-  const stopped = spawnSync(connector.file, connector.args, { env, encoding: 'utf8', timeout: 10000, maxBuffer: 16384 })
-  assert.equal(stopped.error, undefined)
-  assert.notEqual(stopped.status, 0)
-  await assert.rejects(fs.stat(path.join(config.agenvoConfigDir, 'credentials.json')), { code: 'ENOENT' })
-  checked('unconfigured_connector_exits_without_retry_supervisor_or_credentials')
-
-  const herdr = plan.commands[0]
+  assert.equal(env.AGENVO_CONFIG_DIR, undefined)
+  checked('retired_connector_environment_not_emitted')
+  const herdr = { file: programPaths(config).herdr, args: ['--session', config.session, 'server'] }
   function status() {
     const r = spawnSync(herdr.file, ['--session', config.session, 'status', 'server', '--json'], { env, encoding: 'utf8', timeout: 3000, maxBuffer: 16384 })
     try { return JSON.parse(r.stdout) } catch { return {} }

@@ -14,7 +14,7 @@ import { installedFixture, nativeInstalledFixture } from './test-support/install
 import { programPackage } from './test-support/program-package.mjs'
 
 const blocked = async () => ({ ready: false, checks: [{ check: 'installation_preflight', state: 'blocked', code: 'installation_input_missing' }] })
-async function fixture(t, native = false) {
+async function fixture(t, native = true) {
   const f = await (native ? nativeInstalledFixture(t) : installedFixture(t))
   const candidate = await programPackage(path.join(f.base, 'candidate'))
   if (native) {
@@ -51,7 +51,7 @@ const exists = async file => fs.lstat(file).then(() => true, e => { if (e.code =
 
 test('unified setup prepares and selects the existing program transaction while missing prerequisites stay blocked and official files stay unchanged', async t => {
   const f = await fixture(t)
-  const originals = [f.options.from, path.join(f.config.agenvoConfigDir, 'credentials.json'), path.join(f.config.piConfigDir, 'auth.json')]
+  const originals = [f.options.from, f.config.connector.enrollmentFile, path.join(f.config.piConfigDir, 'auth.json')]
   const before = await Promise.all(originals.map(file => fs.readFile(file)))
   const result = await setupEndpoint(f.options, { doctor: blocked })
   assert.equal(result.state, 'prepared_review_only'); assert.equal(result.ready, false)
@@ -61,7 +61,7 @@ test('unified setup prepares and selects the existing program transaction while 
   assert.deepEqual(JSON.parse(await fs.readFile(f.files.config)), f.config)
   assert.deepEqual(JSON.parse(await fs.readFile(f.files.runtime)), { schema: 2, mode: 'existing-installations', transfer: 'disabled' })
   assert.deepEqual(await Promise.all(originals.map(file => fs.readFile(file))), before)
-  assert.equal(await exists(path.join(f.config.agenvoConfigDir, 'run.lock')), false)
+  assert.equal(f.calls.length, 0)
 })
 
 test('native setup resolves its candidate connector for preflight, preserves omitted package references and never creates enrollment', async t => {

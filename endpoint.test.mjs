@@ -6,7 +6,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { catalog, configure, digest, doctor, launchPlan, main, stageBundle, transferLocations, validateConfig, validateTransferConfiguration, verifyBundle } from './endpoint.mjs'
-import { installedFixture } from './test-support/installed-fixture.mjs'
+import { installedFixture, nativeInstalledFixture } from './test-support/installed-fixture.mjs'
 import { deploymentReferences } from './deployment.mjs'
 
 const apiBaseVectors = JSON.parse(await fs.readFile(new URL('./test-support/api-base-v1.json', import.meta.url)))
@@ -156,14 +156,15 @@ test('configure creates references exclusively and never overwrites official fil
 
 async function hostTemplate(t) {
   const f = await fixture(t)
-  const template = JSON.parse(await fs.readFile(new URL('./endpoint.example.json', import.meta.url)))
+  // Historical schema-1 input shape; never a published activation template.
+  const template = { schema: 1, session: 'default' }
   for (const key of ['manifestSha256', 'nasOrigin', 'deviceId', 'runtimeId', 'instanceId']) template[key] = f.config[key]
   const input = path.join(f.base, 'references.json'), root = path.join(f.base, 'host Unicode 空格')
   await json(input, template); await fs.mkdir(path.join(root, 'config'), { recursive: true })
   return { ...f, template, input, hostRoot: root, output: path.join(root, 'config/endpoint.json') }
 }
 
-test('configure published template generates the existing host layout and loads without a path mismatch', async t => {
+test('historical configure input preserves the original host layout without enabling execution', async t => {
   const f = await hostTemplate(t), before = await fs.readFile(f.input)
   // Exercise the actual CLI, including its deferred module import. No runtime
   // request or components are supplied; the foreground check is observation-only.
@@ -212,7 +213,7 @@ test('configure host form rejects stale explicit paths, placeholders and ambiguo
     await assert.rejects(main(['configure', '--from', f.input, '--root', f.hostRoot]), /host_configuration_root_mismatch/)
     await assert.rejects(fs.stat(f.output), { code: 'ENOENT' })
   }
-  await json(f.input, JSON.parse(await fs.readFile(new URL('./endpoint.example.json', import.meta.url))))
+  await json(f.input, { ...f.template, manifestSha256: 'REPLACE_WITH_TRUSTED_MANIFEST_SHA256' })
   await assert.rejects(main(['configure', '--from', f.input, '--root', f.hostRoot]), /deployment_manifest_hash_required/)
   const invalid = spawnSync(process.execPath, [fileURLToPath(new URL('./endpoint.mjs', import.meta.url)), 'configure', '--from', f.input, '--root', f.hostRoot], { encoding: 'utf8', timeout: 10000 })
   assert.equal(invalid.status, 2)
@@ -307,14 +308,14 @@ test('corrupt published candidate is never overwritten or repaired', async t => 
 })
 
 test('plan uses explicit binaries and an isolated PATH, no task/transport worker', async t => {
-  const f = await fixture(t)
+  const f = await nativeInstalledFixture(t)
   const plan = launchPlan(f.config)
   assert.equal(plan.activation, 'blocked')
   assert.equal(plan.commands.length, 2)
-  assert.deepEqual(plan.commands[0].args, ['--session', 'default', 'server'])
+  assert.deepEqual(plan.commands[0].args, ['--session', f.config.session, 'server'])
   assert.equal(plan.commands[1].args[1], 'run')
   for (const cmd of plan.commands) assert.ok(path.isAbsolute(cmd.file))
-  assert.ok(plan.environment.PATH.startsWith(path.join(f.root, 'node')))
+  assert.ok(plan.environment.PATH.startsWith(path.dirname(f.config.programs.node)))
   assert.ok(!plan.environment.PATH.includes('/usr/local/bin'))
   assert.equal(plan.environment.XDG_STATE_HOME, path.dirname(f.config.herdrStateRoot))
 })

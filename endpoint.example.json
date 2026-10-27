@@ -1,9 +1,0 @@
-{
-  "schema": 1,
-  "manifestSha256": "REPLACE_WITH_TRUSTED_MANIFEST_SHA256",
-  "nasOrigin": "https://configure-your-approved-host.invalid",
-  "deviceId": "EXISTING_AGENVO_DEVICE_UUID",
-  "instanceId": "EXISTING_APPROVED_HERDR_INSTANCE",
-  "runtimeId": "EXISTING_MEMOH_RUNTIME_UUID",
-  "session": "default"
-}

@@ -80,6 +80,7 @@ class CandidateTests(unittest.TestCase):
         with zipfile.ZipFile(archive) as zipped:
             names = zipped.namelist()
             self.assertNotIn('credentials.json', names)
+            self.assertNotIn('examples/endpoint.references.example.json', names)
             self.assertFalse(any(name.startswith(('node_modules/', 'herdr/', 'git/', 'official-smoke/')) for name in names))
             manifest = json.loads(zipped.read('candidate.json'))
             self.assertEqual(manifest['source_commit'], self.head)

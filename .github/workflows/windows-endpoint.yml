@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: '24.14.0'
       - name: Verify delivery boundary and recovery fixtures
-        run: node --test --test-timeout=30000 endpoint.test.mjs directory-selection.test.mjs handoff.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs program-deployment.test.mjs product-installation.test.mjs host-layout.test.mjs host.test.mjs host-recovery.test.mjs runtime.test.mjs installed.test.mjs setup.test.mjs native-connector.test.mjs session-diagnostics.test.mjs session-continuation.test.mjs official-smoke/native-runtime-peer.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs official-smoke/pi-model-fixture.test.mjs official-smoke/owner-control-fixture.test.mjs
+        run: node --test --test-timeout=30000 endpoint.test.mjs agenvo-retirement.test.mjs directory-selection.test.mjs handoff.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs program-deployment.test.mjs product-installation.test.mjs host-layout.test.mjs host.test.mjs host-recovery.test.mjs runtime.test.mjs installed.test.mjs setup.test.mjs native-connector.test.mjs session-diagnostics.test.mjs session-continuation.test.mjs official-smoke/native-runtime-peer.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs official-smoke/pi-model-fixture.test.mjs official-smoke/owner-control-fixture.test.mjs
       - uses: actions/checkout@v4
         if: runner.os == 'Linux'
         with:
@@ -92,14 +92,11 @@ jobs:
         run: |
           & '${{ runner.temp }}/endpoint official Unicode 空格/node/node.exe' ./official-smoke/verify.mjs '${{ runner.temp }}/endpoint official Unicode 空格'
           if ($LASTEXITCODE -ne 0) { throw 'Official dependency smoke failed' }
-      - name: Exercise unified foreground lifecycle with official components
+      - name: Verify retired execution denial and preserved unknown receipts
         shell: pwsh
         run: |
-          & '${{ runner.temp }}/endpoint official Unicode 空格/node/node.exe' ./official-smoke/lifecycle.mjs '${{ runner.temp }}/endpoint official Unicode 空格'
-          if ($LASTEXITCODE -ne 0) { throw 'Official lifecycle smoke failed' }
-      - name: Exercise references to existing official installations
-        shell: pwsh
-        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint official Unicode 空格' -Root '${{ runner.temp }}/endpoint existing installation references' -UntrustedOnly -ExistingInstallations
+          & '${{ runner.temp }}/endpoint official Unicode 空格/node/node.exe' --test --test-timeout=30000 ./agenvo-retirement.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Retirement boundary regression failed' }
   explicit-runtime:
     name: Explicit Windows host with source-built transfer CLI
     runs-on: windows-2025
@@ -179,8 +176,6 @@ jobs:
           ./official-smoke/prepare.ps1 -Root $root
           Move-Item -LiteralPath (Join-Path $root 'build-cache') -Destination '${{ runner.temp }}/endpoint-explicit-npm-cache'
           Copy-Item -LiteralPath '${{ runner.temp }}/endpoint-transfer-source-build' -Destination (Join-Path $root 'transfer') -Recurse
-          & (Join-Path $root 'node/node.exe') ./official-smoke/inventory.mjs $root
-          if ($LASTEXITCODE -ne 0) { throw 'Explicit component inventory failed' }
       - name: Exercise packaged native Runtime and independent owned Herdr across reconnect
         shell: pwsh
         run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint native Runtime host' -UntrustedOnly -NativeRuntime -RuntimePackage '${{ runner.temp }}/endpoint extracted candidate Unicode 空格/runtime-connector' -RuntimeFileProbe '${{ runner.temp }}/endpoint-runtime-file-probe.mjs' -CandidateRoot '${{ runner.temp }}/endpoint extracted candidate Unicode 空格' | Tee-Object -FilePath '${{ runner.temp }}/endpoint-candidate-output/native-runtime-host.log'
@@ -189,12 +184,6 @@ jobs:
         run: |
           node ./official-smoke/producer-fixtures.mjs '${{ runner.temp }}/endpoint-transfer-source-build' ./producer-source
           if ($LASTEXITCODE -ne 0) { throw 'Producer native fixtures failed' }
-      - name: Exercise public host and production CLI with isolated configuration
-        shell: pwsh
-        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint untrusted TLS' -UntrustedOnly
-      - name: Exercise extracted candidate with existing official installations and transfer CLI
-        shell: pwsh
-        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint referenced transfer' -UntrustedOnly -ReferencedTransfer -CandidateRoot '${{ runner.temp }}/endpoint extracted candidate Unicode 空格' | Tee-Object -FilePath '${{ runner.temp }}/endpoint-candidate-output/candidate-host.log'
       - name: Prepare original-task workload with real Herdr and Pi plus fixed producer projection
         shell: pwsh
         run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint native Pi workload' -UntrustedOnly -PiWorkload -ProducerSource ./producer-source
@@ -206,10 +195,13 @@ jobs:
             ${{ runner.temp }}/endpoint-candidate-output/*.zip
             ${{ runner.temp }}/endpoint-candidate-output/candidate-summary.json
             ${{ runner.temp }}/endpoint-candidate-output/package-smoke.json
-            ${{ runner.temp }}/endpoint-candidate-output/candidate-host.log
             ${{ runner.temp }}/endpoint-candidate-output/native-runtime-host.log
           if-no-files-found: error
           retention-days: 7
+      - name: Require native packaged transfer host acceptance after legacy retirement
+        shell: pwsh
+        run: |
+          throw 'Native packaged transfer upload/authentication/TLS acceptance remains required. The former schema 1/2 Agenvo host fixtures are retired and are not replacement evidence. No legacy connector is started.'
       - name: Verify production CLI trusted TLS with disposable CurrentUser test root
         shell: pwsh
         # Keep a real failing prerequisite; never repeat the rejected import

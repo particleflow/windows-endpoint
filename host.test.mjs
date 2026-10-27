@@ -75,7 +75,7 @@ test('public observer accepts explicit external installation/config roots withou
   assert.equal(await fs.readFile(path.join(f.config.piConfigDir, 'auth.json'), 'utf8'), 'SYNTHETIC UNREAD PI CONFIG')
   assert.equal((await stop(p)).code, 0)
 })
-test('resolved official Herdr path cannot overlap host-owned data even when the endpoint omits its path', async t => {
+test('retired implicit Herdr mapping cannot start through the public foreground host', async t => {
   const f = await installedFixture(t), root = path.join(f.base, 'host-root')
   await fs.mkdir(path.join(root, 'config'), { recursive: true })
   const binary = path.join(root, 'data/program/herdr.exe')
@@ -85,7 +85,7 @@ test('resolved official Herdr path cannot overlap host-owned data even when the 
   await fs.writeFile(path.join(root, 'config/endpoint.json'), JSON.stringify(f.config))
   await fs.writeFile(path.join(root, 'config/runtime.json'), JSON.stringify({ schema: 2, mode: 'existing-installations', transfer: 'disabled' }))
   const p = launch(t, { root })
-  await attention(p, 'host_reference_overlap')
+  await attention(p, 'legacy_execution_retired')
   assert.equal(p.statuses.some(s => s.components === 'verified_local'), false)
   assert.equal((await stop(p)).code, 2)
   assert.equal(await fs.readFile(binary, 'utf8'), 'INERT MUST NEVER RUN')
@@ -151,12 +151,12 @@ test('a complete inert bundle inventory never activates unqualified public compo
   await assert.rejects(fs.lstat(path.join(f.stateDirectory, 'lifecycle.json')), { code: 'ENOENT' })
 })
 
-test('public entry rejects a malformed explicit request without starting components or rewriting it', async t => {
+test('public entry rejects a retired explicit-review request without starting components or rewriting it', async t => {
   const f = await fixture(t, true), file = path.join(f.root, 'config/runtime.json')
   const raw = JSON.stringify({ schema: 1, mode: 'explicit-review', manifestSha256: f.config.manifestSha256, transfer: 'existing-queue', qualified: true })
   await fs.writeFile(file, raw)
   const p = launch(t, f)
-  const s = await attention(p, 'runtime_request_invalid')
+  const s = await attention(p, 'legacy_execution_retired')
   assert.equal(s.componentLifecycle, null); assert.equal(s.ready, false)
   assert.equal((await stop(p)).code, 2)
   assert.equal(await fs.readFile(file, 'utf8'), raw)

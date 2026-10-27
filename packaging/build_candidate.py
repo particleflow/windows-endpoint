@@ -25,7 +25,6 @@ PRODUCER_FILES = (
 )
 TEMPLATES = {
     'packaging/README.md': 'README.md',
-    'packaging/endpoint.references.example.json': 'examples/endpoint.references.example.json',
     'packaging/runtime.example.json': 'examples/runtime.example.json',
     'packaging/endpoint.native-runtime.example.json': 'examples/endpoint.native-runtime.example.json',
 }

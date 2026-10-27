@@ -10,13 +10,13 @@ This is an open retirement follow-up, not a clean-state certificate.
 
 | Residual | Exact source | Disposition and verification needed |
 | --- | --- | --- |
-| Agenvo binary/package pin | `dependencies.json.components.connector`; `official-smoke/package.json` and lock | Remove after native-only fixture conversion. This is the old connector, not the independent official Herdr installation or Pi. Verify a fresh package inventory contains no old connector dependency. |
-| Legacy launch | `endpoint.mjs` `programPaths`, `managedEnvironment`, `launchPlan`, `verifyToolchain`; `runtime.mjs` `validateRuntimeRequest`, `createExplicitRuntime` | Schema 1/2 still select the old connector and expose a run request. These are executable implementations, not historical decoders. Remove both legacy runtime modes and old environment emission; assert old input cannot start/probe a child or emit an executable plan. Retain only a separately justified historical configuration reader. |
-| Legacy lifecycle | `lifecycle.mjs` `NativeDriver` legacy branch of `start`, `connectorStatus`, `removeConnectorLock` | Still starts `node <old connector> run`, consumes old status/run.lock and stop ownership. Replace fixtures with native Runtime/Herdr cases before deleting. Verify exact owned-child stop, unknown cleanup, unrelated-peer preservation and no stale old lock recovery. |
+| Agenvo binary/package pin | `dependencies.json.components.connector`; `official-smoke/package.json` and lock | The active npm root and 31 now-unreachable lock entries are removed offline; every retained version/resolved/integrity pin is unchanged. The catalog connector entry remains only for historical schema-1 bundle-manifest verification/path decoding, not current fixture installation or runtime start. Independent official Herdr/Pi installations are untouched. |
+| Legacy launch | `endpoint.mjs` `programPaths`, `managedEnvironment`, `launchPlan`, `verifyToolchain`; `runtime.mjs` `validateRuntimeRequest`, `createExplicitRuntime` | Closed for startup in this delta: schema 1/2 runtime request, launch plan, NativeDriver command/start/recovery and toolchain execution fail with `legacy_execution_retired`; old environment emission and runtime branches are deleted. Legacy program-path/config decoding remains for exact old references; standalone legacy qualification helpers below remain a separate pending cleanup. |
+| Legacy lifecycle | `lifecycle.mjs` `NativeDriver` legacy branch of `start`, `connectorStatus`, `recoverConnectorLock` (removed) | Closed: delete old connector spawn, status/run.lock reads, forceful stop and official stale-lock command. Native IPC owns connector shutdown; the coordinator now calls `recoverConnector`. Useful lease/exit/error assertions use actual native IPC fixtures. Unknown native cleanup retains the same ownership. |
 | Legacy registration assumptions | `installed.mjs` `validateInstalledConfiguration`, `inspectPrograms`, `installedDoctor`; `host.mjs` old connector diagnostics | Still resolves Herdr from old Agenvo instance mapping and checks old credential metadata. Remove that execution/qualification branch; keep original historical identity bytes in read-only ledgers. Native configuration must reference the official Herdr installation directly. |
-| Old default/example | `endpoint.example.json`, `deployment-layout.json.references.agenvoConfigDir`, `packaging/endpoint.references.example.json`, `packaging/build_candidate.py.TEMPLATES` | Withdraw the old example/default and its packaged link together with legacy mode removal. Do not redirect the example to a renamed old mode. Verify every packaged example and link targets schema 3/current commands. |
-| Active old CI fixtures | `official-smoke/{verify,lifecycle,host,existing,pi-workload}.mjs`, `.github/workflows/windows-endpoint.yml` | Workflow still launches the old mode. Native actual-process fixture exists separately; retain its coverage and convert useful Herdr/Pi/transfer assertions. A synthetic old-protocol success test is not a reason to ship a legacy executor. |
-| Misleading current instructions | `README.md`, `packaging/README.md`, `docs/{delivery,lifecycle,existing-installations-plan,explicit-runtime,foreground-host,owner-handoff-transport}.md` | Still instruct old instance/OAuth/relay usage. Rewrite around actual native execution after source conversion. Remove obsolete setup text, links and copied old status claims. Exact-source logs in provenance remain only to explain an actual failed/passed gate at that commit. |
+| Old default/example | `endpoint.example.json`, `deployment-layout.json.references.agenvoConfigDir`, `packaging/endpoint.references.example.json`, `packaging/build_candidate.py.TEMPLATES` | The old root and packaged example are deleted; the build no longer ships the schema-2 template. `deployment-layout.json` old locator spelling remains for historical layout/identity reading. The native schema-3 sample is the current setup input. |
+| Active old CI fixtures | `official-smoke/{verify,lifecycle,host,existing,pi-workload}.mjs`, `.github/workflows/windows-endpoint.yml` | Workflow no longer launches old lifecycle/reference/transfer-host scenarios. Standalone official Herdr/Pi checks and the Pi workload use native reference programs; the actual native Runtime fixture remains. Replacement native packaged upload/auth/TLS acceptance is an explicit failing gate, alongside the unchanged original positive-TLS gate. Unused legacy fixture source remains pending removal/conversion, not a historical-data exemption. |
+| Misleading current instructions | `README.md`, `packaging/README.md`, `docs/{delivery,lifecycle,existing-installations-plan,explicit-runtime,foreground-host,owner-handoff-transport}.md` | README, packaged instructions, explicit-runtime and lifecycle contracts now describe native-only startup and removed examples. Other legacy design/qualification documents remain pending review; no full documentation-zero claim is made. Exact-source provenance remains only to explain an actual result at its recorded commit. |
 | Environment pollution guards | `endpoint.mjs` AGENVO_* removal; `official-smoke/transfer.mjs` inherited environment filter | Keep the deny/filter until old inherited variables can no longer influence a child; do not remove a pollution rejection merely to erase a string. No global/user environment variable deletion is authorized by a source filter. |
 | Historical path locators | `session-continuation.mjs`, old fields in data-layout/compatibility checks | Original saved locator/fingerprint decoding is necessary for old receipt/history access. It must not authorize an old process, switch a target, rewrite fingerprints or replay work. Inspect individual reader call sites before pruning; the name alone is insufficient. |
 
@@ -84,11 +84,9 @@ Only thread `01a157e3-ab3a-7534-81d6-68d7202e000c` may perform onsite actions,
 after the parent explicitly transfers the concrete action and evidence.
 This branch neither invokes nor authorizes that writer directly.
 
-1. Obtain latest result bodies from retirement task
+1. Parent supplied latest result excerpts from retirement task
    `01a1725c-c085-7012-8659-5165724070e6` and Windows task
-   `01a164cf-7585-769d-a224-c598d66260c8`. This environment exposes no thread-read
-   or cross-thread-message tool; Personal Context returned unavailable. GitHub
-   source evidence above does not substitute for those result bodies.
+   `01a164cf-7585-769d-a224-c598d66260c8`. The parent supplied the Oct25 `0d5e045c` / PR84 same-operation PowerShell recovery scope, plus Windows `1537fe39`, CI40487432492 and candidate12726421524 status. This environment still has no thread-read tool; these excerpts are parent evidence, not a fresh onsite inventory.
 2. Supply already-read, redacted exact legacy task/service/binary/PID/environment
    identifiers, plus the allowed non-secret current references. Do not repeat
    rejected project-root Get-ChildItem, elevation, ACL edits or private config
@@ -111,3 +109,30 @@ This branch neither invokes nor authorizes that writer directly.
 The general cleanup owner's three removed UI verification files are outside
 this audit and untouched. No retirement acceptance is claimed until source
 execution residue, the exact onsite inventory and migration checks are closed.
+
+## Startup boundary delta and remaining acceptance
+
+The delta is based on PR5 `1537fe39256bd7f208fe3da2b4323c6bf2a9fc04`, after the
+offline-plan commit `4a1dbe7`. No installed endpoint or live file changes occur.
+Exact historical readers retained are `validateConfig`/`deploymentReferences`
+for original schema/path decoding, `StateStore.load` and `handoffStatus` for
+schema-1/2 unknown acknowledgements, `handoffPayload` for original decimal/hash
+validation, `session-continuation`'s legacy hash order, and
+`readSessionHistory` for saved Herdr/Pi references. Their old field names cannot
+be removed or rehashed without stranding evidence. They confer no execution,
+stop, cleanup, migration or retry authority.
+
+`agenvo-retirement.test.mjs` tests both legacy schemas, early rejection before
+private reference resolution, an actual public-host refusal, no setup/lease
+creation, exact original unknown/receipt/Pi-history bytes and decimal revisions,
+and a real synthetic native IPC start/stop. Existing native component, journal,
+setup, installation and program-deployment suites provide additional regressions.
+The Windows native actual-binary fixtures have not been rerun for this delta;
+Linux tests cannot establish their result. The new explicit transfer acceptance
+gate prevents withdrawing old fixtures from being reported as restored native
+upload/TLS coverage. Existing failed TLS trust operations are not retried.
+
+Still open: legacy installed qualification/diagnostic implementations,
+unused old fixture source, other outdated documents, and the exact onsite
+binary/startup/service/environment inventory. They are not all retained-history
+exceptions. No global zero-residue or actual configuration migration is claimed.

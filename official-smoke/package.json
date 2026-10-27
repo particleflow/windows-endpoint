@@ -4,7 +4,6 @@
   "version": "0.0.0",
   "type": "module",
   "dependencies": {
-    "@agenvo/herdr": "0.2.0",
     "@earendil-works/pi-coding-agent": "1.2.0"
   }
 }

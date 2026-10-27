@@ -14,18 +14,18 @@ import { installedFixture, nativeInstalledFixture } from './test-support/install
 import { deploymentReferences } from './deployment.mjs'
 
 test('owned component exit and stderr byte evidence survives replacement without recording private stderr', async t => {
-  const f = await installedFixture(t)
+  const f = await nativeInstalledFixture(t)
   f.config.programs.node = process.execPath
-  await f.write(f.p.connector, "process.stderr.write('SYNTHETIC-PRIVATE-COMPONENT-TEXT'); process.exitCode = 7\n")
+  await f.write(path.join(path.dirname(f.p.connector), 'endpoint-host-api.mjs'), "export class RuntimeSession {}; export const formatCLIError = e => e.message; export function runCLI() { process.stderr.write('SYNTHETIC-PRIVATE-COMPONENT-TEXT'); console.log('stopped'); return Promise.resolve(7) }\n")
   const driver = new NativeDriver(f.config)
   await driver.start('connector')
-  const first = driver.children.get('connector')
-  await once(first.process, 'close')
+  const first = driver.nativeConnector.record
+  await first.done
   const recorded = driver.diagnostics()[0]
   assert.equal(recorded.exitCode, 7); assert.equal(recorded.exitObserved, true)
   assert.equal(recorded.stderrBytes, Buffer.byteLength('SYNTHETIC-PRIVATE-COMPONENT-TEXT'))
-  assert.equal(recorded.stderrCode, 'unclassified_stderr')
-  await driver.start('connector'); await once(driver.children.get('connector').process, 'close')
+  assert.equal(recorded.stderrCode, 'native_runtime_failed')
+  await driver.start('connector'); await driver.nativeConnector.record.done
   const second = driver.diagnostics()[0]
   const { previousExit, ...prior } = recorded
   assert.equal(previousExit, null); assert.notEqual(second.pid, recorded.pid); assert.deepEqual(second.previousExit, prior)
@@ -180,8 +180,7 @@ test('omitted Herdr path resolves only from the selected official instance witho
   assert.equal(inspected.herdrSource, 'agenvo_instance'); assert.equal(inspected.config.programs.herdr, f.p.herdr)
   assert.equal(JSON.stringify(f.config), input); assert.deepEqual(await fs.readFile(file), before)
   assert.throws(() => managedEnvironment(f.config), { code: 'herdr_reference_unresolved' })
-  const runtime = await createExplicitRuntime({ config: f.config, stateDirectory: path.join(f.base, 'endpoint'), request: { schema: 2, mode: 'existing-installations', transfer: 'disabled' } })
-  assert.equal(runtime.driver.herdr, f.p.herdr); assert.equal(runtime.driver.children.size, 0)
+  await assert.rejects(createExplicitRuntime({ config: f.config, stateDirectory: path.join(f.base, 'endpoint'), request: { schema: 2, mode: 'existing-installations', transfer: 'disabled' } }), { code: 'legacy_execution_retired' })
   const destination = path.join(f.base, 'endpoint.json')
   await f.write(path.join(f.base, 'input.json'), input)
   await configure(path.join(f.base, 'input.json'), destination)
@@ -333,7 +332,7 @@ test('producer existing target profile mismatch cannot be called a shared task c
   assert.equal(compareProducerTarget(f.config, { ...f.target, agent: { ...f.target.agent, path: managedEnvironment(f.config).PATH } }).state, 'configuration_matches')
 })
 test('native driver uses referenced paths and changed programs fail before invoking status', async t => {
-  const f = await installedFixture(t), p = programPaths(f.config)
+  const f = await nativeInstalledFixture(t), p = programPaths(f.config)
   const driver = new NativeDriver(f.config, { checkPrograms: () => { throw new LifecycleError('installation_changed_restart_required') } })
   assert.equal(driver.herdr, p.herdr); assert.equal(driver.node, p.node); assert.equal(driver.connector, p.connector)
   assert.throws(() => driver.hostStatus(), { code: 'installation_changed_restart_required' })
@@ -341,7 +340,7 @@ test('native driver uses referenced paths and changed programs fail before invok
   assert.equal(driver.children.size, 0)
 })
 test('reference activation is explicit and transfer cannot be enabled through an unqualified mode', async t => {
-  const f = await installedFixture(t), request = { schema: 2, mode: 'existing-installations', transfer: 'disabled' }
+  const f = await nativeInstalledFixture(t), request = { schema: 2, mode: 'existing-installations', transfer: 'disabled' }
   assert.deepEqual(validateRuntimeRequest(request, f.config), request)
   for (const changed of [{ ...request, transfer: 'existing-queue' }, { ...request, command: 'anything' }, { ...request, mode: 'automatic' }]) assert.throws(() => validateRuntimeRequest(changed, f.config))
   const runtime = await createExplicitRuntime({ config: f.config, stateDirectory: path.join(f.base, 'endpoint'), request })
@@ -572,8 +571,7 @@ test('reference mode shares the registered producer paths and lease without anot
   assert.equal(JSON.stringify(f.config), original)
   assert.equal(env.HERDR_PLUGIN_CONFIG_DIR, f.locations.config); assert.equal(env.HERDR_PLUGIN_STATE_DIR, f.locations.state)
   assert.ok(leaseKeys(f.config).includes(`transfer:${f.locations.state}`))
-  const runtime = await createExplicitRuntime({ config: f.config, stateDirectory: path.join(f.base, 'endpoint'), request })
-  assert.equal(runtime.transfer.state, 'stopped'); assert.equal(runtime.driver.children.size, 0)
+  await assert.rejects(createExplicitRuntime({ config: f.config, stateDirectory: path.join(f.base, 'endpoint'), request }), { code: 'legacy_execution_retired' })
   assert.equal(await fs.readFile(journal, 'utf8'), 'KEEP EXISTING QUEUE EVIDENCE')
   assert.equal(f.calls.length, 0)
 })
