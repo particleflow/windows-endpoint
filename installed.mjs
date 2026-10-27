@@ -72,7 +72,7 @@ async function capture(config, binding) {
   const checkSelection = await officialHerdrSelection(config)
   // Keep the selected official instance immutable for this running owner.
   // A fresh explicit run can read a new official mapping after a clean stop.
-  files.set(binding.file, binding.stamp)
+  if (binding) files.set(binding.file, binding.stamp)
   const add = async file => files.set(file, fingerprint(await regular(file)))
   async function walk(root) {
     await validateDirectory(root)
@@ -168,9 +168,13 @@ export function compareProducerTarget(config, target) {
   return { state: 'configuration_matches', invocation: 'not_executed' }
 }
 
-export async function inspectInstalled(config, run = probe, { inspectHistoryOnly = false, sessionContinuation = null } = {}) {
-  const resolved = await validateInstalledConfiguration(config, { inspectHistoryOnly, sessionContinuation })
-  config = resolved.config
+// Program-only inspection reuses the exact version/protocol checks below. It
+// never opens a credential, user profile or task/session directory.
+export async function inspectPrograms(config, run = probe, binding = null) {
+  validateConfig(config)
+  config = { ...config, programs: { ...config.programs, connectorPackage: connectorPackageRoot(config) } }
+  if (isNativeRuntimeConfig(config) && !binding) config = { ...config, programs: { ...config.programs, herdr: await resolveNativeHerdr(config) } }
+  validateConfig(config)
   const p = programPaths(config)
   const pi = await json(path.join(config.programs.piPackage, 'package.json'))
   const connector = await json(path.join(config.programs.connectorPackage, 'package.json'))
@@ -189,13 +193,15 @@ export async function inspectInstalled(config, run = probe, { inspectHistoryOnly
     try { await fs.lstat(sibling); demand(same(sibling, p.node), 'installation_node_resolution_mismatch') }
     catch (error) { if (error.code !== 'ENOENT') throw error }
   }
-  const observed = await capture(config, resolved.binding), env = managedEnvironment(config)
+  const observed = await capture(config, binding), env = managedEnvironment(config)
   const call = (file, args) => { observed.assertUnchanged(); const output = run(file, args, env); observed.assertUnchanged(); return output }
   const versions = { node: call(p.node, ['--version']).replace(/^v/, ''), herdr: call(p.herdr, ['--version']).replace(/^herdr /, ''), pi: call(p.node, [p.pi, '--version']) }
   let connectorVersion
   try { connectorVersion = native ? call(p.node, [p.connector, 'version']) : JSON.parse(call(p.node, [p.connector, '--version'])).version } catch { throw new EndpointError('installation_connector_protocol_invalid') }
   versions.connector = connectorVersion
-  minimum(versions.node, '24.13.0'); minimum(versions.herdr, '0.9.5'); minimum(versions.pi, '1.2.0')
+  minimum(versions.node, catalog.installationSources.node.minimum)
+  minimum(versions.herdr, catalog.installationSources.herdr.minimum)
+  minimum(versions.pi, catalog.installationSources.pi.minimum)
   demand(versions.pi === pi.version && versions.connector === connector.version && versions.connector === (native ? catalog.nativeRuntime?.version : '0.2.0'), 'installation_package_protocol_mismatch')
   const piHelp = call(p.node, [p.pi, '--help'])
   for (const flag of ['--mode', '--session-dir', '--session-id', '--provider', '--model']) demand(piHelp.includes(flag), 'installation_pi_protocol_missing')
@@ -212,7 +218,13 @@ export async function inspectInstalled(config, run = probe, { inspectHistoryOnly
   demand(lines.length === 2 && same(lines[0], path.join(p.piBin, 'pi')) && lines[1] === versions.pi, 'installation_pi_resolution_mismatch')
   versions.git = call(path.join(p.gitRoot, 'cmd/git.exe'), ['--version'])
   demand(/^git version \d+\.\d+\.\d+\.windows\.\d+$/.test(versions.git), 'installation_git_protocol_missing')
-  return { ...observed, versions, config, herdrSource: resolved.herdrSource, history: resolved.history }
+  return { ...observed, versions, config }
+}
+
+export async function inspectInstalled(config, run = probe, { inspectHistoryOnly = false, sessionContinuation = null } = {}) {
+  const resolved = await validateInstalledConfiguration(config, { inspectHistoryOnly, sessionContinuation })
+  const observed = await inspectPrograms(resolved.config, run, resolved.binding)
+  return { ...observed, herdrSource: resolved.herdrSource, history: resolved.history }
 }
 
 export async function installedDoctor(config, target = null, { run = probe, observe = observeExistingSession } = {}) {

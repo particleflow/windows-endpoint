@@ -26,6 +26,18 @@ in `candidate.json` and are not new services or user setup steps. The included
 AGPL license applies to this endpoint and the referenced Memoh source; upstream
 source and dependency declarations are available at the recorded exact commits.
 
+## Product installation entry implementation
+
+`WindowsEndpoint.ps1 -Action Install` is the new one-entry installation path.
+It stages the program using the existing transactions and publishes a stable
+`control/WindowsEndpoint.ps1` under the selected persistent root. Existing
+official components are verified/reused, not silently installed or copied.
+The current artifact is still unqualified: install refuses unless the operator
+explicitly selects `-ReviewCandidate`. This is not a production installer release.
+See the [installation contract](https://github.com/particleflow/windows-endpoint/blob/feat/explicit-component-runtime/docs/installation-entry.md)
+for exact commands, dependency sources, recovery and the non-destructive removal
+boundary. The older low-level setup commands below remain supported.
+
 ## Existing configuration and foreground entry
 
 Keep the extracted software directory separate from the existing host root and

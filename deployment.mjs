@@ -35,6 +35,15 @@ export function deploymentReferencePaths(root) {
     return [key, path.join(root, relative)]
   }))
 }
+// First installation may place only programs from the verified input package.
+// Data, credentials, external installations and original bindings never move.
+export function installedProgramReferences(input, source, target) {
+  const config = structuredClone(input)
+  const matches = (a,b) => typeof a === 'string' && path.relative(a,b) === ''
+  if (matches(config.transfer?.pluginRoot, path.join(source,'transfer'))) config.transfer.pluginRoot = path.join(target,'transfer')
+  if (matches(config.programs?.connectorPackage, path.join(source,'runtime-connector'))) config.programs.connectorPackage = path.join(target,'runtime-connector')
+  return validateConfig(config)
+}
 // Configuration references are not ownership grants. Dedicated component data
 // may share the product root; updater journals, packages and logs may not.
 export function hostReferenceLayout(root, config) {

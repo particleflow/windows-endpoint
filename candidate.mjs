@@ -49,6 +49,8 @@ export async function verifyCandidate(root, expectedHash) {
     demand(totalBytes <= 4 * 1024 ** 3, 'candidate_package_too_large')
   }
   demand(required.every(name => seen.has(name.toLowerCase())), 'candidate_component_missing')
+  if (manifest.stable_installation_entry !== undefined) demand(manifest.stable_installation_entry === 1 &&
+    seen.has('windowsendpoint.ps1') && seen.has('product-installation.mjs'), 'candidate_installation_entry_missing')
   const actual = []
   async function walk(directory, prefix = '') {
     await validateDirectory(directory)

@@ -63,5 +63,29 @@
     "clean_windows_user_acceptance_pending",
     "approved_binary_path_update_contract_pending",
     "agent_tool_recovery_unverified"
-  ]
+  ],
+  "installationSources": {
+    "node": {
+      "source": "https://nodejs.org/en/download",
+      "method": "official_windows_x64_installer_or_archive",
+      "minimum": "24.13.0"
+    },
+    "git": {
+      "source": "https://git-scm.com/install/windows",
+      "method": "official_git_for_windows_installer_or_portable_archive",
+      "required": "Git for Windows Bash and cmd/git.exe"
+    },
+    "herdr": {
+      "source": "https://herdr.dev/docs/windows-beta/",
+      "method": "official_windows_installer_or_complete_release_archive",
+      "minimum": "0.9.5"
+    },
+    "pi": {
+      "source": "https://pi.dev/docs/latest",
+      "method": "official_pi_installer",
+      "minimum": "1.2.0",
+      "officialCommand": "powershell -c \"irm https://pi.dev/install.ps1 | iex\"",
+      "updateCommand": "pi update"
+    }
+  }
 }

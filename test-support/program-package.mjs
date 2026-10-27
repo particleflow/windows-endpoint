@@ -10,7 +10,7 @@ export async function programPackage(directory, label = 'a', { native = false } 
   await fs.mkdir(directory, { recursive: true })
   const source = fileURLToPath(new URL('..', import.meta.url))
   const names = (await fs.readdir(source)).filter(n => n.endsWith('.mjs') && !n.endsWith('.test.mjs'))
-  names.push('owned-herdr.ps1', 'host-recovery.ps1', 'directory-selection.ps1', 'deployment-layout.json', 'dependencies.json', 'LICENSE')
+  names.push('owned-herdr.ps1', 'host-recovery.ps1', 'directory-selection.ps1', 'WindowsEndpoint.ps1', 'deployment-layout.json', 'dependencies.json', 'LICENSE')
   for (const name of names) await fs.copyFile(path.join(source, name), path.join(directory, name))
   await fs.writeFile(path.join(directory, 'README.md'), `INERT REVIEW REVISION ${label}`)
   await fs.mkdir(path.join(directory, 'transfer'))
@@ -40,7 +40,7 @@ export async function programPackage(directory, label = 'a', { native = false } 
   const manifest = { schema: 1, kind: 'portable-existing-installations-review', platform: 'win32-x64', entry: 'endpoint.mjs',
     qualification: 'not-for-production-release', official_components: 'referenced-existing-installations-not-bundled',
     source_repository: 'particleflow/windows-endpoint', source_commit: '1'.repeat(40), producer_repository: 'particleflow/Memoh',
-    producer_commit: catalog.components.transfer.revision, state_profile: programStateProfile, workspace_unc_source_root: true, central_component_data: true, files }
+    producer_commit: catalog.components.transfer.revision, state_profile: programStateProfile, workspace_unc_source_root: true, central_component_data: true, stable_installation_entry: 1, files }
   if (native) Object.assign(manifest, { native_runtime: { repository: 'particleflow/Memoh', commit: catalog.nativeRuntime.revision,
     version: catalog.nativeRuntime.version, entry: catalog.nativeRuntime.entry, provenance: 'runtime-connector/SHA256SUMS.json' },
     native_runtime_project_root: true, native_running_recovery: true, native_transfer_directory_pair: true, native_transfer_direct_cli: true })

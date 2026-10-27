@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { validateConfig, validateDirectory, configure, isNativeRuntimeConfig, isWindowsUNCWorkspacePath, catalog } from './endpoint.mjs'
 import { verifyCandidate } from './candidate.mjs'
-import { deploymentLayout, hostReferenceLayout } from './deployment.mjs'
+import { deploymentLayout, hostReferenceLayout, installedProgramReferences } from './deployment.mjs'
 import { programDeploymentMain } from './program-deployment.mjs'
 import { installedDoctor } from './installed.mjs'
 import { validateRuntimeRequest } from './runtime.mjs'
@@ -32,7 +32,7 @@ async function directory(file) {
   await validateDirectory(file)
 }
 
-export async function setupEndpoint({ from, root, source, manifestSha256, transfer, browseSourceRoot = false }, {
+export async function setupEndpoint({ from, root, source, manifestSha256, transfer, browseSourceRoot = false, installProgramReferences = false }, {
   verify = verifyCandidate, doctor = installedDoctor, install = programDeploymentMain,
   checkpoint = async () => {}, io = fs, chooseDirectory,
 } = {}) {
@@ -51,7 +51,8 @@ export async function setupEndpoint({ from, root, source, manifestSha256, transf
     demand(await boundedRead(from, 65536) === inputRaw, 'setup_input_changed')
     input = { ...input, sourceRoot: selection.path }
   }
-  const config = validateConfig(input)
+  const packageReferences = installProgramReferences ? { source, target: path.join(layout.packages, manifestSha256) } : null
+  const config = packageReferences ? installedProgramReferences(input, source, packageReferences.target) : validateConfig(input)
   demand([2, 3].includes(config.schema), 'setup_reference_configuration_required')
   demand(!isWindowsUNCWorkspacePath(config.sourceRoot) || verified.manifest?.workspace_unc_source_root === true, 'deployment_unc_workspace_unsupported')
   demand(!isNativeRuntimeConfig(config) || verified.manifest?.native_runtime, 'deployment_native_connector_missing')
@@ -83,8 +84,8 @@ export async function setupEndpoint({ from, root, source, manifestSha256, transf
     await match(runtimeFile, request)
     if (previous === null) {
       demand(await boundedRead(from, 65536) === inputRaw, 'setup_input_changed')
-      await configure(from, undefined, root, selection ? { browseSourceRoot: true,
-        chooseDirectory: async () => ({ state: 'selected', path: selection.path }) } : undefined)
+      await configure(from, undefined, root, { packageReferences, ...(selection ? { browseSourceRoot: true,
+        chooseDirectory: async () => ({ state: 'selected', path: selection.path }) } : {}) })
       await match(configFile, config)
     }
     await checkpoint('references_saved')

@@ -11,7 +11,7 @@ import subprocess
 import zipfile
 
 RUNTIME_FILES = (
-    'endpoint.mjs', 'endpoint.ps1', 'host.mjs', 'runtime.mjs', 'installed.mjs',
+    'endpoint.mjs', 'endpoint.ps1', 'WindowsEndpoint.ps1', 'product-installation.mjs', 'host.mjs', 'runtime.mjs', 'installed.mjs',
     'native-connector.mjs', 'native-connector-child.mjs', 'setup.mjs', 'host-recovery.mjs', 'host-recovery.ps1',
     'directory-selection.mjs', 'directory-selection.ps1',
     'lifecycle.mjs', 'handoff.mjs', 'owned-herdr.ps1', 'session-continuation.mjs',
@@ -155,6 +155,7 @@ def build(source, commit, producer, producer_source, output, native_runtime=None
         'activation_update_rollback': 'stopped-endpoint-program-only',
         'workspace_unc_source_root': True,
         'central_component_data': True,
+        'stable_installation_entry': 1,
         'state_profile': 'endpoint-program-v1',
         'files': [{'path': name, 'size': len(data), 'sha256': sha(data)} for name, data in sorted(payload.items())],
     }
