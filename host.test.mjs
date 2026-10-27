@@ -122,7 +122,7 @@ test('loaded config and absent bundle/authorization remain unavailable, with bou
   const p = launch(t, f)
   const s = await running(p)
   assert.equal(s.configuration, 'loaded'); assert.equal(s.components, 'unavailable_missing')
-  assert.equal(s.connection, 'authorization_required'); assert.equal(s.ready, false)
+  assert.equal(s.connection, 'unverified'); assert.equal(s.ready, false)
   const report = spawnSync(process.execPath, [endpoint, 'host', 'status', '--root', f.root], { encoding: 'utf8' })
   assert.equal(report.status, 0)
   assert.equal(JSON.parse(report.stdout).observation, 'cached')
@@ -171,7 +171,7 @@ test('adding explicit activation to a running observer requires restart and neve
   assert.equal((await stop(p)).code, 2)
 })
 
-test('a linked authorization directory is rejected without observing foreign status', async t => {
+test('a retired linked authorization directory is ignored without reading foreign status', async t => {
   const f = await fixture(t, true)
   const foreign = path.join(f.root, 'foreign')
   await fs.mkdir(foreign)
@@ -179,8 +179,8 @@ test('a linked authorization directory is rejected without observing foreign sta
   await fs.symlink(foreign, f.config.agenvoConfigDir, process.platform === 'win32' ? 'junction' : 'dir')
   const p = launch(t, f)
   const s = await running(p)
-  assert.ok(s.attention); assert.equal(s.connection, 'unverified'); assert.equal(s.componentLifecycle, null)
-  assert.equal((await stop(p)).code, 2)
+  assert.equal(s.attention, null); assert.equal(s.connection, 'unverified'); assert.equal(s.componentLifecycle, null)
+  assert.equal((await stop(p)).code, 0)
   assert.equal(p.stdout().includes('PRIVATE-FOREIGN'), false)
   assert.equal(await fs.readFile(path.join(foreign, 'status.json'), 'utf8'), 'PRIVATE-FOREIGN-STATUS')
 })

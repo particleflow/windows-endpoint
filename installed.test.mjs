@@ -160,36 +160,21 @@ test('native connection selection never imports an existing Herdr task or rewrit
 })
 
 test('references inspect existing programs without a bundle, credential copy or user version manifest', async t => {
-  const f = await installedFixture(t), before = await fs.readFile(path.join(f.config.piConfigDir, 'auth.json'))
+  const f = await nativeInstalledFixture(t), before = await fs.readFile(path.join(f.config.piConfigDir, 'auth.json'))
   const inspected = await inspectInstalled(f.config, f.run)
   assert.equal(inspected.versions.herdr, '0.9.5'); assert.equal(inspected.versions.pi, '1.2.0')
   assert.equal(f.config.bundleRoot, undefined); assert.equal(f.config.manifestSha256, undefined)
   assert.deepEqual(await fs.readFile(path.join(f.config.piConfigDir, 'auth.json')), before)
-  assert.equal(f.calls.length, 8)
+  assert.equal(f.calls.length, 9)
   assert.equal(compareProducerTarget(f.config, f.target).state, 'configuration_matches')
   const destination = path.join(f.base, 'endpoint.json')
   await f.write(path.join(f.base, 'input.json'), JSON.stringify(f.config))
   await configure(path.join(f.base, 'input.json'), destination)
   assert.deepEqual(JSON.parse(await fs.readFile(destination)), f.config)
 })
-test('omitted Herdr path resolves only from the selected official instance without saving a second path', async t => {
-  const f = await installedFixture(t), file = path.join(f.config.agenvoConfigDir, 'config.json')
-  delete f.config.programs.herdr
-  const before = await fs.readFile(file), input = JSON.stringify(f.config)
-  const inspected = await inspectInstalled(f.config, f.run)
-  assert.equal(inspected.herdrSource, 'agenvo_instance'); assert.equal(inspected.config.programs.herdr, f.p.herdr)
-  assert.equal(JSON.stringify(f.config), input); assert.deepEqual(await fs.readFile(file), before)
-  assert.throws(() => managedEnvironment(f.config), { code: 'herdr_reference_unresolved' })
-  await assert.rejects(createExplicitRuntime({ config: f.config, stateDirectory: path.join(f.base, 'endpoint'), request: { schema: 2, mode: 'existing-installations', transfer: 'disabled' } }), { code: 'legacy_execution_retired' })
-  const destination = path.join(f.base, 'endpoint.json')
-  await f.write(path.join(f.base, 'input.json'), input)
-  await configure(path.join(f.base, 'input.json'), destination)
-  assert.equal(JSON.parse(await fs.readFile(destination)).programs.herdr, undefined)
-})
 test('configure host root preserves existing installation references and rejects host data overlap', async t => {
-  const f = await installedFixture(t)
-  delete f.config.programs.herdr
-  const originalFiles = [path.join(f.config.agenvoConfigDir, 'config.json'), path.join(f.config.piConfigDir, 'auth.json'), path.join(f.config.herdrConfigRoot, 'config.toml')]
+  const f = await nativeInstalledFixture(t)
+  const originalFiles = [f.config.connector.enrollmentFile, path.join(f.config.piConfigDir, 'auth.json'), path.join(f.config.herdrConfigRoot, 'config.toml')]
   const before = await Promise.all(originalFiles.map(file => fs.readFile(file)))
   const input = path.join(f.base, 'input.json'), root = path.join(f.base, 'host')
   await f.write(input, JSON.stringify(f.config)); await fs.mkdir(path.join(root, 'config'), { recursive: true })
@@ -204,49 +189,8 @@ test('configure host root preserves existing installation references and rejects
   await assert.rejects(main(['configure', '--from', input, '--root', second]), /host_reference_overlap/)
   await assert.rejects(fs.stat(path.join(second, 'config/endpoint.json')), { code: 'ENOENT' })
 })
-test('official instance binary changes are frozen during a run and followed by a fresh check without editing endpoint config', async t => {
-  const f = await installedFixture(t), file = path.join(f.config.agenvoConfigDir, 'config.json')
-  delete f.config.programs.herdr
-  const endpointBefore = JSON.stringify(f.config), inspected = await inspectInstalled(f.config, f.run)
-  const previous = f.p.herdr, next = path.join(f.base, 'next-official-release/herdr.exe')
-  await f.write(next, 'INERT NEXT OFFICIAL RELEASE')
-  f.connector.instances[0].binary = next
-  await fs.writeFile(file, JSON.stringify(f.connector))
-  assert.throws(inspected.assertUnchanged, { code: 'installation_changed_restart_required' })
-  inspected.assertUnchanged('connector') // unchanged connector cleanup is retained
-  assert.equal(inspected.config.programs.herdr, previous)
-  f.p.herdr = next; f.versions.herdr = '0.9.6'
-  const rechecked = await inspectInstalled(f.config, f.run)
-  assert.equal(rechecked.config.programs.herdr, next); assert.equal(rechecked.versions.herdr, '0.9.6')
-  assert.equal(JSON.stringify(f.config), endpointBefore)
-  assert.equal(JSON.parse(await fs.readFile(file)).instances[0].id, f.config.instanceId)
-  assert.equal(await fs.readFile(previous, 'utf8'), 'INERT SYNTHETIC PROGRAM; NEVER EXECUTE')
-})
-test('legacy explicit Herdr references keep equality semantics and can migrate by removing only the duplicate path', async t => {
-  const f = await installedFixture(t), file = path.join(f.config.agenvoConfigDir, 'config.json')
-  assert.equal((await inspectInstalled(f.config, f.run)).herdrSource, 'legacy_explicit_match')
-  const next = path.join(f.base, 'new-location/herdr.exe')
-  await f.write(next, 'INERT NEW LOCATION'); f.connector.instances[0].binary = next
-  await fs.writeFile(file, JSON.stringify(f.connector))
-  await assert.rejects(inspectInstalled(f.config, f.run), { code: 'runtime_approved_path_mismatch' })
-  delete f.config.programs.herdr; f.p.herdr = next
-  assert.equal((await inspectInstalled(f.config, f.run)).config.programs.herdr, next)
-})
-test('single-instance resolution rejects ambiguous, mismatched and unsafe official mappings before probes', async t => {
-  const f = await installedFixture(t), file = path.join(f.config.agenvoConfigDir, 'config.json')
-  delete f.config.programs.herdr
-  const i = f.connector.instances[0]
-  for (const connector of [
-    { ...f.connector, instances: [] }, { ...f.connector, instances: [i, { ...i, id: 'other' }] },
-    { ...f.connector, deviceId: '33333333-3333-4333-8333-333333333333' },
-    ...[{ ...i, id: 'other' }, { ...i, kind: 'other' }, { ...i, cwd: f.base }, { ...i, binary: 'herdr.exe' }, { ...i, binary: path.join(f.config.sourceRoot, 'herdr.exe') }].map(instance => ({ ...f.connector, instances: [instance] })),
-  ]) {
-    await fs.writeFile(file, JSON.stringify(connector)); await assert.rejects(inspectInstalled(f.config, f.run))
-  }
-  assert.equal(f.calls.length, 0)
-})
 test('official compatible version changes are redetected on a fresh check without editing an approval list', async t => {
-  const f = await installedFixture(t), first = await inspectInstalled(f.config, f.run)
+  const f = await nativeInstalledFixture(t), first = await inspectInstalled(f.config, f.run)
   f.versions.herdr = '0.9.6'; f.versions.pi = '1.3.0'
   await f.write(f.p.herdr, 'UPDATED INERT OFFICIAL PROGRAM FIXTURE')
   await f.write(path.join(f.config.programs.piPackage, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', version: '1.3.0' }))
@@ -257,37 +201,15 @@ test('official compatible version changes are redetected on a fresh check withou
   assert.notEqual(next.hashes.herdr, first.hashes.herdr)
 })
 test('same-version replacement and package closure changes suspend a running installation', async t => {
-  const f = await installedFixture(t), first = await inspectInstalled(f.config, f.run)
+  const f = await nativeInstalledFixture(t), first = await inspectInstalled(f.config, f.run)
   await f.write(path.join(f.config.programs.piPackage, 'new-helper.js'), 'NEW INERT CODE')
   assert.throws(first.assertUnchanged, { code: 'installation_changed_restart_required' })
   const next = await inspectInstalled(f.config, f.run)
   await f.write(f.p.pi, 'REPLACED SAME VERSION')
   assert.throws(next.assertUnchanged, { code: 'installation_changed_restart_required' })
 })
-test('official Herdr current rotation is detected even when the old release bytes are unchanged', async t => {
-  const f = await installedFixture(t), standalone = path.join(f.base, 'official-herdr/packages/standalone')
-  const release = path.join(standalone, 'releases/0.9.5-windows-x86_64')
-  f.config.programs.herdr = path.join(release, 'herdr.exe'); f.p.herdr = f.config.programs.herdr
-  await f.write(f.p.herdr, 'INERT OLD RELEASE')
-  f.connector.instances[0].binary = f.p.herdr
-  await f.write(path.join(f.config.agenvoConfigDir, 'config.json'), JSON.stringify(f.connector))
-  const current = path.join(standalone, 'current')
-  await fs.symlink(release, current, 'junction')
-  const first = await inspectInstalled(f.config, f.run), calls = f.calls.length
-  const next = path.join(standalone, 'releases/0.9.6-windows-x86_64')
-  await f.write(path.join(next, 'herdr.exe'), 'INERT NEW RELEASE')
-  await fs.unlink(current); await fs.symlink(next, current, 'junction')
-  assert.throws(first.assertUnchanged, { code: 'installation_changed_restart_required' })
-  first.assertUnchanged('connector')
-  await assert.rejects(inspectInstalled(f.config, f.run), { code: 'herdr_active_installation_changed' })
-  assert.equal(f.calls.length, calls)
-  assert.equal(await fs.readFile(f.p.herdr, 'utf8'), 'INERT OLD RELEASE')
-  assert.equal(JSON.parse(await fs.readFile(path.join(f.config.agenvoConfigDir, 'config.json'))).instances[0].binary, f.p.herdr)
-  await fs.unlink(current); await fs.symlink(f.config.sourceRoot, current, 'junction')
-  await assert.rejects(inspectInstalled(f.config, f.run), { code: 'herdr_active_installation_invalid' })
-})
 test('unsafe or missing references fail before any program is invoked', async t => {
-  const f = await installedFixture(t)
+  const f = await nativeInstalledFixture(t)
   assert.throws(() => validateConfig({ ...f.config, session: 'default' }), { code: 'dedicated_session_required' })
   assert.throws(() => validateConfig({ ...f.config, piConfigDir: f.config.programs.piPackage }), { code: 'data_program_overlap' })
   assert.throws(() => validateConfig({ ...f.config, piConfigDir: f.config.sourceRoot }), { code: 'component_data_overlap' })
@@ -296,7 +218,7 @@ test('unsafe or missing references fail before any program is invoked', async t 
   assert.equal(f.calls.length, 0)
 })
 test('foreign package and existing historical session reject before version probes or state mutation', async t => {
-  const f = await installedFixture(t)
+  const f = await nativeInstalledFixture(t)
   const session = path.join(f.config.herdrConfigRoot, 'sessions', f.config.session, 'session.json')
   const original = JSON.stringify({ version: 3, workspaces: [{ id: 'existing-user-work' }] })
   await f.write(session, original)
@@ -308,7 +230,7 @@ test('foreign package and existing historical session reject before version prob
   assert.equal(f.calls.length, 0)
 })
 test('necessary CLI flags, launcher resolution and minimum version are checked', async t => {
-  const f = await installedFixture(t)
+  const f = await nativeInstalledFixture(t)
   await assert.rejects(inspectInstalled(f.config, (file, args, env) => args.includes('--help') && file === f.p.node ? '--mode' : f.run(file, args, env)), { code: 'installation_pi_protocol_missing' })
   await assert.rejects(inspectInstalled(f.config, (file, args, env) => file === f.p.git ? 'different-pi\n1.2.0' : f.run(file, args, env)), { code: 'installation_pi_resolution_mismatch' })
   f.versions.node = '22.0.0'
@@ -316,7 +238,7 @@ test('necessary CLI flags, launcher resolution and minimum version are checked',
 })
 
 test('a launcher for another Pi package and a sibling Node cannot silently override selected programs', async t => {
-  const f = await installedFixture(t), launcher = path.join(f.p.piBin, 'pi')
+  const f = await nativeInstalledFixture(t), launcher = path.join(f.p.piBin, 'pi')
   const original = await fs.readFile(launcher)
   await f.write(launcher, '# $basedir/different-package/cli.js')
   await assert.rejects(inspectInstalled(f.config, f.run), { code: 'installation_pi_launcher_mismatch' })
@@ -327,7 +249,7 @@ test('a launcher for another Pi package and a sibling Node cannot silently overr
   assert.equal(f.calls.length, 0)
 })
 test('producer existing target profile mismatch cannot be called a shared task chain', async t => {
-  const f = await installedFixture(t)
+  const f = await nativeInstalledFixture(t)
   for (const target of [{ ...f.target, bash_path: f.p.node }, { ...f.target, session: 'default' }, { ...f.target, agent: { ...f.target.agent, config_dir: f.config.sourceRoot } }, { ...f.target, agent: { ...f.target.agent, path: 'foreign-path' } }]) assert.throws(() => compareProducerTarget(f.config, target))
   assert.equal(compareProducerTarget(f.config, { ...f.target, agent: { ...f.target.agent, path: managedEnvironment(f.config).PATH } }).state, 'configuration_matches')
 })
@@ -347,7 +269,7 @@ test('reference activation is explicit and transfer cannot be enabled through an
   assert.equal(runtime.transfer, null); assert.equal(runtime.driver.children.size, 0)
 })
 
-async function installedTransferFixture(t, native = false) {
+async function installedTransferFixture(t, native = true) {
   const f = await (native ? nativeInstalledFixture(t) : installedFixture(t))
   f.config.transfer = { pluginRoot: path.join(f.base, 'existing-delivery-plugin'), nasOrigin: 'https://nas.example.test' }
   const locations = transferLocations(f.config)
@@ -390,7 +312,7 @@ test('native direct-CLI directory pair is optional and default references remain
   assert.ok(installationReferences(explicit).includes(f.locations.config))
   assert.ok(installationReferences(explicit).includes(f.locations.state))
   assert.equal(JSON.stringify(f.config), original)
-  const legacy = await installedTransferFixture(t)
+  const legacy = await installedTransferFixture(t, false)
   assert.throws(() => validateConfig({ ...legacy.config, transferConfigDir: legacy.locations.config, transferStateDir: legacy.locations.state }), { code: 'unknown_or_missing_field' })
 })
 
@@ -512,8 +434,8 @@ test('native direct-CLI hook gate rejects registration removal or re-enabling du
   }
 })
 
-test('default native and legacy transfer references still require their original enabled matching registration', async t => {
-  for (const native of [false, true]) {
+test('default native transfer references require their original enabled matching registration', async t => {
+  for (const native of [true]) {
     const f = await installedTransferFixture(t, native)
     assert.equal((await inspectInstalledTransfer(f.config)).source, catalog.components.transfer.revision)
     await fs.writeFile(f.registryFile, JSON.stringify([{ ...f.registry[0], enabled: false }]))
@@ -543,35 +465,28 @@ test('native doctor separates locally checked original transfer references from 
   assert.ok(missing.checks.some(c => c.check === 'installation_preflight' && c.code === 'transfer_credential_missing'))
   assert.ok(missing.checks.some(c => c.code === 'native_file_principal_mapping_unverified'))
 })
-test('the native file mapping diagnostic does not invent a gate for legacy transfer or native control-only configuration', async t => {
-  const observe = async () => ({ state: 'not_running', ownership: 'not_acquired', stopAuthority: false, serverIdentity: 'not_verified' })
-  const legacy = await installedTransferFixture(t)
-  const checked = await installedDoctor(legacy.config, null, { run: legacy.run, observe })
-  assert.ok(checked.checks.some(c => c.check === 'existing_transfer_reference' && c.state === 'passed'))
-  assert.equal(checked.transfer, 'reference_checked; native_tls_and_authorization_unverified')
-  assert.equal(checked.checks.some(c => c.check === 'native_control_file_principal_mapping'), false)
-  const native = await nativeInstalledFixture(t)
-  const control = await installedDoctor(native.config, null, { run: native.run, observe })
+test('native control-only diagnostic does not invent a file-principal gate', async t => {
+  const f = await nativeInstalledFixture(t)
+  const control = await installedDoctor(f.config, null, { run: f.run, observe: async () => ({ state: 'not_running' }) })
   assert.equal(control.checks.some(c => c.state === 'blocked'), false)
   assert.equal(control.ready, false)
 })
 test('reference mode shares the registered producer paths and lease without another bundle or queue', async t => {
   const f = await installedTransferFixture(t), request = { schema: 2, mode: 'existing-installations', transfer: 'existing-queue' }
-  delete f.config.programs.herdr
   const original = JSON.stringify(f.config)
   const journal = path.join(f.locations.state, 'untouched-user-journal')
   await fs.writeFile(journal, 'KEEP EXISTING QUEUE EVIDENCE')
   const checked = await inspectInstalledTransfer(f.config)
   assert.equal(checked.source, catalog.components.transfer.revision)
   assert.deepEqual(transferCommand(f.config, 'advance-results'), { file: path.join(f.locations.root, 'transferqueue.exe'), args: ['-action', 'advance-results'] })
-  assert.throws(() => transferEnvironment(f.config), { code: 'herdr_reference_unresolved' })
   const resolved = (await validateInstalledConfiguration(f.config)).config
   const env = transferEnvironment(resolved)
   assert.ok(env.PATH.split(path.delimiter).includes(path.dirname(f.p.herdr)))
   assert.equal(JSON.stringify(f.config), original)
   assert.equal(env.HERDR_PLUGIN_CONFIG_DIR, f.locations.config); assert.equal(env.HERDR_PLUGIN_STATE_DIR, f.locations.state)
   assert.ok(leaseKeys(f.config).includes(`transfer:${f.locations.state}`))
-  await assert.rejects(createExplicitRuntime({ config: f.config, stateDirectory: path.join(f.base, 'endpoint'), request }), { code: 'legacy_execution_retired' })
+  const runtime = await createExplicitRuntime({ config: f.config, stateDirectory: path.join(f.base, 'endpoint'), request })
+  assert.equal(runtime.transfer.state, 'stopped'); assert.equal(runtime.driver.children.size, 0)
   assert.equal(await fs.readFile(journal, 'utf8'), 'KEEP EXISTING QUEUE EVIDENCE')
   assert.equal(f.calls.length, 0)
 })

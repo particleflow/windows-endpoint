@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { EndpointError, validateConfig, validateDirectory, verifyBundle, isNativeRuntimeConfig, connectorConfigReference } from './endpoint.mjs'
 import { deploymentLayout, deploymentReferences, hostReferenceLayout } from './deployment.mjs'
-import { acquireLeases, connectorAttention, LifecycleError, StateStore } from './lifecycle.mjs'
+import { acquireLeases, LifecycleError, StateStore } from './lifecycle.mjs'
 import { createExplicitRuntime, validateRuntimeRequest, RuntimeError } from './runtime.mjs'
 
 export class HostError extends Error {
@@ -206,26 +206,12 @@ export class ForegroundHost {
     await this.publish()
   }
   async observeAuthorization(config) {
-    if (isNativeRuntimeConfig(config)) {
-      try { await regular(connectorConfigReference(config), 65536); this.connection = 'authorization_unverified' }
-      catch (error) { this.connection = error.code === 'ENOENT' ? 'authorization_required' : 'authorization_unverified' }
-      return // Presence is not authenticated Runtime identity or stop authority.
-    }
-    try { await validateDirectory(config.agenvoConfigDir) }
-    catch (error) {
-      if (error.code === 'ENOENT') { this.connection = 'authorization_required'; return }
-      throw error
-    }
-    const file = path.join(config.agenvoConfigDir, 'credentials.json')
+    if (!isNativeRuntimeConfig(config)) return // Old references are history only.
     try {
-      const st = await fs.lstat(file)
-      this.connection = st.isFile() && !st.isSymbolicLink() && st.nlink === 1 && st.size > 0 ? 'authorization_unverified' : 'authorization_required'
+      const st = await fs.lstat(connectorConfigReference(config))
+      this.connection = st.isFile() && !st.isSymbolicLink() && st.nlink === 1 && st.size > 0 && st.size <= 65536 ? 'authorization_unverified' : 'authorization_required'
     } catch (error) { this.connection = error.code === 'ENOENT' ? 'authorization_required' : 'authorization_unverified' }
-    try {
-      const value = JSON.parse(await regular(path.join(config.agenvoConfigDir, 'status.json'), 16384))
-      const age = Date.now() - value.updatedAt
-      if (value.deviceId === config.deviceId && age >= 0 && age <= 120000 && connectorAttention(value) === 'connector_authentication_required') this.connection = 'authorization_required'
-    } catch { /* Missing observations cannot assert authorization or machine health. */ }
+    // Metadata is not authenticated identity; the official Runtime owns loading.
   }
   async tick() {
     if (this.active) return this.active

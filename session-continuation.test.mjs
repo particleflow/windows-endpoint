@@ -4,11 +4,11 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { captureSessionContinuation, verifySessionContinuation } from './session-continuation.mjs'
 import { inspectInstalled } from './installed.mjs'
-import { installedFixture } from './test-support/installed-fixture.mjs'
+import { nativeInstalledFixture } from './test-support/installed-fixture.mjs'
 import { NativeDriver } from './lifecycle.mjs'
 
 async function ordinaryFixture(t) {
-  const f = await installedFixture(t)
+  const f = await nativeInstalledFixture(t)
   const file = path.join(f.config.herdrConfigRoot, 'sessions', f.config.session, 'session.json')
   const pane = { cwd: f.config.sourceRoot, label: 'synthetic ordinary pane' }
   const snapshot = { version: 3, workspaces: [{ id: 'workspace-before-update', tabs: [{ panes: { 1: pane } }] }] }
@@ -26,9 +26,7 @@ test('clean-stop checkpoint follows official program mapping while retaining ori
   await assert.rejects(inspectInstalled(f.config, f.run), { code: 'existing_herdr_session_requires_handoff' })
   f.p.herdr = path.join(f.base, 'official-next/herdr.exe')
   await f.write(f.p.herdr, 'INERT NEXT OFFICIAL EXECUTABLE')
-  f.connector.instances[0].binary = f.p.herdr
-  await f.write(path.join(f.config.agenvoConfigDir, 'config.json'), JSON.stringify(f.connector))
-  delete f.config.programs.herdr
+  f.config.programs.herdr = f.p.herdr
   const next = await inspectInstalled(f.config, f.run, { sessionContinuation: checkpoint })
   assert.equal(next.config.programs.herdr, f.p.herdr)
   assert.equal(next.history.workspaceCount, 1)

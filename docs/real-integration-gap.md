@@ -19,7 +19,7 @@ The fixtures presently cover separate boundaries:
 
 | Existing fixture | Evidence | Missing from this fixture |
 | --- | --- | --- |
-| Endpoint `official-smoke/existing.mjs:31-36` | Real official component processes with a synthetic relay's welcome/pong responses | Real Memoh MCP dispatch, scope authorization, original task and PG |
+| Retired endpoint fixture at `a7fb5c5`, `official-smoke/existing.mjs:31-36` (historical source only) | Real official component processes with a synthetic relay's welcome/pong responses | Real Memoh MCP dispatch, scope authorization, original task and PG |
 | Memoh `internal/computertask/pi_batch_test.go:329` | Original-ID, receipt, page-offset and restart rules using a synthetic transport and in-memory stores | Native Windows processes and persistent PG integration |
 | Memoh `internal/db/computer_delivery_native_windows_test.go:190-224` | Native delivery handler, NTFS and disposable PG using `server.NewServer` inside `httptest.NewTLSServer` | Full `cmd/agent` process and the actual Agenvo/Herdr/Pi task-result path |
 

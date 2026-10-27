@@ -38,7 +38,9 @@ head `906f021ca9488a41911b41648a184ae2c3c7b2d6`:
 
 - Passed: 45 unit tests on Windows and Ubuntu; eight official dependency checks.
 - Failed: `Official Windows dependencies in isolated roots`, lifecycle fixture
-  `official-smoke/lifecycle.mjs:119`, `Persisted panes were not restored`.
+  `official-smoke/lifecycle.mjs:119` in that recorded imported revision,
+  `Persisted panes were not restored`. That retired fixture is no longer part
+  of the current tree; the original failure remains historical evidence.
 - Not reached: subsequent authentication/shutdown, foreign-peer and official
   live-handoff assertions in that lifecycle fixture.
 

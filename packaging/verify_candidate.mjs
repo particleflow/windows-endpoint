@@ -5,7 +5,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
-import { installedFixture } from '../test-support/installed-fixture.mjs'
+import { nativeInstalledFixture as installedFixture } from '../test-support/installed-fixture.mjs'
 
 const candidate = await fs.realpath(process.argv[2])
 const summary = JSON.parse(await fs.readFile(process.argv[3], 'utf8'))
@@ -67,12 +67,11 @@ try {
   ])
   for (const [file, value] of originals) await fs.writeFile(file, value)
   const references = path.join(sandbox, 'references.json')
-  delete fixture.config.programs.herdr
   await fs.writeFile(references, JSON.stringify(fixture.config))
   command(['configure', '--from', references, '--root', root], 0)
   originals.set(path.join(root, 'config/endpoint.json'), await fs.readFile(path.join(root, 'config/endpoint.json'), 'utf8'))
   command(['configure', '--from', references, '--root', root], 2)
-  checks.push('schema2_configure_preserves_existing_references_and_refuses_overwrite')
+  checks.push('schema3_configure_preserves_existing_references_and_refuses_overwrite')
   const installed = JSON.parse(command(['deploy', 'install', '--root', root, '--source', candidate, '--manifest-sha256', summary.manifest_sha256], 0))
   assert.equal(installed.state, 'selected_review_only')
   assert.equal(installed.officialComponentsChanged, false)

@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: '24.14.0'
       - name: Verify delivery boundary and recovery fixtures
-        run: node --test --test-timeout=30000 endpoint.test.mjs agenvo-retirement.test.mjs directory-selection.test.mjs handoff.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs program-deployment.test.mjs product-installation.test.mjs host-layout.test.mjs host.test.mjs host-recovery.test.mjs runtime.test.mjs installed.test.mjs setup.test.mjs native-connector.test.mjs session-diagnostics.test.mjs session-continuation.test.mjs official-smoke/native-runtime-peer.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs official-smoke/pi-model-fixture.test.mjs official-smoke/owner-control-fixture.test.mjs
+        run: node --test --test-timeout=30000 endpoint.test.mjs agenvo-retirement.test.mjs diagnostic-retirement.test.mjs directory-selection.test.mjs handoff.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs program-deployment.test.mjs product-installation.test.mjs host-layout.test.mjs host.test.mjs host-recovery.test.mjs runtime.test.mjs installed.test.mjs setup.test.mjs native-connector.test.mjs session-diagnostics.test.mjs session-continuation.test.mjs official-smoke/native-runtime-peer.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs official-smoke/pi-model-fixture.test.mjs official-smoke/owner-control-fixture.test.mjs
       - uses: actions/checkout@v4
         if: runner.os == 'Linux'
         with:
@@ -42,7 +42,6 @@ jobs:
         run: |
           node --check official-smoke/transfer.mjs
           node --check official-smoke/feedback-fixture.mjs
-          node --check official-smoke/host.mjs
           node --check official-smoke/native-runtime.mjs
       - name: Verify portable candidate packaging and extracted entry
         run: python -m unittest discover -s packaging -p 'test_*.py' -v
@@ -54,7 +53,7 @@ jobs:
           $errors = $null
           $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./official-smoke/prepare-transfer.ps1), [ref]$tokens, [ref]$errors)
           if ($errors.Count -ne 0) { throw 'Transfer fixture PowerShell parse failed' }
-          foreach ($file in @('host-tls.ps1','fixture-process.ps1','fixture-trust.ps1','private-fixture.ps1')) {
+          foreach ($file in @('host-tls.ps1','fixture-process.ps1','private-fixture.ps1')) {
             $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path (Join-Path ./official-smoke $file)), [ref]$tokens, [ref]$errors)
             if ($errors.Count -ne 0) { throw 'TLS fixture PowerShell parse failed' }
           }

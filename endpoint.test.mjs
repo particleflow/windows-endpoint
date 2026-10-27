@@ -59,18 +59,12 @@ async function fixture(t) {
   return { base, root, manifest, config, hash, save }
 }
 
-test('verified full inventory is still review-only, with explicit blockers', async t => {
+test('historical inventory verification does not qualify retired diagnostics', async t => {
   const f = await fixture(t)
   assert.ok((await verifyBundle(f.root, f.hash)).totalBytes < 16384)
-  const result = await doctor(f.config, () => { throw new Error('fixture: no real components') })
-  assert.equal(result.ready, false)
-  assert.equal(result.activation, 'blocked')
-  for (const key of ['bundle_inventory', 'existing_device_mapping', 'official_agent_configuration', 'transfer_configuration', 'existing_transfer_plugin']) assert.equal(result.checks.find(c => c.check === key).state, 'passed')
-  assert.equal(result.capabilities.desktop, 'unsupported_by_command_connector')
-  assert.equal(result.lifecycle.automaticRecovery, false)
-  assert.equal(result.lifecycle.idleQueueWake, 'missing')
-  assert.ok(result.blockers.includes('release_bundle_not_qualified'))
-  assert.ok(!JSON.stringify(result).includes('DO-NOT-DISCLOSE'))
+  const result = await doctor(f.config, () => assert.fail('no retired dependency probe'))
+  assert.equal(result.ready, false); assert.equal(result.mode, 'retired-history-only')
+  assert.deepEqual(result.checks, [{ check: 'legacy_execution', state: 'blocked', code: 'legacy_execution_retired' }])
 })
 
 test('reject missing dependency, extra files, altered payload, and untrusted manifest', async t => {
@@ -223,60 +217,6 @@ test('configure host form rejects stale explicit paths, placeholders and ambiguo
   await assert.rejects(main(['configure', '--from', f.input]), /invalid_arguments/)
   await main(['configure', '--from', f.input, '--root', f.hostRoot])
   assert.deepEqual(JSON.parse(await fs.readFile(f.output)), expected)
-})
-
-test('changed approved executable/root/device mappings are blocked', async t => {
-  const f = await fixture(t)
-  const file = path.join(f.config.agenvoConfigDir, 'config.json')
-  const original = JSON.parse(await fs.readFile(file, 'utf8'))
-  for (const changed of [
-    { ...original, deviceId: 'other' },
-    { ...original, instances: [{ ...original.instances[0], binary: path.join(f.base, 'old/herdr.exe') }] },
-    { ...original, instances: [{ ...original.instances[0], cwd: f.base }] },
-  ]) {
-    await json(file, changed)
-    const report = await doctor(f.config, () => '')
-    assert.equal(report.checks.find(c => c.check === 'existing_device_mapping').state, 'blocked')
-  }
-})
-
-test('authentication failure and stale snapshots never turn into readiness or restarts', async t => {
-  const f = await fixture(t)
-  const file = path.join(f.config.agenvoConfigDir, 'status.json')
-  await json(file, { deviceId: f.config.deviceId, updatedAt: Date.now(), state: 'online', lastError: 'handshake_401', secret: 'REDACT-ME' })
-  const blocked = await doctor(f.config, () => '')
-  assert.equal(blocked.capabilities.connection, 'authentication_required')
-  assert.equal(blocked.ready, false)
-  assert.ok(!JSON.stringify(blocked).includes('REDACT-ME'))
-  await json(file, { deviceId: f.config.deviceId, updatedAt: Date.now(), state: 'needs_attention', lastError: '' })
-  assert.equal((await doctor(f.config, () => '')).capabilities.connection, 'needs_attention')
-  await json(file, { deviceId: f.config.deviceId, updatedAt: Date.now() - 121000, state: 'online', lastError: '' })
-  assert.equal((await doctor(f.config, () => '')).capabilities.connection, 'authentication_unverified')
-})
-
-test('official Agenvo 0.2.0 online snapshot is observed without claiming endpoint readiness', async t => {
-  const f = await fixture(t)
-  // Shape and online state from the pinned official connector main.ts, not a
-  // hypothetical connected state. No credential is part of this snapshot.
-  const snapshot = { pid: 1234, relay: 'https://relay.example.test', deviceId: f.config.deviceId, state: 'online', version: '0.2.0', updatedAt: Date.now(), instances: [{ id: f.config.instanceId, available: true, backendVersion: '0.9.5' }], lastError: '' }
-  await json(path.join(f.config.agenvoConfigDir, 'status.json'), snapshot)
-  const report = await doctor(f.config, () => '')
-  assert.equal(report.capabilities.connection, 'online_snapshot_unverified')
-  assert.equal(report.capabilities.agent, 'readiness_unverified')
-  assert.equal(report.ready, false)
-  assert.equal(report.lifecycle.automaticRecovery, false)
-  await json(path.join(f.config.agenvoConfigDir, 'status.json'), { ...snapshot, state: 'connected' })
-  assert.equal((await doctor(f.config, () => '')).capabilities.connection, 'authentication_unverified')
-})
-
-test('missing, disabled or incorrectly linked transfer plugin is explicit', async t => {
-  const f = await fixture(t)
-  const file = path.join(f.config.herdrConfigRoot, 'plugins.json')
-  const registry = JSON.parse(await fs.readFile(file, 'utf8'))
-  for (const changed of [[], [{ ...registry[0], enabled: false }], [{ ...registry[0], plugin_root: f.base }]]) {
-    await json(file, changed)
-    assert.equal((await doctor(f.config, () => '')).checks.find(c => c.check === 'existing_transfer_plugin').state, 'blocked')
-  }
 })
 
 test('staging resumes around inert interrupted copies, is idempotent, preserves data', async t => {

@@ -418,72 +418,13 @@ function probe(file, args, env) {
   return result.stdout.trim()
 }
 
-export async function doctor(config, run = probe) {
+export async function doctor(config, run) {
   validateConfig(config)
-  if ([2, 3].includes(config.schema)) {
-    const { installedDoctor } = await import('./installed.mjs')
-    return installedDoctor(config)
-  }
-  const checks = []
-  async function check(name, action) {
-    try { await action(); checks.push({ check: name, state: 'passed' }); return true }
-    catch (e) { checks.push({ check: name, state: 'blocked', code: e instanceof EndpointError ? e.code : 'dependency_unavailable' }); return false }
-  }
-  let bundle
-  const bundleOK = await check('bundle_inventory', async () => { bundle = await verifyBundle(config.bundleRoot, config.manifestSha256) })
-  await check('windows_host', () => requireThat(process.platform === 'win32' && process.arch === 'x64', 'windows_x64_required'))
-  for (const field of pathFields.filter(f => f !== 'bundleRoot')) await check(field, async () => {
-    await canonical(config[field]); requireThat((await fs.stat(config[field])).isDirectory(), 'directory_required')
-  })
-  await check('existing_device_mapping', async () => {
-    const cfg = await readJSON(path.join(config.agenvoConfigDir, 'config.json'))
-    requireThat(cfg.schema === 1 && cfg.deviceId === config.deviceId && Array.isArray(cfg.instances), 'device_identity_mismatch')
-    const instances = cfg.instances.filter(i => i.id === config.instanceId)
-    requireThat(instances.length === 1, 'instance_identity_mismatch')
-    const i = instances[0]
-    requireThat(i.kind === 'herdr' && samePath(i.binary, path.join(config.bundleRoot, catalog.components.herdr.entry)) && samePath(i.configRoot, config.herdrConfigRoot) && samePath(i.cwd, config.sourceRoot), 'approved_instance_path_mismatch')
-    // Check presence only. Never read/copy/refresh the official authentication file.
-    requireThat((await regular(path.join(config.agenvoConfigDir, 'credentials.json'))).size > 0, 'connector_credentials_missing')
-  })
-  await check('official_agent_configuration', async () => {
-    requireThat((await regular(path.join(config.piConfigDir, 'auth.json'))).size > 0, 'pi_authentication_missing')
-    await regular(path.join(config.herdrConfigRoot, 'config.toml'))
-  })
-  await check('transfer_configuration', () => validateTransferConfiguration(config))
-  await check('existing_transfer_plugin', async () => {
-    const registry = await readJSON(path.join(config.herdrConfigRoot, 'plugins.json'))
-    requireThat(Array.isArray(registry), 'plugin_registry_invalid')
-    const plugins = registry.filter(p => p.plugin_id === 'memoh.delivery')
-    requireThat(plugins.length === 1, 'transfer_plugin_missing')
-    const plugin = plugins[0]
-    const root = path.join(config.bundleRoot, 'transfer')
-    requireThat(plugin.enabled === true && plugin.version === catalog.components.transfer.version && samePath(plugin.plugin_root, root) && samePath(plugin.manifest_path, path.join(root, 'herdr-plugin.toml')), 'transfer_plugin_mapping_mismatch')
-  })
-  let connection = 'authentication_unverified'
-  try {
-    const status = await readJSON(path.join(config.agenvoConfigDir, 'status.json'))
-    const age = Date.now() - status.updatedAt
-    if (status.deviceId === config.deviceId && Number.isFinite(age) && age >= 0 && age <= 120000) {
-      if (['handshake_401', 'handshake_403'].includes(status.lastError)) connection = 'authentication_required'
-      else if (status.lastError === 'handshake_426') connection = 'protocol_upgrade_required'
-      else if (status.state === 'needs_attention') connection = 'needs_attention'
-      else if (status.state === 'online') connection = 'online_snapshot_unverified'
-    }
-  } catch { /* Optional official status snapshot; absence is unknown, not READY. */ }
-  // Only execute inventory-verified dependencies on their target OS.
-  if (bundleOK && process.platform === 'win32' && process.arch === 'x64') {
-    checks.push(...await verifyToolchain(config, bundle.manifest.components.git.version, run))
-  }
-  return {
-    schema: 1, ready: false, activation: 'blocked', checks,
-    capabilities: { connection, agent: 'readiness_unverified', desktop: 'unsupported_by_command_connector', transfer: 'native_storage_and_route_unverified' },
-    lifecycle: { owner: 'unified_endpoint', implementation: 'pending', idleQueueWake: 'missing', herdrStartupHook: 'available_one_shot_only', connectorReconnect: 'network_only', automaticRecovery: false },
-    blockers: [...catalog.blockers],
-    recovery: 'No restart or task resubmission. Authentication failure requires the existing authentication owner.',
-  }
+  const { installedDoctor } = await import('./installed.mjs')
+  return installedDoctor(config, null, run ? { run } : {})
 }
 
-// Shared by doctor and the isolated official-binary CI harness. Callers must
+// Standalone native official-binary CI harness. Callers must
 // establish artifact provenance first. This never grants endpoint qualification.
 export async function verifyToolchain(config, gitVersion, run = probe) {
   requireNativeRuntime(config)
