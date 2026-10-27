@@ -71,3 +71,15 @@ budget. None of those results proves this increment's Windows CI or onsite state
 New CI, independent review, real UI/PC/NAS, file authentication/system-trust TLS
 and actual root/profile migration remain unaccepted. No legacy TLS gate was
 rerun, removed or converted into success.
+
+## Explicit workflow list correction
+
+A later final audit of the hidden workflow's explicit test arguments found that
+the deleted `official-smoke/owner-control-fixture.test.mjs` remained listed and
+`legacy-writer-retirement.test.mjs` was not listed. The earlier source-reference
+check did not cover that argument list. The local writer tests above did run,
+but ac3f2c70's remote 526/520 counts do not include those five new tests. The
+workflow list is corrected to remove the nonexistent input and schedule the
+actual writer regression. Every listed test path is checked for existence.
+This correction changes no runtime implementation or transfer/TLS gate; no
+previous passing build is rerun manually.
