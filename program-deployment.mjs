@@ -13,210 +13,49 @@ import { validateRuntimeRequest } from './runtime.mjs'
 import { verifyCandidate, stageCandidate, programProfileHash } from './candidate.mjs'
 import { attemptEvidence, nativeRecoveryEvidence, recoveryConfigurationHash } from './host-recovery.mjs'
 import { inspectInstalled } from './installed.mjs'
-import { magpieCatalogBinding } from './pi-magpie-catalog.mjs'
+import { nativePiCatalogHostOptions, prepareNativePiCatalogReference } from './pi-native-catalog-profile.mjs'
+import { nativeCatalogPendingName, publishNativeCatalogReference } from './pi-native-catalog-transaction.mjs'
 
 const demand = (ok, code) => { if (!ok) throw new DeploymentError(code) }
-const sha256 = value => createHash('sha256').update(value).digest('hex')
-const hashValue = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
+const piCatalogDigest = value => createHash('sha256').update(value).digest('hex')
 
-// Preparing is not a permit to switch profile or start work. The owner must
-// complete the later offline transition with the original evidence intact.
-export async function prepareProfileSwitch({ root, requestId, profile, configurationSha256, lifecycleSha256, continuationSha256, attemptsSha256 }, { checkpoint = async () => {} } = {}) {
-  demand(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(requestId || '') &&
-    [configurationSha256, lifecycleSha256, continuationSha256, attemptsSha256].every(hashValue), 'deployment_profile_switch_arguments_invalid')
-  const manager = await programDeployment(root)
-  demand(isNativeRuntimeConfig(manager.config), 'deployment_profile_switch_native_required')
-  const next = validateConfig({ ...manager.config, piConfigDir: profile })
-  demand(next.piConfigDir !== manager.config.piConfigDir && hostReferenceLayout(root, next).compatible, 'deployment_profile_switch_target_invalid')
-  await validateDirectory(profile)
-  return manager.locked(async () => {
-    await manager.unchanged()
-    const selection = await manager.read()
-    demand(selection.pending === null && selection.current !== null, 'deployment_profile_switch_reader_unqualified')
-    await manager.owned(selection, selection.current)
-    // The selected normal launcher must already contain these exact guards;
-    // a previous release would otherwise ignore the preparation marker.
-    for (const name of ['endpoint.mjs', 'program-deployment.mjs', 'host.mjs']) {
-      const current = await boundedRead(fileURLToPath(new URL(`./${name}`, import.meta.url)), 262144)
-      const selected = await boundedRead(path.join(manager.layout.packages, selection.current, name), 262144)
-      demand(current === selected, 'deployment_profile_switch_reader_unqualified')
-    }
-    const stateRaw = await boundedRead(manager.lifecycleStore.file, 262144)
-    const state = await manager.lifecycleStore.load()
-    demand(!state.handoff && state.sessionContinuation, 'deployment_profile_switch_checkpoint_required')
-    await verifySessionContinuation(manager.config, state.sessionContinuation)
-    const attempts = await attemptEvidence(manager.config)
-    demand(sha256(manager.configRaw) === configurationSha256 && sha256(stateRaw) === lifecycleSha256 &&
-      sha256(JSON.stringify(state.sessionContinuation)) === continuationSha256 && attempts === attemptsSha256, 'deployment_profile_switch_evidence_changed')
-    const record = { schema: 1, state: 'prepared', requestId, configurationSha256, lifecycleSha256, continuationSha256, attemptsSha256, profile,
-      authority: 'preparation_only', started: false, businessReplayed: false }
-    const file = path.join(manager.lifecycleDirectory, 'profile-switch-pending.json')
-    const desired = JSON.stringify(record) + '\n'
-    const existing = await optional(file, 16384)
-    if (existing !== null) {
-      demand(existing === desired, 'deployment_profile_switch_pending_conflict')
-      return { state: 'already_prepared', requestId, activation: 'blocked', businessReplayed: false }
-    }
-    await checkpoint('before_prepare')
-    await manager.unchanged()
-    demand(await boundedRead(manager.lifecycleStore.file, 262144) === stateRaw && await attemptEvidence(manager.config) === attempts, 'deployment_profile_switch_evidence_changed')
-    const h = await fs.open(file, 'wx')
-    try { await h.writeFile(desired); await h.sync() } finally { await h.close() }
-    await checkpoint('prepared')
-    await manager.unchanged()
-    demand(await boundedRead(manager.lifecycleStore.file, 262144) === stateRaw && await attemptEvidence(manager.config) === attempts, 'deployment_profile_switch_evidence_changed')
-    return { state: 'prepared', requestId, activation: 'blocked', businessReplayed: false }
-  })
-}
-
-// Retain the old complete files before any later change. This archive is not
-// authority for activation or evidence that NAS admission is paused.
-export async function archiveProfileSwitch({ root, requestId }, { checkpoint = async () => {} } = {}) {
-  demand(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(requestId || ''), 'deployment_profile_switch_arguments_invalid')
-  const manager = await programDeployment(root)
-  demand(isNativeRuntimeConfig(manager.config), 'deployment_profile_switch_native_required')
-  return manager.locked(async () => {
-    await manager.unchanged()
-    const markerFile = path.join(manager.lifecycleDirectory, 'profile-switch-pending.json')
-    const markerRaw = await boundedRead(markerFile, 16384)
-    let marker
-    try { marker = JSON.parse(markerRaw) } catch { throw new DeploymentError('deployment_profile_switch_journal_invalid') }
-    const fields = ['schema','state','requestId','configurationSha256','lifecycleSha256','continuationSha256','attemptsSha256','profile','authority','started','businessReplayed']
-    demand(marker && Object.keys(marker).sort().join(',') === fields.sort().join(',') && marker.schema === 1 && marker.state === 'prepared' &&
-      marker.requestId === requestId && marker.authority === 'preparation_only' && marker.started === false && marker.businessReplayed === false &&
-      [marker.configurationSha256,marker.lifecycleSha256,marker.continuationSha256,marker.attemptsSha256].every(hashValue), 'deployment_profile_switch_journal_invalid')
-    const stateRaw = await boundedRead(manager.lifecycleStore.file, 262144), state = await manager.lifecycleStore.load()
-    demand(!state.handoff && state.sessionContinuation, 'deployment_profile_switch_checkpoint_required')
-    await verifySessionContinuation(manager.config, state.sessionContinuation)
-    demand(sha256(manager.configRaw) === marker.configurationSha256 && sha256(stateRaw) === marker.lifecycleSha256 &&
-      sha256(JSON.stringify(state.sessionContinuation)) === marker.continuationSha256 &&
-      await attemptEvidence(manager.config) === marker.attemptsSha256, 'deployment_profile_switch_evidence_changed')
-    const archive = path.join(manager.lifecycleDirectory, 'profile-switch-history')
-    await directory(archive)
-    const check = async () => {
+// Explicit stopped transaction: install only a nonsecret native resource
+// reference in the ALREADY selected profile. Never repair/start/replace a Pi.
+export async function prepareNativePiCatalog({root,requestId,providerId,intervalMs=60000}, {checkpoint=async()=>{},...options}={}) {
+  demand(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(requestId||'') &&
+    /^[A-Za-z0-9_.-]{1,100}$/.test(providerId||'') && Number.isSafeInteger(intervalMs) && intervalMs>=1000,'deployment_pi_catalog_arguments_invalid')
+  const manager=await programDeployment(root,options)
+  return manager.locked(async()=>{
+    try {
       await manager.unchanged()
-      demand(await boundedRead(markerFile, 16384) === markerRaw && await boundedRead(manager.lifecycleStore.file, 262144) === stateRaw &&
-        await attemptEvidence(manager.config) === marker.attemptsSha256, 'deployment_profile_switch_evidence_changed')
-    }
-    for (const [name, bytes] of [['configuration', manager.configRaw], ['lifecycle', stateRaw]]) {
-      const target = path.join(archive, `${requestId}.${name}.json`)
-      const temp = path.join(archive, `.${requestId}.${name}.tmp`)
-      // A crash after link and before unlink leaves two names for our one
-      // verified inode. Remove only that exact owned temporary name.
-      const targetStat = await fs.lstat(target).catch(e => { if (e.code === 'ENOENT') return null; throw e })
-      const tempStat = await fs.lstat(temp).catch(e => { if (e.code === 'ENOENT') return null; throw e })
-      if (targetStat && tempStat) {
-        demand(targetStat.isFile() && tempStat.isFile() && !targetStat.isSymbolicLink() && !tempStat.isSymbolicLink() &&
-          targetStat.ino !== 0 && targetStat.dev === tempStat.dev && targetStat.ino === tempStat.ino && targetStat.nlink === 2 && tempStat.nlink === 2 &&
-          targetStat.size === Buffer.byteLength(bytes), 'deployment_profile_switch_archive_conflict')
-        const handle = await fs.open(temp, 'r')
-        try { demand(await handle.readFile('utf8') === bytes && (await handle.stat()).ino === tempStat.ino, 'deployment_profile_switch_archive_conflict') }
-        finally { await handle.close() }
-        await check()
-        const again = await fs.lstat(temp)
-        demand(again.isFile() && !again.isSymbolicLink() && again.dev === tempStat.dev && again.ino === tempStat.ino && again.nlink === 2, 'deployment_profile_switch_archive_conflict')
-        await fs.unlink(temp)
+      demand(!await exists(path.join(manager.lifecycleDirectory,'profile-switch-pending.json')),'deployment_profile_switch_recovery_required')
+      const state=await manager.read()
+      demand(state.pending===null&&state.current!==null,'deployment_recovery_required')
+      const owned=await manager.owned(state,state.current)
+      demand(owned.profile===programProfileHash,'deployment_state_profile_changed')
+      const reason=await manager.work(programProfileHash)
+      if(reason)return {state:'deferred',reason,activation:'blocked',businessReplayed:false}
+      const packageRoot=path.join(manager.layout.packages,state.current)
+      const verified=await manager.verify(packageRoot,state.current)
+      const settingsFile=path.join(manager.config.piConfigDir,'settings.json'),modelsFile=path.join(manager.config.piConfigDir,'models.json')
+      const settingsOriginal=await optional(settingsFile,262144),modelsRaw=await optional(modelsFile,1048576)
+      demand(modelsRaw!==null,'catalog_existing_provider_required')
+      const plan=await prepareNativePiCatalogReference({profileDir:manager.config.piConfigDir,packageRoot,manifest:verified.manifest,
+        settingsRaw:settingsOriginal??'{}',modelsRaw,providerId,intervalMs})
+      const selectionRaw=await boundedRead(manager.file,262144),lifecycleRaw=await optional(manager.lifecycleStore.file,262144)
+      const record={requestId,selected:state.current,profileDir:manager.config.piConfigDir,providerId,intervalMs,
+        settingsSha256:settingsOriginal===null?null:piCatalogDigest(settingsOriginal),modelsSha256:piCatalogDigest(modelsRaw),
+        configurationSha256:piCatalogDigest(manager.configRaw),lifecycleSha256:lifecycleRaw===null?null:piCatalogDigest(lifecycleRaw),selectionSha256:piCatalogDigest(selectionRaw)}
+      const assertUnchanged=async()=>{
+        await manager.unchanged();await manager.workBaseline?.();await manager.retained?.reobserve()
+        demand(!await exists(path.join(manager.lifecycleDirectory,'profile-switch-pending.json')),'deployment_profile_switch_recovery_required')
+        demand(await boundedRead(manager.file,262144)===selectionRaw&&await optional(manager.lifecycleStore.file,262144)===lifecycleRaw&&
+          await optional(settingsFile,262144)===settingsOriginal&&await boundedRead(modelsFile,1048576)===modelsRaw,'catalog_native_preparation_changed')
+        await manager.verify(packageRoot,state.current)
       }
-      const existing = await optional(target, 262144)
-      if (existing !== null) { demand(existing === bytes, 'deployment_profile_switch_archive_conflict'); continue }
-      await check()
-      const retained = await optional(temp, 262144)
-      if (retained !== null) demand(retained === bytes, 'deployment_profile_switch_archive_conflict')
-      else {
-        const h = await fs.open(temp, 'wx')
-        try { await h.writeFile(bytes); await h.sync() } finally { await h.close() }
-      }
-      // No overwrite of an existing archive, even if a foreign writer races.
-      await fs.link(temp, target)
-      await checkpoint(`linked_${name}`)
-      await fs.unlink(temp)
-      await checkpoint(`archived_${name}`)
-      await check()
-    }
-    await check()
-    return { state: 'old_files_archived', requestId, activation: 'blocked', businessReplayed: false, nasEvidence: 'not_checked' }
-  })
-}
-
-// Local transaction only. An operator still owns the paused NAS gate and its
-// target CAS; the pending marker stays in place until that separate handoff.
-export async function commitProfileSwitch({ root, requestId, rollback = false }, { inspect = inspectInstalled, observe = nativeRecoveryEvidence, checkpoint = async () => {} } = {}) {
-  demand(typeof rollback === 'boolean', 'deployment_profile_switch_arguments_invalid')
-  demand(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(requestId || ''), 'deployment_profile_switch_arguments_invalid')
-  const manager = await programDeployment(root)
-  demand(isNativeRuntimeConfig(manager.config), 'deployment_profile_switch_native_required')
-  return manager.locked(async () => {
-    const markerFile = path.join(manager.lifecycleDirectory, 'profile-switch-pending.json')
-    const markerRaw = await boundedRead(markerFile, 16384)
-    let marker
-    try { marker = JSON.parse(markerRaw) } catch { throw new DeploymentError('deployment_profile_switch_journal_invalid') }
-    const fields = ['schema','state','requestId','configurationSha256','lifecycleSha256','continuationSha256','attemptsSha256','profile','authority','started','businessReplayed']
-    demand(marker && Object.keys(marker).sort().join(',') === fields.sort().join(',') && marker.schema === 1 && marker.state === 'prepared' && marker.requestId === requestId &&
-      marker.authority === 'preparation_only' && marker.started === false && marker.businessReplayed === false &&
-      [marker.configurationSha256,marker.lifecycleSha256,marker.continuationSha256,marker.attemptsSha256].every(hashValue), 'deployment_profile_switch_journal_invalid')
-    const history = path.join(manager.lifecycleDirectory, 'profile-switch-history')
-    const oldConfigRaw = await boundedRead(path.join(history, `${requestId}.configuration.json`), 262144)
-    const oldStateRaw = await boundedRead(path.join(history, `${requestId}.lifecycle.json`), 262144)
-    demand(sha256(oldConfigRaw) === marker.configurationSha256 && sha256(oldStateRaw) === marker.lifecycleSha256, 'deployment_profile_switch_archive_conflict')
-    const oldConfig = validateConfig(JSON.parse(oldConfigRaw)), oldState = JSON.parse(oldStateRaw)
-    demand(isNativeRuntimeConfig(oldConfig) && oldState.identity === oldConfig.deviceId && oldState.phase === 'stopped' && oldState.attention === null && !oldState.handoff && oldState.sessionContinuation &&
-      sha256(JSON.stringify(oldState.sessionContinuation)) === marker.continuationSha256, 'deployment_profile_switch_checkpoint_required')
-    await verifySessionContinuation(oldConfig, oldState.sessionContinuation)
-    const newConfig = validateConfig({ ...oldConfig, piConfigDir: marker.profile })
-    demand(hostReferenceLayout(root, newConfig).compatible && newConfig.piConfigDir !== oldConfig.piConfigDir, 'deployment_profile_switch_target_invalid')
-    await validateDirectory(newConfig.piConfigDir)
-    const newContinuation = await captureSessionContinuation(newConfig)
-    demand(newContinuation.ordinary && newContinuation.configuration === oldState.sessionContinuation.configuration && newContinuation.snapshot === oldState.sessionContinuation.snapshot, 'deployment_profile_switch_evidence_changed')
-    const newState = { ...oldState, sessionContinuation: newContinuation }
-    // Previous infrastructure proof belongs to the old config. Its exact bytes
-    // remain in the immutable archive; it cannot authorize the new generation.
-    delete newState.infrastructureRecovery
-    const newConfigRaw = JSON.stringify(newConfig, null, 2) + '\n', newStateRaw = JSON.stringify(newState) + '\n'
-    const statusFile = path.join(manager.lifecycleDirectory, 'host-status.json')
-    const statusRaw = await boundedRead(statusFile, 32768), status = JSON.parse(statusRaw)
-    demand(status.schema === 1 && status.owner === 'windows-endpoint-host' && status.phase === 'stopped' && status.attention === null && Number.isSafeInteger(status.pid) && status.pid > 0, 'deployment_profile_switch_host_unverified')
-    const inspected = await inspect(oldConfig, undefined, { inspectHistoryOnly: true })
-    if (observe === nativeRecoveryEvidence) demand(path.resolve(process.execPath).toLowerCase() === path.resolve(inspected.config.programs.node).toLowerCase(), 'deployment_profile_switch_host_unverified')
-    const files = { root, config: manager.configFile, runtime: manager.runtimeFile, state: manager.lifecycleStore.file, status: statusFile }
-    const check = async () => {
-      demand(await boundedRead(markerFile, 16384) === markerRaw && await boundedRead(statusFile, 32768) === statusRaw &&
-        await boundedRead(manager.runtimeFile, 65536) === manager.runtimeRaw && await attemptEvidence(oldConfig) === marker.attemptsSha256 &&
-        await boundedRead(path.join(history, `${requestId}.configuration.json`), 262144) === oldConfigRaw &&
-        await boundedRead(path.join(history, `${requestId}.lifecycle.json`), 262144) === oldStateRaw, 'deployment_profile_switch_evidence_changed')
-      await verifySessionContinuation(oldConfig, oldState.sessionContinuation)
-      const c = await boundedRead(manager.configFile, 65536), s = await boundedRead(manager.lifecycleStore.file, 262144)
-      demand([oldConfigRaw, newConfigRaw].includes(c) && [oldStateRaw, newStateRaw].includes(s), 'deployment_profile_switch_evidence_changed')
-      inspected.assertUnchanged()
-      const evidence = await observe({ config: inspected.config, status, files })
-      demand(evidence?.ownerVerified === true && evidence.oldHostAbsent === true && evidence.referencedProcessesAbsent === true && evidence.herdrAbsent === true, 'deployment_profile_switch_host_unverified')
-      return { c, s }
-    }
-    const publish = async (file, before, after, phase) => {
-      if (before === after) return
-      const temp = path.join(path.dirname(file), `.profile-switch-${randomUUID()}.tmp`)
-      const handle = await fs.open(temp, 'wx')
-      try { await handle.writeFile(after); await handle.sync() } finally { await handle.close() }
-      await checkpoint(`${phase}_file_synced`)
-      const current = await check()
-      demand((file === manager.configFile ? current.c : current.s) === before, 'deployment_profile_switch_evidence_changed')
-      await fs.rename(temp, file)
-      await checkpoint(`${phase}_published`)
-      await check()
-    }
-    const initial = await check()
-    if (rollback) {
-      await publish(manager.lifecycleStore.file, initial.s, oldStateRaw, 'lifecycle')
-      const afterState = await check()
-      await publish(manager.configFile, afterState.c, oldConfigRaw, 'configuration')
-    } else {
-      await publish(manager.configFile, initial.c, newConfigRaw, 'configuration')
-      const afterConfig = await check()
-      await publish(manager.lifecycleStore.file, afterConfig.s, newStateRaw, 'lifecycle')
-    }
-    const result = await check()
-    const expectedConfig = rollback ? oldConfigRaw : newConfigRaw, expectedState = rollback ? oldStateRaw : newStateRaw
-    demand(result.c === expectedConfig && result.s === expectedState, 'deployment_profile_switch_evidence_changed')
-    return { state: rollback ? 'local_profile_rolled_back' : 'local_profile_prepared', requestId, activation: 'blocked', nasEvidence: 'not_checked', businessReplayed: false, configurationSha256: sha256(expectedConfig), lifecycleSha256: sha256(expectedState) }
+      const result=await publishNativeCatalogReference({lifecycleDirectory:manager.lifecycleDirectory,plan,record,assertUnchanged,checkpoint})
+      return {state:result,providerId,profile:manager.config.piConfigDir,activation:'future_pi_invocations_only',processStarted:false,businessReplayed:false}
+    }catch(error){if(/^catalog_[a-z_]+$/.test(error.code??error.message))throw new DeploymentError(error.code??error.message);throw error}
   })
 }
 async function optional(file, limit = 65536) {
@@ -547,7 +386,8 @@ export async function programDeployment(root, { prepare = false, io = fs, checkp
   return manager
 }
 
-export async function runSelectedProgram(root, { input = process.stdin, output = process.stdout, piCatalogBinding = null } = {}) {
+export async function runSelectedProgram(root, { input = process.stdin, output = process.stdout, requestedPiCatalogProvider=null, piCatalogBinding=null } = {}) {
+  demand(piCatalogBinding===null,'deployment_pi_catalog_file_sync_retired')
   const manager = await programDeployment(root)
   // Carry one host lease through verification, import and the existing host's
   // full lifetime. Never leave a selection/start race or launch a second daemon.
@@ -556,7 +396,8 @@ export async function runSelectedProgram(root, { input = process.stdin, output =
   const release = async () => { if (!released) { await acquired(); released = true } }
   try {
     await manager.unchanged()
-    demand(!await exists(path.join(manager.lifecycleDirectory, 'profile-switch-pending.json')), 'deployment_profile_switch_recovery_required')
+    demand(!await exists(path.join(manager.lifecycleDirectory,'profile-switch-pending.json')),'deployment_profile_switch_recovery_required')
+    demand(!await exists(path.join(manager.lifecycleDirectory,nativeCatalogPendingName)),'deployment_pi_catalog_recovery_required')
     const state = await manager.read()
     demand(state.pending === null, 'deployment_recovery_required')
     demand(state.current !== null, 'deployment_not_installed')
@@ -564,10 +405,16 @@ export async function runSelectedProgram(root, { input = process.stdin, output =
     await manager.projectRoot(state.current)
     demand(owned.profile === programProfileHash, 'deployment_state_profile_changed')
     await manager.unchanged()
-    const target = path.join(manager.layout.packages, state.current, 'host.mjs')
-    const { runForeground, piCatalogBindingVersion } = await import(pathToFileURL(target))
-    if (piCatalogBinding !== null) demand(piCatalogBindingVersion === 1, 'deployment_pi_catalog_unsupported')
-    return await runForeground({ root, input, output, inheritedHostLease: release, piCatalogBinding })
+    const packageRoot=path.join(manager.layout.packages,state.current)
+    const verified=await manager.verify(packageRoot,state.current)
+    let catalogOptions
+    try { catalogOptions=await nativePiCatalogHostOptions({config:manager.config,packageRoot,manifest:verified.manifest,requestedProviderId:requestedPiCatalogProvider}) }
+    catch(error){throw new DeploymentError(/^catalog_[a-z_]+$/.test(error.message)?error.message:'deployment_pi_catalog_invalid')}
+    const { runForeground, piNativeCatalogBindingVersion } = await import(pathToFileURL(path.join(packageRoot,'host.mjs')))
+    if(catalogOptions.piNativeCatalog)demand(piNativeCatalogBindingVersion===1,'deployment_pi_native_catalog_unsupported')
+    await manager.unchanged()
+    return await runForeground({ root, input, output, inheritedHostLease: release,
+      piNativeCatalog:catalogOptions.piNativeCatalog,requestedPiCatalogProvider })
   } finally { await release() }
 }
 
@@ -577,18 +424,16 @@ export async function programDeploymentMain(args) {
     demand(/^--[a-z][a-z0-9-]*$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'deployment_arguments_invalid')
     options[rest[i]] = rest[i + 1]
   }
-  const fields = ['install', 'update'].includes(action) ? ['--root', '--source', '--manifest-sha256'] : action === 'rollback' ? ['--root', '--manifest-sha256'] : action === 'prepare-profile' ? ['--root', '--request-id', '--profile', '--configuration-sha256', '--lifecycle-sha256', '--continuation-sha256', '--attempts-sha256'] : ['archive-profile','commit-profile','rollback-profile'].includes(action) ? ['--root', '--request-id'] : ['--root']
-  if (action === 'run' && Object.hasOwn(options, '--pi-catalog-provider')) {
-    demand(/^[A-Za-z0-9_.-]{1,100}$/.test(options['--pi-catalog-provider']), 'deployment_arguments_invalid')
+  const fields = ['install', 'update'].includes(action) ? ['--root', '--source', '--manifest-sha256'] : action === 'rollback' ? ['--root', '--manifest-sha256'] : action==='prepare-pi-catalog'?['--root','--request-id','--provider']:['--root']
+  if(action==='run'&&Object.hasOwn(options,'--pi-catalog-provider')) {
+    demand(/^[A-Za-z0-9_.-]{1,100}$/.test(options['--pi-catalog-provider']),'deployment_arguments_invalid')
     fields.push('--pi-catalog-provider')
   }
-  demand(['install', 'update', 'rollback', 'recover', 'status', 'run', 'prepare-profile', 'archive-profile', 'commit-profile', 'rollback-profile'].includes(action) && Object.keys(options).sort().join(',') === fields.sort().join(','), 'deployment_arguments_invalid')
+  if(action==='prepare-pi-catalog'&&Object.hasOwn(options,'--interval-ms'))fields.push('--interval-ms')
+  demand(['install', 'update', 'rollback', 'recover', 'status', 'run','prepare-pi-catalog'].includes(action) && Object.keys(options).sort().join(',') === fields.sort().join(','), 'deployment_arguments_invalid')
   const root = options['--root'], target = options['--manifest-sha256']
-  if (action === 'prepare-profile') return prepareProfileSwitch({ root, requestId: options['--request-id'], profile: options['--profile'], configurationSha256: options['--configuration-sha256'], lifecycleSha256: options['--lifecycle-sha256'], continuationSha256: options['--continuation-sha256'], attemptsSha256: options['--attempts-sha256'] })
-  if (action === 'archive-profile') return archiveProfileSwitch({ root, requestId: options['--request-id'] })
-  if (action === 'commit-profile') return commitProfileSwitch({ root, requestId: options['--request-id'] })
-  if (action === 'rollback-profile') return commitProfileSwitch({ root, requestId: options['--request-id'], rollback: true })
-  if (action === 'run') return { hostExitCode: await runSelectedProgram(root, { piCatalogBinding: options['--pi-catalog-provider'] ? magpieCatalogBinding(options['--pi-catalog-provider']) : null }) }
+  if(action==='prepare-pi-catalog')return prepareNativePiCatalog({root,requestId:options['--request-id'],providerId:options['--provider'],intervalMs:options['--interval-ms']===undefined?60000:Number(options['--interval-ms'])})
+  if (action === 'run') return { hostExitCode: await runSelectedProgram(root,{requestedPiCatalogProvider:options['--pi-catalog-provider']??null}) }
   if (action === 'status') {
     const config = validateConfig(JSON.parse(await boundedRead(path.join(deploymentLayout(root).config, 'endpoint.json'), 65536)))
     if (!isNativeRuntimeConfig(config)) {

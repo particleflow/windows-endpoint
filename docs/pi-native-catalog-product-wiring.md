@@ -1,188 +1,163 @@
-# Native catalog product loading: exact local handoff
+# Native Pi catalog: completed local product wiring
 
-The native resource and package inventory are implemented locally. Normal Pi
-JSON argv was exercised against the real official 1.4.0 CLI with only the
-selected synthetic profile's resource references. The Windows owner's actively
-edited `program-deployment.mjs` and `host.mjs` have deliberately not been edited
-here. The owner call-site change below is still pending composition. This is not
-evidence that the onsite WindowsEndpoint/deploy/Herdr chain has enabled it.
+The local product chain is wired, rather than left as an owner-only interface.
+WindowsEndpoint.ps1 Run still invokes `deploy run --root ProductRoot`. That route
+now verifies the selected candidate, preflights the already selected profile,
+and passes a native binding to the selected actual foreground host. The host
+rechecks that binding before starting components. It does not change identity,
+profile, user extensions, model choice, task history or official Pi core.
 
-## Exact existing route and remaining owner call site
+## Explicit stopped preparation and normal startup
 
-`WindowsEndpoint.ps1:109` maps Run to `deploy run --root ProductRoot`.
-The existing producer command at particleflow/Memoh commit
-`9601ac062a3b65477db8db76bcaa521265ba7ee2`,
-`internal/agenvo/pi_batch.go:149`, launches
-`pi --mode json --provider ... --model ... --session-dir ...` with no extension
-flags. Its existing selected profile env is set in `internal/agenvo/agent.go:127`.
-These source facts require profile-native loading rather than adding argv to
-a separate probe process. No change to that producer or Agent core is required.
+The new package carries the native entry and every local import, including
+pi-native-catalog-transaction.mjs. candidate.json advertises native_pi_catalog
+with bindingVersion=1, profileReference=extensions/windows-endpoint-magpie.js,
+Pi version 1.4.0 and legacyFileSync=false. A resource-only older candidate cannot
+silently claim the new preparation/host binding contract.
 
-The combined Windows `49be5cc` source was read without modifying it:
-
-- `program-deployment.mjs:550–572`: runSelectedProgram holds the host lease,
-  verifies the selected package, then passes `piCatalogBinding` to runForeground.
-- `program-deployment.mjs:599`: deploy run still builds
-  `magpieCatalogBinding(options['--pi-catalog-provider'])`, the old file writer.
-- The native extension must replace this route. Merely adding our resources to
-  the archive does not change that old CLI behavior or write profile references.
-
-The minimum owner edit, inside those existing guards, is:
-
-```js
-// Keep the existing host lease, pending-profile guard and selection checks.
-// Carry the CLI provider ID as data, never call the old magpieCatalogBinding.
-const packageRoot = path.join(manager.layout.packages, state.current)
-const verified = await manager.verify(packageRoot, state.current)
-let catalogOptions = { piCatalogBinding: null, piCatalogMode: 'disabled' }
-if (verified.manifest.native_pi_catalog) {
-  const { nativePiCatalogHostOptions } = await import(
-    pathToFileURL(path.join(packageRoot, 'pi-native-catalog-profile.mjs')))
-  catalogOptions = await nativePiCatalogHostOptions({
-    config: manager.config, packageRoot, manifest: verified.manifest,
-    requestedProviderId: requestedPiCatalogProvider, // ID or null; no default ID
-  })
-} else {
-  demand(requestedPiCatalogProvider === null, 'deployment_pi_catalog_unsupported')
-}
-await manager.unchanged()
-return await runForeground({
-  root, input, output, inheritedHostLease: release,
-  piCatalogBinding: catalogOptions.piCatalogBinding, // always null
-})
-```
-
-Introduce `requestedPiCatalogProvider = null` as the runSelectedProgram option;
-pass the validated existing `--pi-catalog-provider` value or null from deploy run.
-Remove its old magpieCatalogBinding construction/import. If keeping the old
-programmatic `piCatalogBinding` option for compatibility, explicitly reject any
-nonnull value with `deployment_pi_catalog_file_sync_retired`; do not pass it on.
-No `WindowsEndpoint.ps1` change is necessary for a prepared profile because
-normal Run has no catalog flag and the read-only preflight recognizes the
-binding. Keep the owner's actual config/profile forwarding unchanged. There is
-no second SDK process, service, task scheduler, credential or subagent edit.
-
-For old packages without native support, no opt-in still launches normally
-with null legacy binding; opt-in fails explicitly. An update/rollback involving
-an already bound native profile must reconcile its owned resource reference at
-the owner's stopped transaction boundary. Do not load an obsolete package path
-or mutate the binding during an active run.
-
-## Package and profile contract
-
-`packaging/build_candidate.py` inventories the three new files
-pi-magpie-native-profile-entry.mjs, pi-magpie-native-extension.mjs and
-pi-native-catalog-profile.mjs, plus the already inventoried projection/merge
-dependencies. Its candidate.json advertises:
-
-```json
-{"native_pi_catalog":{"schema":1,"mode":"pi-in-process","piVersion":"1.4.0","entry":"pi-magpie-native-profile-entry.mjs","settingsKey":"windowsEndpointPiCatalog","legacyFileSync":false}}
-```
-
-No installation archive or release package was rebuilt here. The targeted
-packaging test builds inert synthetic producer/runtime fixtures only, verifies
-the resource inventory and hashes, and cleans its TemporaryDirectory.
-
-The pure preparation API is:
-
-```js
-const plan = await prepareNativePiCatalogProfile({
-  profileDir: config.piConfigDir, // existing selected absolute path
-  packageRoot, manifest: verified.manifest, // existing verified selected package
-  settingsRaw, modelsRaw, // original bytes; never log or copy credentials
-  providerId: approvedExistingProviderId, intervalMs: 60000,
-})
-// plan: {settingsPath, settingsBefore, settingsAfter, resource,
-//        requiresStoppedHost:true, piCatalogBinding:null}
-```
-
-It performs no writes. The owner applies settingsAfter to the *same* settingsPath
-only through its existing stopped profile transaction and original-byte conflict
-check, preserving permissions and retaining the original as that transaction
-requires. No file-replacement experiment is used for models.json. Never apply
-the plan merely because `deploy run` was invoked. Existing fields, packages,
-extensions, default provider/model and unrelated custom settings are retained;
-the resource is appended once. Repeated unchanged preparation returns original
-bytes. BOM input is accepted consistently with official Pi. No auth file, key,
-URL or model capability is stored in this new binding.
-
-The same settings.json then contains this explicit block, filled by the API
-from the approved ID and verified package path, never from model-name guesses:
+The unique writer may later use this EXISTING endpoint CLI, at its approved
+stopped boundary, with the actual approved provider ID (not a model ID):
 
 ```text
-windowsEndpointPiCatalog = {
-  schema: 1, mode: "pi-in-process", providerId: APPROVED_EXISTING_ID,
-  intervalMs: 60000, resource: ABSOLUTE_VERIFIED_PACKAGE_ENTRY
-}
-extensions = ORIGINAL_EXTENSION_LIST + [ABSOLUTE_VERIFIED_PACKAGE_ENTRY]
+node endpoint.mjs deploy prepare-pi-catalog --root PRODUCT_ROOT --request-id UUID --provider EXISTING_APPROVED_PROVIDER [--interval-ms 60000]
+node endpoint.mjs deploy run --root PRODUCT_ROOT
 ```
 
-A different/stale binding, duplicate native resource, incomplete package or
-missing configured provider fails without repair. Package upgrades require the
-owner's explicit owned-reference migration; this helper intentionally refuses
-to guess which older user extension may be removed.
+These are interfaces, not authorization to execute them onsite now. No onsite
+profile preparation, deployment, loading, push, PR or CI trigger occurred here.
+The optional existing run flag --pi-catalog-provider now only validates a
+prepared native binding. It never constructs the former file-writer binding.
+An explicit run request with no prepared reference fails with a fixed error.
+Normal Run needs no catalog flag after preparation. A profile with no opt-in
+continues in disabled mode; no configuration is created by run.
 
-`nativePiCatalogHostOptions({config,packageRoot,manifest,requestedProviderId:null})`
-is the startup-only, read-only API. It validates manifest capability, resource
-hashes, exact reference and existing provider. It returns native mode with
-`piCatalogBinding:null`. An old profile without opt-in returns disabled/null.
-An explicit request with no prepared reference fails
-`catalog_native_profile_not_prepared`; missing or changed resources have fixed
-`catalog_native_*` errors. The owner must still use its existing full candidate
-verifier for directory/link provenance before passing manifest/packageRoot.
+Preparation obtains the existing deployment/host/component leases, requires a
+stopped lifecycle without attention, uses the original work/history check,
+verifies the selected package and freezes selection/config/lifecycle/attempt
+and profile-input snapshots. Running/unknown work is deferred or rejected; no
+process is stopped, restarted, resumed or replayed to make this check pass.
+The same guards reject a pending profile-switch transaction as in 49be5cc.
 
-As defense while callers are being combined, PiCatalogLifecycle now checks the
-same native claim before discovery or any store read. The claimed provider
-returns terminal `conflict`; no legacy GET/write happens. This is not a hot
-handover protocol: an already running old binary or a request started before
-preparation is not retroactively disabled. Stop/drain it before the transaction.
+It publishes one NEW nonsecret loader in the original profile's native
+`extensions/windows-endpoint-magpie.js`. Official Pi auto-discovers this .js
+resource in its existing agent directory, including the producer's unchanged
+`pi --mode json --provider ... --model ... --session-dir ...` argv. The loader
+contains only the approved provider ID, interval, original absolute profile and
+verified package entry URI. Existing native authentication is read at runtime;
+there is no credential in the loader or transaction journal.
 
-The profile entry emits only fixed stderr statuses
-`windows_endpoint_pi_catalog: refreshed|unavailable|cancelled|configuration_required`
-on a change. Broken binding/provider selection leaves sync disabled and the
-ordinary Pi usable; no secret exception/provider response is printed. JSON
-task stdout remains the official event stream. Session shutdown uses the
-existing native extension cleanup; the profile entry adds no lifecycle service.
+The producer's original PI_CODING_AGENT_DIR remains authoritative. The loader
+also checks that the process uses its bound profile before any directory GET.
+Original settings.json, models.json, auth.json, ACLs and extension files are
+never replaced or rewritten. The older settings.extensions/namespaced binding
+from a5ad978 remains readable by startup; preparation refuses to add a second
+loader beside it. The earlier pure settings planner remains available for
+review but is not the ordinary product writer path.
 
-## Directed evidence and reproduction
+Root index.ts/index.js/package.json entries can change Pi's smart discovery;
+user negative filesystem resource filters can disable auto-discovery. These
+cases fail explicitly and remain untouched instead of falsely claiming a loaded
+reference. A different existing same-name loader or stale package binding is
+also refused. The product does not overwrite or remove an old/user resource.
+
+## Atomic boundary, interruptions and ACL limits
+
+Publication uses an exclusively created ignored temporary file, fsync, and
+same-directory hard-link CREATE to the previously absent final name. It never
+uses ReplaceFile, rename-over-existing, chmod/chown or an ACL command. Thus
+ordinary inherited ACLs on existing Pi settings do not enter the former
+File.Replace inheritance bug at all. No existing destination's permissions are
+changed. A filesystem that cannot publish this atomic new link fails explicitly
+with catalog_native_atomic_publication_unavailable or a permission error; there
+is no weaker replacement or ACL fallback. Real Windows NTFS publication remains
+to be validated by the unique Windows writer in a new isolated fixture.
+
+The pinned Node 24.14.0 Windows backend implements fs.link via
+CreateHardLinkW(newPath, existingPath, NULL), in deps/uv/src/win/fs.c:2698.
+Microsoft documents that the link shares its target's security descriptor and
+this API does not modify that descriptor. This supports the new-file approach;
+it is not evidence of a Windows execution or a TxF/power-loss transaction.
+
+A durable pi-native-catalog-pending.json is saved before publication. Both
+selected deploy run and direct host startup refuse it. Staging identity, exact
+bytes, current snapshots and the published file are checked; an immutable
+receipt records success before clearing the pending marker. No raw settings,
+models or auth bytes are copied into this journal. Retrying the SAME explicit
+preparation request can finish only its exact original inode/content and
+unchanged baseline. It completes configuration, never execution. Different
+requests or concurrent edits remain blocked and preserve all artifacts; there
+is no automatic restoration over later changes. A crash before the pending
+journal is saved may leave only an ignored nonsecret .tmp file; a later request
+will not adopt or delete that unjournaled stage.
+
+This intentionally implements safe initial preparation, not arbitrary in-place
+migration of an existing bound resource. An update/rollback to another package
+path with a stale binding fails closed and needs an explicit future resource
+migration at a stopped boundary. No existing inherited ACL is converted to
+protected, and the old unsupported_acl restriction is not used to claim success.
+
+The old file-writing catalog lifecycle is absent from host imports/start/tick/
+stop. Nonnull piCatalogBinding injections are explicitly rejected by host and
+selected deployment. The old pure historical module/tests remain only for
+retained evidence; they are not a concurrently running product synchronizer.
+Host status reports only unverified for native discovery because a host is not
+a snapshot of the actual Pi registry. Fixed native stderr statuses and the
+extension's in-process status command provide diagnostics without credentials.
+
+## Actual local evidence and remaining acceptance
 
 ```sh
-node --test pi-native-catalog-profile.test.mjs
-PI_NATIVE_FIXTURE_PACKAGE=/path/to/existing/official/1.4.0/package node --test official-smoke/pi-native-product-entry.test.mjs
+node --test pi-native-catalog-profile.test.mjs pi-native-catalog-transaction.test.mjs
+PI_NATIVE_FIXTURE_PACKAGE=/path/to/existing/official/1.4.0/package node --test official-smoke/pi-native-selected-deploy.test.mjs
 python packaging/test_candidate.py CandidateTests.test_reproducible_archive_runs_existing_entry_without_checkout_or_npm -v
 ```
 
-Results: profile wiring 3/3, real CLI normal-JSON integration 1/1 zero skips,
-targeted synthetic packaging 1/1. The real CLI test runs the profile-prepared
-case, broken enablement and legacy compatibility once each. It starts a loopback
-catalog, uses synthetic native auth in a fresh temporary profile, preserves an
-existing user extension that observes the same PID/session/registry through
-its command, and sends only that extension command as stdin. There is no LLM
-prompt or SDK runtime probe. No extra --extension/native-provider flag is passed.
-The selected model remains selected, new directory ID appears in that very
-process, and normal JSON completion aborts a held periodic GET. No requests
-continue after exit. Settings/models/auth bytes are exact after runtime, with
-UTF-8 BOM models input included. Any nondirectory request is counted as inference;
-the required observed count was zero. All temp profiles/packages are removed.
+The new actual-process integration invokes the normal endpoint deploy CLI for
+preparation and run, verifies/stages a selected inert review candidate, and
+executes the actual foreground host. Only the external Herdr start boundary is
+a source-only fixture wrapper; it is absent from production packaging. It starts
+the EXISTING official Pi 1.4.0 CLI at the original configuration's package/node
+paths and PI_CODING_AGENT_DIR, in JSON mode with no extra extension/provider-
+refresh flags and no SDK runtime instance. The existing user extension observes
+that very Pi's PID/session/registry through its command, with no LLM turn.
+A loopback directory adds a complete synthetic model; current model and override
+remain unchanged. Normal host stop releases that command, normal Pi shutdown
+aborts a held directory GET, and no later request occurs. Settings/models/auth
+bytes and settings inode/mode/timestamps stay exact. A second normal launch with
+unknown durable work/attention starts no Pi and changes no unknown receipt or
+lifecycle bytes. Any nondirectory HTTP request would count as inference: zero.
 
-The first packaging command used the module-style unittest path, which collided
-with the Python packaging namespace and failed before test collection. The
-documented script-style command above passed; no implementation assertion was
-relaxed. The earlier directory/ACL matrices were not rerun for this wiring task.
+Directed transaction tests cover no-change idempotence, existing user reference,
+three interruption points and explicit same-request completion, concurrent edits,
+pending startup guards, live lease/unknown work refusal, unsupported publication,
+and smart-discovery/filter conflicts. Source tests also exercise old no-opt-in
+profiles and the ordinary host/deployment behavior. The first new transaction
+run exposed a legitimately absent fresh lifecycle.json; the implementation now
+freezes and compares that absence instead of creating a fabricated state file.
+Final focused run: 87/87 passed, zero skipped, including the actual selected
+deploy/official-Pi test; synthetic packaging inventory test 1/1 passed. The old
+catalog/ACL matrix was not repeated. No production archive was rebuilt.
 
-This is Linux real-official-CLI evidence using the production JSON argv/resource
-mechanism, not a completed WindowsEndpoint -> selected host -> live Herdr
-end-to-end execution. The owner-only call-site combination, stopped profile
-application and actual Windows normal launcher validation remain pending.
-No Git push/PR change, onsite profile load/write, real Magpie query, ACL change,
-service creation or paid turn was performed. Purely in-memory learned models
-remain unavailable after an offline restart, exactly as in the prior native test.
+The original local branch was not based on the full 49be5cc owner tree. Its host
+and selected-deploy sources were read as a reference, including pending-profile
+guards and the old file-sync CLI route. This local independent diff changes the
+corresponding functions and does not overwrite the owner's branch. Unified
+composition must retain all of 49be5cc's profile-switch actions/transactions when
+merging the CLI parser and runSelectedProgram edits. A uniquely named catalog
+digest avoids colliding with the owner's existing sha256 helper.
 
-Official sources:
+This is real Linux endpoint CLI plus official Pi evidence, with the explicit
+Herdr boundary fixture above. Actual WindowsEndpoint.ps1/Windows Herdr EXE,
+Windows filesystem/ACL observation, onsite loading and real task execution are
+not accepted by this test. No real Magpie query or paid model call was made.
+Purely in-memory learned models still disappear on an offline restart.
 
-- https://github.com/earendil-works/pi/blob/4a080252f06caf63a525d7873c5d94d3c23887e0/packages/coding-agent/docs/settings.md#resources
-- https://github.com/earendil-works/pi/blob/4a080252f06caf63a525d7873c5d94d3c23887e0/packages/coding-agent/src/core/settings-manager.ts
+Official API/source contracts:
+
+- https://github.com/earendil-works/pi/blob/4a080252f06caf63a525d7873c5d94d3c23887e0/packages/coding-agent/src/core/extensions/loader.ts
+- https://github.com/nodejs/node/blob/v24.14.0/deps/uv/src/win/fs.c#L2698
+- https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createhardlinkw
+- https://github.com/earendil-works/pi/blob/4a080252f06caf63a525d7873c5d94d3c23887e0/packages/coding-agent/src/core/package-manager.ts
 - https://github.com/earendil-works/pi/blob/4a080252f06caf63a525d7873c5d94d3c23887e0/packages/coding-agent/src/modes/print-mode.ts
 - https://github.com/particleflow/windows-endpoint/blob/49be5cc/program-deployment.mjs#L550
 - https://github.com/particleflow/Memoh/blob/9601ac062a3b65477db8db76bcaa521265ba7ee2/internal/agenvo/pi_batch.go#L149
-- https://github.com/particleflow/Memoh/blob/9601ac062a3b65477db8db76bcaa521265ba7ee2/internal/agenvo/agent.go#L127

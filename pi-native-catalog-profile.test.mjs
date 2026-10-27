@@ -37,13 +37,13 @@ test('profile preparation is read-only, preserves user resources/selection, and 
   assert.deepEqual(next.extensions,[...f.settings.extensions,plan.resource])
   assert.equal((await prepareNativePiCatalogProfile({...f,settingsRaw:plan.settingsAfter})).settingsAfter,plan.settingsAfter)
   await fs.writeFile(plan.settingsPath,plan.settingsAfter) // isolated fixture only
-  assert.deepEqual(await nativePiCatalogHostOptions({config:{piConfigDir:f.profileDir},...f,requestedProviderId:'approved'}),{piCatalogBinding:null,piCatalogMode:'native',piCatalogProviderId:'approved'})
+  assert.deepEqual(await nativePiCatalogHostOptions({config:{piConfigDir:f.profileDir},...f,requestedProviderId:'approved'}),{piCatalogBinding:null,piCatalogMode:'native',piCatalogProviderId:'approved',piNativeCatalog:{profileDir:f.profileDir,providerId:'approved',resource:plan.resource}})
   assert.equal(await fs.readFile(path.join(f.profileDir,'models.json'),'utf8'),f.modelsRaw)
   await assert.rejects(nativePiCatalogHostOptions({config:{piConfigDir:f.profileDir},...f,requestedProviderId:'different'}),/provider_conflict/)
 })
 test('unprepared old profile stays compatible; opt-in and changed package fail with fixed diagnostics',async t=>{
   const f=await fixture(t)
-  assert.deepEqual(await nativePiCatalogHostOptions({config:{piConfigDir:f.profileDir},...f}),{piCatalogBinding:null,piCatalogMode:'disabled'})
+  assert.deepEqual(await nativePiCatalogHostOptions({config:{piConfigDir:f.profileDir},...f}),{piCatalogBinding:null,piCatalogMode:'disabled',piNativeCatalog:null})
   await assert.rejects(nativePiCatalogHostOptions({config:{piConfigDir:f.profileDir},...f,requestedProviderId:'approved'}),/profile_not_prepared/)
   await fs.appendFile(path.join(f.packageRoot,nativeCatalogPackage.entry),'\n// changed\n')
   await assert.rejects(prepareNativePiCatalogProfile(f),/resource_changed/)

@@ -8,15 +8,15 @@ this extension. The ACL diagnostic archive remains historical evidence only.
 
 ## Loading contract for the existing launch/profile owner
 
-Normal JSON product invocations now use the package resource
-`pi-magpie-native-profile-entry.mjs` in the selected profile's native
-`settings.json.extensions` list. It reads the explicit nonsecret
-`windowsEndpointPiCatalog` binding from that same file and calls the extension
-with defaults for the approved provider. No extra task argv is needed. The
-package manifest advertises this resource and includes all adjacent imports.
-See [the exact owner integration interface](pi-native-catalog-product-wiring.md)
-for the read-only preparation/preflight APIs, legacy-writer retirement and
-the remaining owner-only host call-site changes.
+Normal JSON product invocations now load the package entry through one new
+nonsecret reference in the selected profile's native extensions directory.
+The explicit stopped `deploy prepare-pi-catalog` transaction publishes that
+reference without replacing settings/models/auth or editing ACLs. The actual
+selected deploy/foreground host preflight and binding are implemented locally.
+No extra task argv, SDK instance or service is used. The older explicit
+settings.extensions/namespaced binding remains readable for compatibility.
+See [the completed local product wiring](pi-native-catalog-product-wiring.md)
+for the exact normal entry, transaction, directed evidence and Windows limits.
 
 The resource is pi-magpie-native-extension.mjs, with its existing local imports
 pi-magpie-catalog.mjs and pi-catalog-sync.mjs retained alongside it. Pi's normal
@@ -32,7 +32,7 @@ models.json. A missing/invalid selection leaves it disabled/configuration_requir
 `--magpie-native-interval-ms` defaults to 60000 and accepts at least 1000 ms.
 Do not copy settings from another profile or replace an existing extension list.
 
-This document supplies the future writer's interface; it does not authorize or
+The implementation supplies the future writer's interface; it does not authorize or
 perform onsite loading, deployment, package rebuilding, Git push or PR changes.
 An already running process lacking this resource cannot be retroactively refreshed
 by get_available_models. In --mode json each invocation is separate: later safe
