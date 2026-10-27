@@ -4,8 +4,8 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createHash } from 'node:crypto'
-import { validateConfig, validateDirectory, isNativeRuntimeConfig, isWindowsUNCWorkspacePath } from './endpoint.mjs'
-import { DeploymentTransactions, DeploymentError, deploymentLayout, hostReferenceLayout } from './deployment.mjs'
+import { validateConfig, validateDirectory, isNativeRuntimeConfig, isWindowsUNCWorkspacePath, requireNativeRuntime } from './endpoint.mjs'
+import { DeploymentTransactions, DeploymentError, deploymentLayout, hostReferenceLayout, readDeploymentState } from './deployment.mjs'
 import { acquireLeases } from './lifecycle.mjs'
 import { boundedRead, readSessionHistory } from './session-diagnostics.mjs'
 import { captureSessionContinuation, verifySessionContinuation } from './session-continuation.mjs'
@@ -171,8 +171,6 @@ export class ProgramDeployment extends DeploymentTransactions {
     // Windows herdr.sock is a PID:nonce marker, not the named-pipe listener.
     // Only the existing native recovery/identity/process/status proof can retain
     // it across a program-only switch. Never remove it or infer task completion.
-    if (marker !== null && !retainedMarker ||
-        !isNativeRuntimeConfig(this.config) && await exists(path.join(this.config.agenvoConfigDir, 'run.lock'))) return 'external_component_state_unverified'
     await this.freezeWork(state, marker)
     return null
   }
@@ -182,12 +180,15 @@ export async function programDeployment(root, { prepare = false, io = fs, checkp
   const layout = deploymentLayout(root)
   await validateDirectory(root); await validateDirectory(layout.config)
   const configFile = path.join(layout.config, 'endpoint.json'), runtimeFile = path.join(layout.config, 'runtime.json')
-  const configRaw = await optional(configFile), runtimeRaw = await optional(runtimeFile)
+  const configRaw = await optional(configFile)
   demand(configRaw !== null, 'deployment_configuration_missing')
   let config
-  try { config = validateConfig(JSON.parse(configRaw)); if (runtimeRaw !== null) validateRuntimeRequest(JSON.parse(runtimeRaw), config) }
+  try { config = JSON.parse(configRaw) }
   catch { throw new DeploymentError('deployment_configuration_invalid') }
-  demand([2, 3].includes(config.schema), 'deployment_existing_installations_required')
+  requireNativeRuntime(config) // Before runtime-file reads, preparation or selector writes.
+  const runtimeRaw = await optional(runtimeFile)
+  try { validateConfig(config); if (runtimeRaw !== null) validateRuntimeRequest(JSON.parse(runtimeRaw), config) }
+  catch { throw new DeploymentError('deployment_configuration_invalid') }
   demand(hostReferenceLayout(root, config).compatible, 'deployment_reference_overlap')
   // The same root convention as ForegroundHost. No external directory is made.
   const lifecycleDirectory = path.join(layout.data, 'endpoint')
@@ -206,8 +207,8 @@ export async function programDeployment(root, { prepare = false, io = fs, checkp
     qualify: async (_directory, _hash, verified) => {
       // Older candidates cannot consume native config. Refuse before selection
       // rather than activating an old entry and discovering it on next launch.
-      if (isNativeRuntimeConfig(config)) demand(verified?.manifest?.native_runtime, 'deployment_native_connector_missing')
-      if (isNativeRuntimeConfig(config) && config.transferConfigDir) demand(verified?.manifest?.native_transfer_directory_pair === true && verified.manifest.native_transfer_direct_cli === true, 'deployment_transfer_directories_unsupported')
+      demand(verified?.manifest?.native_runtime, 'deployment_native_connector_missing')
+      if (config.transferConfigDir) demand(verified?.manifest?.native_transfer_directory_pair === true && verified.manifest.native_transfer_direct_cli === true, 'deployment_transfer_directories_unsupported')
       return { schema: 1, stateProfileSha256: programProfileHash }
     } })
   Object.assign(manager, { configFile, runtimeFile, configRaw, runtimeRaw })
@@ -255,6 +256,14 @@ export async function programDeploymentMain(args) {
   demand(['install', 'update', 'rollback', 'recover', 'status', 'run'].includes(action) && Object.keys(options).sort().join(',') === fields.sort().join(','), 'deployment_arguments_invalid')
   const root = options['--root'], target = options['--manifest-sha256']
   if (action === 'run') return { hostExitCode: await runSelectedProgram(root) }
+  if (action === 'status') {
+    const config = validateConfig(JSON.parse(await boundedRead(path.join(deploymentLayout(root).config, 'endpoint.json'), 65536)))
+    if (!isNativeRuntimeConfig(config)) {
+      const state = await readDeploymentState(deploymentLayout(root), config.deviceId)
+      return { state: 'retired-history-only', selected: state.current, previous: state.previous, pending: state.pending,
+        ownedPackages: state.packages.map(p => p.hash), activation: 'blocked', executionPermitted: false, evidence: 'saved_deployment_journal_only' }
+    }
+  }
   const manager = await programDeployment(root, { prepare: action === 'install' })
   if (action === 'status') return describe(await manager.inventory())
   if (action === 'recover') return describe(await manager.recover(), manager.retained)

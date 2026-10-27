@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
@@ -249,46 +249,10 @@ export async function verifyBundle(root, expectedHash) {
   return { manifest, totalBytes }
 }
 
-// Copy to a content-addressed candidate; never switch current binaries or touch data.
-// Incomplete .pending-* directories are inert. Retry creates a new one; no guessing
-// at a stale lock/PID and no destructive recovery. Explicit retention is deliberate.
-export async function stageBundle(source, destination, expectedHash, { checkpoint = async () => {}, verify = verifyBundle, manifestName = 'bundle.json' } = {}) {
-  absolute(destination)
-  await canonical(destination)
-  requireThat(!overlaps(source, destination), 'stage_root_overlap')
-  const { manifest, totalBytes } = await verify(source, expectedHash)
-  const target = path.join(destination, expectedHash)
-  try {
-    await fs.lstat(target)
-    await verify(target, expectedHash)
-    return { state: 'already_staged', manifestSha256: expectedHash }
-  } catch (e) { if (e.code !== 'ENOENT') throw e }
-  const space = await fs.statfs(destination)
-  requireThat(space.bavail * space.bsize >= totalBytes + 64 * 1024 ** 2, 'insufficient_staging_space')
-  const pending = path.join(destination, `.pending-${expectedHash}-${randomUUID()}`)
-  await fs.mkdir(pending)
-  for (const file of [...manifest.files.map(f => f.path), manifestName]) {
-    const output = path.join(pending, file)
-    await fs.mkdir(path.dirname(output), { recursive: true })
-    await fs.copyFile(path.join(source, file), output, 1)
-    const handle = await fs.open(output, 'r+')
-    try { await handle.sync() } finally { await handle.close() }
-    await checkpoint('file_copied')
-  }
-  await verify(pending, expectedHash)
-  try { await fs.rename(pending, target) }
-  catch (error) {
-    if (!['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES'].includes(error.code)) throw error
-    await verify(target, expectedHash) // competing identical publication only
-    return { state: 'already_staged', manifestSha256: expectedHash, retainedPending: true }
-  }
-  return { state: 'staged_review_only', manifestSha256: expectedHash }
-}
-
 export async function configure(from, to, root, { browseSourceRoot = false, chooseDirectory, packageReferences = null } = {}) {
   let input = await readJSON(from)
+  requireNativeRuntime(input) // Refuse retired writes before picker, paths or output.
   if (browseSourceRoot) {
-    requireThat([2, 3].includes(input?.schema), 'directory_picker_reference_configuration_required')
     const originalInput = JSON.stringify(input)
     const { pickDirectory } = await import('./directory-selection.mjs')
     const selection = await pickDirectory({ initialPath: typeof input.sourceRoot === 'string' && path.isAbsolute(input.sourceRoot) ? input.sourceRoot : null },
@@ -303,23 +267,17 @@ export async function configure(from, to, root, { browseSourceRoot = false, choo
   }
   let config, layout
   if (root !== undefined) {
-    const { DeploymentError, deploymentLayout, deploymentReferences } = await import('./deployment.mjs')
+    const { deploymentLayout } = await import('./deployment.mjs')
     await validateDirectory(root)
     layout = deploymentLayout(root)
     requireThat(to === undefined, 'invalid_arguments')
     to = path.join(layout.config, 'endpoint.json')
-    if (input?.schema === 1) {
-      try { config = deploymentReferences(root, input) }
-      catch (error) { if (error instanceof DeploymentError) throw new EndpointError(error.code); throw error }
-      // A fresh template omits paths. Explicit existing paths must agree; this
-      // command never silently relocates a queue, workspace or selected bundle.
-      for (const field of pathFields) requireThat(!Object.hasOwn(input, field) || samePath(input[field], config[field]), 'host_configuration_root_mismatch')
-    } else config = validateConfig(input)
+    config = validateConfig(input)
   } else config = validateConfig(input)
   absolute(to)
   await canonical(path.dirname(to))
   const locations = installationReferences(config)
-  if (layout && config.schema >= 2) {
+  if (layout) {
     const { hostReferenceLayout } = await import('./deployment.mjs')
     requireThat(hostReferenceLayout(root, config).compatible, 'host_reference_overlap')
   }
@@ -329,7 +287,7 @@ export async function configure(from, to, root, { browseSourceRoot = false, choo
   try { await handle.writeFile(`${JSON.stringify(config, null, 2)}\n`); await handle.sync() }
   finally { await handle.close() }
   return { state: 'references_saved', credentialsRead: false, activation: 'blocked',
-    transferConfiguration: config.schema === 1 || config.transfer ? {
+    transferConfiguration: config.transfer ? {
       directory: transferLocations(config).config,
       networkPolicyFile: path.join(transferLocations(config).config, 'transfer-network.json'),
       networkPolicy: 'optional_existing_producer_configuration', validation: 'producer_on_invoke',
@@ -477,7 +435,7 @@ export async function main(args) {
     requireThat(/^--[a-z][a-z0-9-]*$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'invalid_arguments')
     options[rest[i]] = rest[i + 1]
   }
-  if (command === 'help' || !command) return { commands: ['installation install|dependencies|migration-plan (see WindowsEndpoint.ps1)', 'setup --from FILE --root DIR --source DIR --manifest-sha256 SHA256 --transfer disabled|existing-queue [--browse-source-root native]', 'configure --from FILE --root DIR [--browse-source-root native]', 'directory-pick [--config FILE]', 'configure --from FILE --config FILE', 'doctor --config FILE', 'layout --config FILE --root DIR', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR', 'host recover --root DIR --expected-run UUID --expected-state-sha256 SHA256 --expected-configuration-sha256 SHA256', 'host handoff-status --root DIR --request-id UUID', 'deploy install|update --root DIR --source DIR --manifest-sha256 SHA256', 'deploy rollback --root DIR --manifest-sha256 SHA256', 'deploy run|recover|status --root DIR'], status: 'portable program deployment and foreground review available; production release and active-task handoff remain unqualified' }
+  if (command === 'help' || !command) return { commands: ['installation install|dependencies|migration-plan (see WindowsEndpoint.ps1)', 'setup --from FILE --root DIR --source DIR --manifest-sha256 SHA256 --transfer disabled|existing-queue [--browse-source-root native]', 'configure --from FILE --root DIR [--browse-source-root native]', 'directory-pick [--config FILE]', 'configure --from FILE --config FILE', 'doctor --config FILE', 'layout --config FILE --root DIR', 'plan --config FILE', 'host run --root DIR', 'host status --root DIR', 'host recover --root DIR --expected-run UUID --expected-state-sha256 SHA256 --expected-configuration-sha256 SHA256', 'host handoff-status --root DIR --request-id UUID', 'deploy install|update --root DIR --source DIR --manifest-sha256 SHA256', 'deploy rollback --root DIR --manifest-sha256 SHA256', 'deploy run|recover|status --root DIR'], status: 'portable program deployment and foreground review available; production release and active-task handoff remain unqualified' }
   if (['start', 'activate', 'update', 'rollback', 'uninstall'].includes(command)) throw new EndpointError('qualification_required_no_runtime_or_data_changed')
   if (command === 'layout') {
     keys(options, ['--config', '--root'])
@@ -498,7 +456,7 @@ export async function main(args) {
     requireThat(options['--browse-source-root'] === undefined || options['--browse-source-root'] === 'native', 'invalid_arguments')
     return configure(options['--from'], options['--config'], options['--root'], { browseSourceRoot: options['--browse-source-root'] === 'native' })
   }
-  if (command === 'stage') { keys(options, ['--source', '--destination', '--manifest-sha256']); return stageBundle(options['--source'], options['--destination'], options['--manifest-sha256']) }
+  if (command === 'stage') throw new EndpointError('legacy_execution_retired')
   requireThat(['doctor', 'plan'].includes(command), 'unknown_command')
   keys(options, ['--config'], command === 'doctor' ? ['--target'] : [])
   const config = validateConfig(await readJSON(options['--config']))
@@ -509,11 +467,8 @@ export async function main(args) {
   requireThat(!options['--target'], 'existing_installation_config_required')
   if (command === 'doctor') return doctor(config)
   requireNativeRuntime(config)
-  if ([2, 3].includes(config.schema)) {
-    const { inspectInstalled } = await import('./installed.mjs')
-    return launchPlan((await inspectInstalled(config)).config)
-  } else await verifyBundle(config.bundleRoot, config.manifestSha256)
-  return launchPlan(config)
+  const { inspectInstalled } = await import('./installed.mjs')
+  return launchPlan((await inspectInstalled(config)).config)
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

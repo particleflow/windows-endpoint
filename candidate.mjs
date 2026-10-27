@@ -1,8 +1,8 @@
 // The portable endpoint program, not an official-component installer.
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
-import { createHash } from 'node:crypto'
-import { catalog, digest, validateDirectory, stageBundle } from './endpoint.mjs'
+import { createHash, randomUUID } from 'node:crypto'
+import { catalog, digest, validateDirectory } from './endpoint.mjs'
 import { boundedRead } from './session-diagnostics.mjs'
 
 export const programStateProfile = 'endpoint-program-v1'
@@ -92,6 +92,42 @@ export async function verifyCandidate(root, expectedHash) {
   return { manifest, totalBytes }
 }
 
-export function stageCandidate(source, destination, expectedHash, options = {}) {
-  return stageBundle(source, destination, expectedHash, { ...options, verify: verifyCandidate, manifestName: 'candidate.json' })
+// Stage only a verified native program candidate. Incomplete copies remain inert;
+// no bundle containing retired component installations has a staging adapter.
+export async function stageCandidate(source, destination, expectedHash, { checkpoint = async () => {} } = {}) {
+  const verify = async (...args) => {
+    const result = await verifyCandidate(...args)
+    demand(result.manifest.native_runtime, 'legacy_execution_retired')
+    return result
+  }
+  const manifestName = 'candidate.json'
+  await validateDirectory(destination)
+  demand(![path.relative(source, destination), path.relative(destination, source)].some(r => r === '' || (!path.isAbsolute(r) && r !== '..' && !r.startsWith(`..${path.sep}`))), 'stage_root_overlap')
+  const { manifest, totalBytes } = await verify(source, expectedHash)
+  const target = path.join(destination, expectedHash)
+  try {
+    await fs.lstat(target)
+    await verify(target, expectedHash)
+    return { state: 'already_staged', manifestSha256: expectedHash }
+  } catch (e) { if (e.code !== 'ENOENT') throw e }
+  const space = await fs.statfs(destination)
+  demand(space.bavail * space.bsize >= totalBytes + 64 * 1024 ** 2, 'insufficient_staging_space')
+  const pending = path.join(destination, `.pending-${expectedHash}-${randomUUID()}`)
+  await fs.mkdir(pending)
+  for (const file of [...manifest.files.map(f => f.path), manifestName]) {
+    const output = path.join(pending, file)
+    await fs.mkdir(path.dirname(output), { recursive: true })
+    await fs.copyFile(path.join(source, file), output, 1)
+    const handle = await fs.open(output, 'r+')
+    try { await handle.sync() } finally { await handle.close() }
+    await checkpoint('file_copied')
+  }
+  await verify(pending, expectedHash)
+  try { await fs.rename(pending, target) }
+  catch (error) {
+    if (!['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES'].includes(error.code)) throw error
+    await verify(target, expectedHash)
+    return { state: 'already_staged', manifestSha256: expectedHash, retainedPending: true }
+  }
+  return { state: 'staged_review_only', manifestSha256: expectedHash }
 }

@@ -6,10 +6,11 @@ import { createHash } from 'node:crypto'
 import { fork } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { DeploymentTransactions, deploymentReferences } from './deployment.mjs'
+import { verifyCandidate, stageCandidate } from './candidate.mjs'
 import { validateConfig } from './endpoint.mjs'
 import { EndpointLifecycle, acquireLeases, leaseKeys } from './lifecycle.mjs'
 import { TransferLifecycle } from './transfer-lifecycle.mjs'
-import { deploymentFixture, fixtureManager, syntheticBundle } from './test-support/deployment-fixture.mjs'
+import { deploymentFixture, fixtureManager, syntheticCandidate } from './test-support/deployment-fixture.mjs'
 
 async function staged(f) {
   await f.manager.stage(f.a.directory, f.a.hash)
@@ -43,10 +44,10 @@ test('offline install, update, rollback and repeated selection preserve config a
 
 test('relative template resolves one root without creating identities or writing user configuration', async t => {
   const f = await deploymentFixture(t)
-  const refs = { manifestSha256: f.a.hash, nasOrigin: f.config.nasOrigin, deviceId: f.config.deviceId, runtimeId: f.config.runtimeId, instanceId: f.config.instanceId, session: f.config.session }
+  const refs = { manifestSha256: f.a.hash, nasOrigin: 'https://nas.example.test', deviceId: f.config.deviceId, runtimeId: f.config.runtimeId, instanceId: f.config.instanceId, session: f.config.session }
   const config = deploymentReferences(f.root, refs)
-  assert.equal(config.transferStateDir, f.config.transferStateDir)
-  assert.equal(config.agenvoConfigDir, f.config.agenvoConfigDir)
+  assert.equal(config.transferStateDir, path.join(f.root, 'data/herdr/plugins/memoh.delivery'))
+  assert.equal(config.agenvoConfigDir, path.join(f.root, 'config/agenvo'))
   assert.equal(config.bundleRoot, path.join(f.root, 'packages', f.a.hash))
   assert.equal(config.deviceId, f.config.deviceId)
   assert.throws(() => deploymentReferences(f.root, { ...refs, deviceId: 'create-one-for-me' }))
@@ -75,7 +76,7 @@ test('mutable roots equal to or inside packages/control are rejected without wri
 test('packages/control inside any mutable ancestor, including custom sourceRoot, are rejected before initialization', async t => {
   const f = await deploymentFixture(t)
   const before = await journal(f)
-  const ancestors = [f.config.sourceRoot, f.lifecycleDirectory, ...['herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir', 'transferConfigDir', 'transferStateDir'].map(key => f.config[key])]
+  const ancestors = [f.config.sourceRoot, f.lifecycleDirectory, ...['herdrConfigRoot', 'herdrStateRoot', 'piConfigDir', 'transferConfigDir', 'transferStateDir'].map(key => f.config[key])]
   for (const ancestor of ancestors) {
     const root = path.join(ancestor, 'nested-install')
     await fs.mkdir(root)
@@ -108,12 +109,14 @@ test('independent mutable directories sharing only a packages/control name prefi
 test('missing component, missing qualification and unknown work fail without selecting', async t => {
   const f = await deploymentFixture(t)
   const unqualified = new DeploymentTransactions(f.settings)
-  await assert.rejects(unqualified.stage(f.a.directory, f.a.hash), /deployment_component_qualification_missing/)
+  await assert.rejects(unqualified.stage(f.a.directory, f.a.hash), /deployment_candidate_adapter_required/)
+  const noProfile = new DeploymentTransactions({ ...f.settings, verify: verifyCandidate, stage: stageCandidate })
+  await assert.rejects(noProfile.stage(f.a.directory, f.a.hash), /deployment_component_qualification_missing/)
   await staged(f)
   const before = await journal(f)
   assert.equal((await fixtureManager(f.settings, { inspectWork: undefined }).select(f.a.hash, 'install')).reason, 'work_observation_unavailable')
   await fs.unlink(path.join(f.manager.layout.packages, f.b.hash, 'transfer/transferqueue.exe'))
-  await assert.rejects(f.manager.select(f.b.hash, 'install'), /deployment_operation_failed/)
+  await assert.rejects(f.manager.select(f.b.hash, 'install'), /candidate_inventory_mismatch/)
   assert.equal(await journal(f), before)
 })
 
@@ -135,7 +138,7 @@ test('busy, unknown, open admission and attention defer before transaction write
 test('incompatible state blocks rollback without changing selection or erasing the journal', async t => {
   const f = await deploymentFixture(t); await staged(f)
   await f.manager.select(f.a.hash, 'install'); await f.manager.select(f.b.hash, 'update')
-  const next = await syntheticBundle(path.join(f.base, 'source-next-format'), 'next', 2)
+  const next = await syntheticCandidate(path.join(f.base, 'source-next-format'), 'next', 2)
   await f.manager.stage(next.directory, next.hash)
   const before = await journal(f)
   assert.equal((await f.manager.select(next.hash, 'update')).reason, 'state_profile_incompatible')
@@ -177,7 +180,7 @@ test('unrecorded packages, temp names, extra payloads and user files are retaine
   await fs.writeFile(path.join(f.manager.layout.packages, '.pending-unknown/original'), 'keep')
   await fs.writeFile(path.join(f.manager.layout.packages, f.a.hash, 'foreign-original.txt'), 'keep')
   const before = await journal(f)
-  await assert.rejects(f.manager.select(f.a.hash, 'install'), /deployment_operation_failed/)
+  await assert.rejects(f.manager.select(f.a.hash, 'install'), /candidate_inventory_mismatch/)
   const inventory = await f.manager.inventory()
   assert.equal(inventory.deletionImplemented, false)
   assert.ok(inventory.retainedUnknownEntries.includes('user-notes.txt'))

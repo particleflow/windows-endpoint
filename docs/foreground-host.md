@@ -69,8 +69,9 @@ graceful stop request. While it runs, stdin accepts only the two JSON actions ab
 
 The host creates only its data/log directories; it never creates credentials or
 fills in identity/configuration values. It reads `config/endpoint.json` and checks
-the same schema as the existing delivery CLI. In schema 1 (bundle review), the
-mutable paths must agree with `deployment-layout.json`, resolved under this root:
+schema-3 references for current execution. The following table records only the
+legacy schema-1 layout needed to interpret original saved paths; configure and
+deployment writers no longer generate or activate it:
 
 | Location | Purpose |
 | --- | --- |
@@ -93,16 +94,18 @@ location checks still reject silently relocating original state.
 
 For historical schema-2 metadata,
 only the endpoint's own configuration, lifecycle/status journal and host logs use
-this root. Official programs, Herdr/Pi/Agenvo configuration, source exports and
+this root. Official programs, original component configuration, source exports and
 the existing transfer journal remain at their explicitly referenced locations.
 Those references must not overlap the host's config/data/log directories; the
 component data/program separation checks also remain in force. Do not copy user
 configuration or historical sessions into another layout to bypass retirement.
 Reference acceptance does not grant ownership of an external process or permission
 to resume a historical task.
-The same `configure --from FILE --root DIR` command accepts full schema-2
-references, saves their existing paths unchanged and checks that they do not
-overlap the host-owned config/data/log directories.
+`configure --from FILE --root DIR` accepts complete schema-3 references only,
+saves their existing paths unchanged and checks that they do not overlap the
+host-owned config/data/log directories. Schema 1/2 writes are refused before
+any picker, package mapping or output access. `deploy status` can still read
+their saved selection records without enabling recovery or execution.
 
 Missing config is `host_configuration_missing`; invalid config and changed config
 are distinct attention states. A config edit requires stop/restart and never hot
@@ -191,9 +194,9 @@ authorization rejection, in-flight failure drain, restart gating, unknown transf
 outcomes, failed cleanup, corrupt observations and abrupt host death. The inert
 fixture children voluntarily exit on parent IPC disconnect; `NativeDriver` has no
 equivalent guarantee. This test proves stale observation and restart gating only,
-not absence of surviving Herdr/Agenvo processes after host termination. That real
+not absence of surviving official component processes after host termination. That real
 component outcome remains unknown. These fixtures are not
-Herdr/Agenvo/transfer binary qualification or NAS/NTFS integration evidence.
+native Runtime/Herdr/transfer binary qualification or NAS/NTFS integration evidence.
 
 The regression checkpoint `49d9040` retains the `b589549` host implementation with
 four added failing tests. A fixture-only config-read barrier makes early invalid,
