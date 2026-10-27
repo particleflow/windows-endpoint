@@ -32,36 +32,36 @@ async function fixture(t, { runtimeRequest = false } = {}) {
 const apply = (f, pkg, mode = 'install') => programDeploymentMain([mode, '--root', f.root, '--source', pkg.directory, '--manifest-sha256', pkg.hash])
 async function preserve(f) { assert.deepEqual(await Promise.all(f.originalFiles.map(p => fs.readFile(p))), f.originals) }
 
-test('selected deploy run forwards catalog binding using current profile and keeps pending-profile startup fenced', async t => {
+test('selected deploy run forwards native binding using the current profile, rejects the old writer and fences profile preparation', async t => {
   const f = await fixture(t, { runtimeRequest: true })
   const profile = path.join(f.base, 'current user Pi profile'); await fs.mkdir(profile)
   await fs.writeFile(path.join(f.root, 'config/endpoint.json'), JSON.stringify({ ...f.config, piConfigDir: profile }))
-  // A selected-package boundary fixture only; no component, credential or model
-  // is loaded. Actual foreground catalog lifecycle has its own host fixture.
+  await fs.writeFile(path.join(profile,'settings.json'),'{}')
+  await fs.writeFile(path.join(profile,'models.json'),JSON.stringify({providers:{'existing-magpie':{models:[{id:'selected'}]}}}))
+  // Selected-package boundary only. The separate deploy/official-Pi integration
+  // runs the actual foreground host and native extension, with zero inference.
   const wrapper = `import fs from 'node:fs/promises'; import path from 'node:path';
-export const piCatalogBindingVersion = 1;
-export async function runForeground({ root, piCatalogBinding }) {
+export const piNativeCatalogBindingVersion = 1;
+export async function runForeground({ root, piNativeCatalog }) {
   const config = JSON.parse(await fs.readFile(path.join(root, 'config/endpoint.json'), 'utf8'));
-  const binding = typeof piCatalogBinding === 'function' ? piCatalogBinding(config) : piCatalogBinding;
-  return binding?.providerId === 'existing-magpie' ? 0 : 3;
+  return piNativeCatalog?.providerId === 'existing-magpie' && piNativeCatalog.profileDir === config.piConfigDir ? 0 : 3;
 }\n`
   const entry = path.join(f.a.directory, 'host.mjs'); await fs.writeFile(entry, wrapper)
   const proof = f.a.manifest.files.find(file => file.path === 'host.mjs'); proof.size = Buffer.byteLength(wrapper); proof.sha256 = await digest(entry)
   await fs.writeFile(path.join(f.a.directory, 'candidate.json'), JSON.stringify(f.a.manifest)); f.a.hash = await digest(path.join(f.a.directory, 'candidate.json'))
   await apply(f, f.a)
-  let seen = null
-  assert.equal(await runSelectedProgram(f.root, { piCatalogBinding: config => { seen = config.piConfigDir; return { providerId: 'existing-magpie' } } }), 0)
-  assert.equal(seen, profile)
+  await assert.rejects(runSelectedProgram(f.root, { piCatalogBinding: () => assert.fail('retired writer must not execute') }), {code:'deployment_pi_catalog_file_sync_retired'})
+  await assert.rejects(programDeploymentMain(['run','--root',f.root,'--pi-catalog-provider','existing-magpie']),{code:'catalog_native_profile_not_prepared'})
+  assert.equal((await programDeploymentMain(['prepare-pi-catalog','--root',f.root,'--request-id',randomUUID(),'--provider','existing-magpie'])).state,'prepared_native_catalog')
+  assert.equal(await runSelectedProgram(f.root),0)
   assert.equal((await programDeploymentMain(['run', '--root', f.root, '--pi-catalog-provider', 'existing-magpie'])).hostExitCode, 0)
   await assert.rejects(programDeploymentMain(['run', '--root', f.root, '--pi-catalog-provider', 'invalid provider']), { code: 'deployment_arguments_invalid' })
-  const oldWrapper = wrapper.replace('piCatalogBindingVersion = 1', 'piCatalogBindingVersion = 0')
-  const oldEntry = path.join(f.b.directory, 'host.mjs'); await fs.writeFile(oldEntry, oldWrapper)
-  const oldProof = f.b.manifest.files.find(file => file.path === 'host.mjs'); oldProof.size = Buffer.byteLength(oldWrapper); oldProof.sha256 = await digest(oldEntry)
-  await fs.writeFile(path.join(f.b.directory, 'candidate.json'), JSON.stringify(f.b.manifest)); f.b.hash = await digest(path.join(f.b.directory, 'candidate.json'))
-  await apply(f, f.b, 'update')
-  await assert.rejects(runSelectedProgram(f.root, { piCatalogBinding: () => assert.fail('unsupported host must not call binding') }), { code: 'deployment_pi_catalog_unsupported' })
-  await fs.writeFile(path.join(f.manager.lifecycleDirectory, 'profile-switch-pending.json'), '{}')
-  await assert.rejects(runSelectedProgram(f.root, { piCatalogBinding: () => assert.fail('pending transaction must fence discovery') }), { code: 'deployment_profile_switch_recovery_required' })
+  f.b.manifest.native_pi_catalog={...f.b.manifest.native_pi_catalog,bindingVersion:0}
+  await fs.writeFile(path.join(f.b.directory,'candidate.json'),JSON.stringify(f.b.manifest));f.b.hash=await digest(path.join(f.b.directory,'candidate.json'))
+  await apply(f,f.b,'update')
+  await assert.rejects(runSelectedProgram(f.root),{code:'catalog_native_package_unsupported'})
+  await fs.writeFile(path.join(f.manager.lifecycleDirectory,'profile-switch-pending.json'),'{}')
+  await assert.rejects(runSelectedProgram(f.root),{code:'deployment_profile_switch_recovery_required'})
 })
 
 test('owner SDK adapter uses only existing GETs and stops on authentication or target mismatch without retry', async () => {

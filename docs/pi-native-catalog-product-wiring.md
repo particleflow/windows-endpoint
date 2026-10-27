@@ -134,17 +134,42 @@ and smart-discovery/filter conflicts. Source tests also exercise old no-opt-in
 profiles and the ordinary host/deployment behavior. The first new transaction
 run exposed a legitimately absent fresh lifecycle.json; the implementation now
 freezes and compares that absence instead of creating a fabricated state file.
-Final focused run: 87/87 passed, zero skipped, including the actual selected
-deploy/official-Pi test; synthetic packaging inventory test 1/1 passed. The old
-catalog/ACL matrix was not repeated. No production archive was rebuilt.
+Initial focused run: 87/87 passed, zero skipped. After local 49be5cc composition,
+the deployment/profile/native-transaction suite passed 63/63 and host plus actual
+selected-deploy/official-Pi suite passed 33/33, zero skipped. Synthetic packaging
+inventory test passed 1/1. The old catalog/ACL matrix was not repeated. No
+production archive was rebuilt.
 
-The original local branch was not based on the full 49be5cc owner tree. Its host
-and selected-deploy sources were read as a reference, including pending-profile
-guards and the old file-sync CLI route. This local independent diff changes the
-corresponding functions and does not overwrite the owner's branch. Unified
-composition must retain all of 49be5cc's profile-switch actions/transactions when
-merging the CLI parser and runSelectedProgram edits. A uniquely named catalog
-digest avoids colliding with the owner's existing sha256 helper.
+The independent implementation was preserved first as local commit
+3e84c9ae7f664b6066117d821421b2dbfa7d3b44. A readonly three-way comparison to
+49be5cc found two host and five selected-deploy conflict regions. These are now
+resolved LOCALLY: all owner profile preparation/archive/commit/reconciliation
+functions and four original CLI actions are retained, along with its stopped
+observation reader/guards. A new locked guard prevents other deployment/profile
+transactions crossing a pending native-catalog preparation. The owner's remote
+branch was not overwritten. The original owner test file is retained, changing
+only its former file-writer forwarding case to the native preparation/binding
+contract; the real Pi integration remains separate.
+
+During composition, five original stopped-observation tests initially failed
+because this older branch's StateStore did not accept the owner's already
+supported stopped recovery record. The corresponding one-line 49be5cc validator
+and original package capability flag were carried over, retaining the same
+attention/hash/proof checks. All five then passed without changing their
+assertions. The original profile preparation/commit tests also passed in an
+isolated source fixture. This is alignment of existing owner behavior, not an
+Agent/Pi core change or authority to replay an unknown task.
+
+The final tree includes the composed host/selected-deploy changes; it is not a
+full merge of all unrelated 49be5cc runtime files. Unified delivery must keep the
+owner's other existing runtime/recheck implementation and package data. Exact
+readonly source blobs used here were 88a071d6998d345396993443b5cd2ef012a1c5af
+(program-deployment.mjs) and 7686a715d4f61fac5b05e8f7e913767a51b40695 (host.mjs).
+A local two-file patch was checked against those EXACT Git blob bytes with
+`git apply --check`; it applies cleanly. The patch and composition proof are
+retained under /tmp/pi-native-owner-49be5cc-review for the unified local owner.
+Use the composed two-file diff when the destination already contains 49be5cc;
+do not replace its unrelated runtime tree with this older source branch.
 
 This is real Linux endpoint CLI plus official Pi evidence, with the explicit
 Herdr boundary fixture above. Actual WindowsEndpoint.ps1/Windows Herdr EXE,
