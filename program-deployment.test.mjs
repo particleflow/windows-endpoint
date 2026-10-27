@@ -5,12 +5,12 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { PassThrough } from 'node:stream'
-import { programDeployment, programDeploymentMain, runSelectedProgram } from './program-deployment.mjs'
+import { programDeployment, programDeploymentMain, runSelectedProgram, prepareProfileSwitch } from './program-deployment.mjs'
 import { verifyCandidate } from './candidate.mjs'
 import { digest } from './endpoint.mjs'
 import { StateStore, acquireLeases } from './lifecycle.mjs'
 import { captureSessionContinuation } from './session-continuation.mjs'
-import { ForegroundHost } from './host.mjs'
+import { ForegroundHost, runForeground } from './host.mjs'
 import { installedFixture, nativeInstalledFixture } from './test-support/installed-fixture.mjs'
 import { attemptEvidence, recoveryConfigurationHash } from './host-recovery.mjs'
 import { programPackage } from './test-support/program-package.mjs'
@@ -32,6 +32,44 @@ async function fixture(t, { native = false } = {}) {
 }
 const apply = (f, pkg, mode = 'install') => programDeploymentMain([mode, '--root', f.root, '--source', pkg.directory, '--manifest-sha256', pkg.hash])
 async function preserve(f) { assert.deepEqual(await Promise.all(f.originalFiles.map(p => fs.readFile(p))), f.originals) }
+
+test('profile preparation fixes original hashes, is reentrant, and blocks host startup without changing unknown history', async t => {
+  const f = await fixture(t, { native: true }), store = f.manager.lifecycleStore
+  await apply(f, f.a)
+  const attempt = path.join(f.config.sourceRoot, '.memoh-computer/attempts/original/receipt.json')
+  await fs.mkdir(path.dirname(attempt), { recursive: true }); await fs.writeFile(attempt, 'SYNTHETIC UNKNOWN RECEIPT')
+  const continuation = await captureSessionContinuation(f.config)
+  await store.save({ ...(await store.load()), sessionContinuation: continuation })
+  const configRaw = await fs.readFile(f.manager.configFile), lifecycleRaw = await fs.readFile(store.file)
+  const profile = path.join(f.base, 'existing Pi profile'); await fs.mkdir(profile)
+  const sha = value => createHash('sha256').update(value).digest('hex')
+  const options = { root: f.root, requestId: randomUUID(), profile, configurationSha256: sha(configRaw), lifecycleSha256: sha(lifecycleRaw),
+    continuationSha256: sha(JSON.stringify(continuation)), attemptsSha256: await attemptEvidence(f.config) }
+  const pending = path.join(f.manager.lifecycleDirectory, 'profile-switch-pending.json')
+  const release = await acquireLeases([`host:${f.root}`], f.manager.lifecycleDirectory)
+  try { const result = await prepareProfileSwitch(options); assert.equal(result.state, 'deferred'); assert.equal(result.reason, 'endpoint_owned') } finally { await release() }
+  await assert.rejects(prepareProfileSwitch(options, { checkpoint: async phase => { if (phase === 'before_prepare') await fs.appendFile(attempt, '!') } }), { code: 'deployment_profile_switch_evidence_changed' })
+  await assert.rejects(fs.stat(pending), { code: 'ENOENT' })
+  await fs.writeFile(attempt, 'SYNTHETIC UNKNOWN RECEIPT')
+  await assert.rejects(prepareProfileSwitch(options, { checkpoint: async phase => { if (phase === 'prepared') throw new Error('simulated interruption') } }))
+  assert.equal((await prepareProfileSwitch(options)).state, 'already_prepared')
+  await assert.rejects(prepareProfileSwitch({ ...options, requestId: randomUUID() }), { code: 'deployment_profile_switch_pending_conflict' })
+  let started = false
+  const host = new ForegroundHost({ root: f.root, createTestRuntime: async () => { started = true; throw new Error('must not start') } })
+  await assert.rejects(host.start(), { code: 'host_profile_switch_recovery_required' })
+  await assert.rejects(runSelectedProgram(f.root), { code: 'deployment_profile_switch_recovery_required' })
+  const input = new PassThrough(), output = new PassThrough(); let observed = ''
+  output.on('data', chunk => { observed += chunk })
+  assert.equal(await runForeground({ root: f.root, input, output }), 2)
+  assert.match(observed, /host_profile_switch_recovery_required/)
+  input.destroy(); output.destroy()
+  assert.equal(started, false)
+  assert.deepEqual(await fs.readFile(f.manager.configFile), configRaw)
+  assert.deepEqual(await fs.readFile(store.file), lifecycleRaw)
+  assert.equal(await fs.readFile(attempt, 'utf8'), 'SYNTHETIC UNKNOWN RECEIPT')
+  await fs.appendFile(attempt, '!')
+  await assert.rejects(prepareProfileSwitch(options), { code: 'deployment_profile_switch_evidence_changed' })
+})
 
 test('portable program installs, updates, rolls back and runs the selected real foreground entry without copying official components', async t => {
   const f = await fixture(t)

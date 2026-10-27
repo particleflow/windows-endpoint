@@ -148,6 +148,13 @@ export class ForegroundHost {
     await ensureDirectory(this.layout.data); await ensureDirectory(this.stateDirectory)
     await ensureDirectory(this.layout.logs); await ensureDirectory(this.logDirectory)
     this.release = this.inheritedHostLease || await acquireLeases([`host:${this.root}`], this.stateDirectory)
+    try {
+      try { await fs.lstat(path.join(this.stateDirectory, 'profile-switch-pending.json')); throw new HostError('host_profile_switch_recovery_required') }
+      catch (error) { if (error.code !== 'ENOENT') throw error }
+    } catch (error) {
+      await this.release(); this.release = null
+      throw error
+    }
     this.logHandle = await fs.open(path.join(this.logDirectory, `${this.runId}.jsonl`), 'ax')
     this.attachProcessDiagnostics()
     this.logState = 'recording'; this.initialized = true
@@ -337,7 +344,10 @@ export async function runForeground({ root, input = process.stdin, output = proc
   process.on('SIGINT', sigint); process.on('SIGTERM', sigterm)
   try {
     try { await host.start() }
-    catch (error) { await stop(safeCode(error), 'startup_failed') }
+    catch (error) {
+      if (error instanceof HostError && error.code === 'host_profile_switch_recovery_required') { emit({ error: error.code, ready: false }); return 2 }
+      await stop(safeCode(error), 'startup_failed')
+    }
     if (!host.stopRequested) {
       timer = setInterval(() => {
         void host.tick().catch(() => stop('host_lifecycle_failed', 'tick_failed'))

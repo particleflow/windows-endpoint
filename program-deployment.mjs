@@ -2,7 +2,7 @@
 // Official component paths, configuration and producer data are never switched.
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createHash } from 'node:crypto'
 import { validateConfig, validateDirectory, isNativeRuntimeConfig, isWindowsUNCWorkspacePath } from './endpoint.mjs'
 import { DeploymentTransactions, DeploymentError, deploymentLayout, hostReferenceLayout } from './deployment.mjs'
@@ -15,6 +15,58 @@ import { attemptEvidence, nativeRecoveryEvidence, recoveryConfigurationHash } fr
 import { inspectInstalled } from './installed.mjs'
 
 const demand = (ok, code) => { if (!ok) throw new DeploymentError(code) }
+const sha256 = value => createHash('sha256').update(value).digest('hex')
+const hashValue = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
+
+// Preparing is not a permit to switch profile or start work. The owner must
+// complete the later offline transition with the original evidence intact.
+export async function prepareProfileSwitch({ root, requestId, profile, configurationSha256, lifecycleSha256, continuationSha256, attemptsSha256 }, { checkpoint = async () => {} } = {}) {
+  demand(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(requestId || '') &&
+    [configurationSha256, lifecycleSha256, continuationSha256, attemptsSha256].every(hashValue), 'deployment_profile_switch_arguments_invalid')
+  const manager = await programDeployment(root)
+  demand(isNativeRuntimeConfig(manager.config), 'deployment_profile_switch_native_required')
+  const next = validateConfig({ ...manager.config, piConfigDir: profile })
+  demand(next.piConfigDir !== manager.config.piConfigDir && hostReferenceLayout(root, next).compatible, 'deployment_profile_switch_target_invalid')
+  await validateDirectory(profile)
+  return manager.locked(async () => {
+    await manager.unchanged()
+    const selection = await manager.read()
+    demand(selection.pending === null && selection.current !== null, 'deployment_profile_switch_reader_unqualified')
+    await manager.owned(selection, selection.current)
+    // The selected normal launcher must already contain these exact guards;
+    // a previous release would otherwise ignore the preparation marker.
+    for (const name of ['endpoint.mjs', 'program-deployment.mjs', 'host.mjs']) {
+      const current = await boundedRead(fileURLToPath(new URL(`./${name}`, import.meta.url)), 262144)
+      const selected = await boundedRead(path.join(manager.layout.packages, selection.current, name), 262144)
+      demand(current === selected, 'deployment_profile_switch_reader_unqualified')
+    }
+    const stateRaw = await boundedRead(manager.lifecycleStore.file, 262144)
+    const state = await manager.lifecycleStore.load()
+    demand(!state.handoff && state.sessionContinuation, 'deployment_profile_switch_checkpoint_required')
+    await verifySessionContinuation(manager.config, state.sessionContinuation)
+    const attempts = await attemptEvidence(manager.config)
+    demand(sha256(manager.configRaw) === configurationSha256 && sha256(stateRaw) === lifecycleSha256 &&
+      sha256(JSON.stringify(state.sessionContinuation)) === continuationSha256 && attempts === attemptsSha256, 'deployment_profile_switch_evidence_changed')
+    const record = { schema: 1, state: 'prepared', requestId, configurationSha256, lifecycleSha256, continuationSha256, attemptsSha256, profile,
+      authority: 'preparation_only', started: false, businessReplayed: false }
+    const file = path.join(manager.lifecycleDirectory, 'profile-switch-pending.json')
+    const desired = JSON.stringify(record) + '\n'
+    const existing = await optional(file, 16384)
+    if (existing !== null) {
+      demand(existing === desired, 'deployment_profile_switch_pending_conflict')
+      return { state: 'already_prepared', requestId, activation: 'blocked', businessReplayed: false }
+    }
+    await checkpoint('before_prepare')
+    await manager.unchanged()
+    demand(await boundedRead(manager.lifecycleStore.file, 262144) === stateRaw && await attemptEvidence(manager.config) === attempts, 'deployment_profile_switch_evidence_changed')
+    const h = await fs.open(file, 'wx')
+    try { await h.writeFile(desired); await h.sync() } finally { await h.close() }
+    await checkpoint('prepared')
+    await manager.unchanged()
+    demand(await boundedRead(manager.lifecycleStore.file, 262144) === stateRaw && await attemptEvidence(manager.config) === attempts, 'deployment_profile_switch_evidence_changed')
+    return { state: 'prepared', requestId, activation: 'blocked', businessReplayed: false }
+  })
+}
 async function optional(file, limit = 65536) {
   try { return await boundedRead(file, limit) } catch (error) { if (error.code === 'ENOENT') return null; throw error }
 }
@@ -136,6 +188,7 @@ export class ProgramDeployment extends DeploymentTransactions {
   }
   async work(profile) {
     await this.unchanged()
+    if (await exists(path.join(this.lifecycleDirectory, 'profile-switch-pending.json'))) return 'deployment_profile_switch_recovery_required'
     await this.workBaseline?.()
     if (profile !== programProfileHash) return 'state_profile_incompatible'
     const state = await this.lifecycleStore.load()
@@ -232,6 +285,7 @@ export async function runSelectedProgram(root, { input = process.stdin, output =
   const release = async () => { if (!released) { await acquired(); released = true } }
   try {
     await manager.unchanged()
+    demand(!await exists(path.join(manager.lifecycleDirectory, 'profile-switch-pending.json')), 'deployment_profile_switch_recovery_required')
     const state = await manager.read()
     demand(state.pending === null, 'deployment_recovery_required')
     demand(state.current !== null, 'deployment_not_installed')
@@ -251,9 +305,10 @@ export async function programDeploymentMain(args) {
     demand(/^--[a-z][a-z0-9-]*$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'deployment_arguments_invalid')
     options[rest[i]] = rest[i + 1]
   }
-  const fields = ['install', 'update'].includes(action) ? ['--root', '--source', '--manifest-sha256'] : action === 'rollback' ? ['--root', '--manifest-sha256'] : ['--root']
-  demand(['install', 'update', 'rollback', 'recover', 'status', 'run'].includes(action) && Object.keys(options).sort().join(',') === fields.sort().join(','), 'deployment_arguments_invalid')
+  const fields = ['install', 'update'].includes(action) ? ['--root', '--source', '--manifest-sha256'] : action === 'rollback' ? ['--root', '--manifest-sha256'] : action === 'prepare-profile' ? ['--root', '--request-id', '--profile', '--configuration-sha256', '--lifecycle-sha256', '--continuation-sha256', '--attempts-sha256'] : ['--root']
+  demand(['install', 'update', 'rollback', 'recover', 'status', 'run', 'prepare-profile'].includes(action) && Object.keys(options).sort().join(',') === fields.sort().join(','), 'deployment_arguments_invalid')
   const root = options['--root'], target = options['--manifest-sha256']
+  if (action === 'prepare-profile') return prepareProfileSwitch({ root, requestId: options['--request-id'], profile: options['--profile'], configurationSha256: options['--configuration-sha256'], lifecycleSha256: options['--lifecycle-sha256'], continuationSha256: options['--continuation-sha256'], attemptsSha256: options['--attempts-sha256'] })
   if (action === 'run') return { hostExitCode: await runSelectedProgram(root) }
   const manager = await programDeployment(root, { prepare: action === 'install' })
   if (action === 'status') return describe(await manager.inventory())
