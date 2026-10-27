@@ -35,3 +35,9 @@ test('publication uses the exact snapshot and reports concurrent change', async 
   } })
   assert.equal(result, 'conflict')
 })
+test('unsupported inheritance policy is reported without treating it as a successful update', async () => {
+  const result = await syncPiCatalogOnce({ providerId:'magpie', read:async () => JSON.stringify(fixture()), discover:async () => [added], compareAndSwap:async () => {
+    throw Object.assign(Error('catalog_acl_unsupported'), {code:'catalog_acl_unsupported'})
+  } })
+  assert.equal(result,'unsupported_acl')
+})

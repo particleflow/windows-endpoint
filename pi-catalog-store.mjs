@@ -19,6 +19,17 @@ function referenceOnly(value, key = '') {
 const hash = raw => createHash('sha256').update(raw).digest('hex')
 const identity = st => [st.dev, st.ino].join(':')
 const recovery = () => Object.assign(Error('catalog_recovery_required'), { code: 'catalog_recovery_required' })
+async function assertNativeAclSupported({ file, signal }) {
+  if (process.platform !== 'win32') throw Error('catalog_windows_required')
+  try {
+    await run(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', fileURLToPath(new URL('./pi-catalog-replace.ps1', import.meta.url)), '-Target', file, '-CheckOnly'],
+      { signal, timeout: 10000, windowsHide: true, maxBuffer: 1024 })
+  } catch (error) {
+    if (error.code === 4) throw Object.assign(Error('catalog_acl_unsupported'), { code: 'catalog_acl_unsupported' })
+    throw error
+  }
+}
 export async function replacePiCatalogFile({ file, temporary, backup, signal }) {
   if (process.platform !== 'win32') throw Error('catalog_windows_required')
   await run(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe'),
@@ -81,6 +92,7 @@ export function createPiCatalogStore(file, { replace = replacePiCatalogFile } = 
         signal?.throwIfAborted()
         const current = await snapshot()
         if (current.raw !== expected || fingerprint(current.st) !== fingerprint(initial.st)) return false
+        if (replace === replacePiCatalogFile) await assertNativeAclSupported({ file, signal })
         const record = { schema: 1, id, expectedHash: hash(expected), nextHash: hash(next), oldIdentity: identity(initial.st) }
         try { handle = await fs.open(marker, 'wx', 0o600) }
         catch (error) { if (error.code === 'EEXIST') throw recovery(); throw error }

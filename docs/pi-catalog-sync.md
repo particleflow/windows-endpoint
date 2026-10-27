@@ -68,6 +68,24 @@ must also contain exactly the staged bytes. Success renames the marker to a
 the staged file if still present, and the displaced original if present. No
 automatic retry, cleanup, restore or rollback can overwrite another user edit.
 
+Local safety revision after CI40575784260: an inherited-to-explicit ACE change
+cannot be accepted as cosmetic, because it may preserve a grant after its parent
+grant is removed. Before creating the pending marker or calling ReplaceFile,
+the native helper now refuses an unprotected DACL or any inherited ACE. It never
+protects/converts the actual user's ACL. `unsupported_acl` stops the lifecycle;
+no marker/backup is published and the target retains its bytes, identity and ACL.
+Only an already protected explicit DACL is eligible, and both the real displaced
+backup and installed owner/group/DACL descriptors must match after replacement.
+An ACL race or postcondition failure retains the pending transaction for owner
+reconciliation, without restoring ACLs onto a subsequently changed path.
+
+This is a conservative product guard, not a complete automatic-sync solution for
+ordinary inherited profiles. Such profiles remain unsupported until a Windows
+implementation is proved to preserve their future inheritance semantics. Do not
+change a real profile's ACL to bypass this guard. New Windows positive/refusal
+fixtures and postconditions require actual Windows validation; Linux regressions
+do not provide it. This local revision has not been pushed or deployed.
+
 This does not exclude arbitrary external editors, and is not strict CAS. An edit
 in the last comparison/replacement window is displaced but retained and detected;
 it may briefly cease to be the active models.json. Conflict stops this lifecycle

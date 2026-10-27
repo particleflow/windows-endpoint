@@ -1,9 +1,9 @@
-param([string]$Target, [ValidateSet('read','restrict-fixture')][string]$Mode = 'read')
+param([string]$Target, [ValidateSet('read','restrict-fixture','inherit-fixture')][string]$Mode = 'read')
 $ErrorActionPreference = 'Stop'
 # Windows PowerShell startup may prepend AllUsers paths even to an explicitly
 # supplied PSModulePath. Pin discovery after startup too, in this child only.
 $env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')
-if ($Mode -eq 'restrict-fixture') {
+if ($Mode -ne 'read') {
   # Only a newly created synthetic test file is eligible. No production helper
   # imports this script, and no user/profile/root ACL is modified.
   $info = Get-Item -LiteralPath $Target
@@ -11,12 +11,17 @@ if ($Mode -eq 'restrict-fixture') {
   if ($info.Name -ne 'models.json' -or $info.Directory.Name -notlike 'pi-catalog-*' -or
       $data.providers.approved.apiKey -cne '$EXISTING_AUTH_REFERENCE' -or
       $data.providers.approved.models[0].id -cne 'old') { throw 'Not a synthetic ACL fixture' }
-  $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-  $acl = [Security.AccessControl.FileSecurity]::new()
-  $acl.SetOwner($sid)
-  $acl.SetAccessRuleProtection($true, $false)
-  $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.AccessControlType]::Allow)
-  $acl.AddAccessRule($rule)
+  if ($Mode -eq 'restrict-fixture') {
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl = [Security.AccessControl.FileSecurity]::new()
+    $acl.SetOwner($sid)
+    $acl.SetAccessRuleProtection($true, $false)
+    $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.AccessControlType]::Allow)
+    $acl.AddAccessRule($rule)
+  } else {
+    $acl = Get-Acl -LiteralPath $Target
+    $acl.SetAccessRuleProtection($false, $true)
+  }
   Set-Acl -LiteralPath $Target -AclObject $acl
 }
 $acl = Get-Acl -LiteralPath $Target

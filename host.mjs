@@ -42,7 +42,7 @@ function validatedStatus(value) {
   if (!['unverified', 'missing', 'loaded', 'invalid', 'changed_restart_required'].includes(value.configuration) || !['unavailable_unqualified', 'unavailable_missing', 'unavailable_invalid', 'synthetic_fixture', 'verified_local'].includes(value.components) || !['unverified', 'authorization_unverified', 'authorization_required', 'online_snapshot', 'offline', 'connecting', 'authenticating', 'stopped', 'needs_attention', 'recovering'].includes(value.connection)) invalid()
   if (!['host_process_only', 'synthetic_components', 'native_components'].includes(value.evidence) || value.desktop !== 'unavailable' || value.agent !== 'unavailable_unqualified' || !['unverified', 'recording', 'capacity_reached'].includes(value.log)) invalid()
   if (Object.hasOwn(value, 'control') && !['unverified', 'stdin_open', 'stdin_closed'].includes(value.control)) invalid()
-  if (Object.hasOwn(value, 'piCatalog') && !['unverified', 'updated', 'unchanged', 'unavailable', 'cancelled', 'conflict'].includes(value.piCatalog)) invalid()
+  if (Object.hasOwn(value, 'piCatalog') && !['unverified', 'updated', 'unchanged', 'unavailable', 'cancelled', 'conflict', 'unsupported_acl'].includes(value.piCatalog)) invalid()
   if (Object.hasOwn(value, 'piCatalogDeferred') && (!Number.isSafeInteger(value.piCatalogDeferred) || value.piCatalogDeferred < 0)) invalid()
   if (value.componentLifecycle !== null) {
     const c = value.componentLifecycle
