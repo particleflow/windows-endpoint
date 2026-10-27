@@ -382,15 +382,17 @@ export class ProgramDeployment extends DeploymentTransactions {
     demand(JSON.stringify(JSON.parse(stateRaw)) === JSON.stringify(state), 'deployment_retained_work_changed')
     const status = JSON.parse(statusRaw)
     const recheckedRunning = recovery.previousPhase === 'running' && recovery.previousAttention === null && status.phase === 'running' && status.runId === recovery.run
-    if (status.schema !== 1 || status.owner !== 'windows-endpoint-host' || (status.phase !== 'stopped' && !recheckedRunning) || status.attention !== null ||
+    const recheckedStoppedObservation = recovery.previousPhase === 'stopped' && recovery.previousAttention === 'herdr_observation_unknown' &&
+      status.phase === 'stopped' && status.attention === recovery.previousAttention && status.runId === recovery.run
+    if (status.schema !== 1 || status.owner !== 'windows-endpoint-host' || (status.phase !== 'stopped' && !recheckedRunning) || status.attention !== null && !recheckedStoppedObservation ||
         !/^[a-f0-9-]{36}$/.test(status.runId) || !Number.isSafeInteger(status.pid) || status.pid < 1 || !Number.isSafeInteger(status.updatedAt)) return 'task_handoff_unverified'
     let backupFile, backupRaw
-    if (recheckedRunning) {
+    if (recheckedRunning || recheckedStoppedObservation) {
       backupFile = path.join(this.lifecycleDirectory, `lifecycle-before-recheck-${recovery.fromState}.json`)
       backupRaw = await boundedRead(backupFile, 262144)
       const original = JSON.parse(backupRaw)
       demand(createHash('sha256').update(backupRaw).digest('hex') === recovery.fromState && original.identity === this.config.deviceId &&
-        original.phase === 'running' && original.attention === null && !original.handoff, 'deployment_retained_recovery_mismatch')
+        original.phase === recovery.previousPhase && original.attention === recovery.previousAttention && !original.handoff, 'deployment_retained_recovery_mismatch')
     }
     const inspected = await this.inspect(this.config, undefined, { inspectHistoryOnly: true })
     if (this.observe === nativeRecoveryEvidence && path.resolve(process.execPath).toLowerCase() !== path.resolve(inspected.config.programs.node).toLowerCase()) return 'task_handoff_unverified'
@@ -442,6 +444,7 @@ export class ProgramDeployment extends DeploymentTransactions {
     demand(verified.manifest.native_runtime_project_root, 'deployment_native_project_root_unsupported')
     const lifecycle = await this.lifecycleStore.load()
     if (lifecycle.infrastructureRecovery?.previousPhase === 'running') demand(verified.manifest.native_running_recovery === true, 'deployment_running_recovery_unsupported')
+    if (lifecycle.infrastructureRecovery?.previousPhase === 'stopped') demand(verified.manifest.native_stopped_observation_recovery === true, 'deployment_stopped_recovery_unsupported')
   }
   async selectionCheck(state, target, mode) {
     // Check the version to be selected, not the preserved previous inventory.

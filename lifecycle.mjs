@@ -86,7 +86,7 @@ export class StateStore {
       const r = data.infrastructureRecovery
       demand(r && Object.keys(r).sort().join(',') === 'attempts,businessReplayed,configuration,fromState,previousAttention,previousPhase,run,schema' &&
         r.schema === 1 && ['attempts','configuration','fromState'].every(k => /^[a-f0-9]{64}$/.test(r[k])) && /^[a-f0-9-]{36}$/.test(r.run) &&
-        (r.previousPhase === 'needs_attention' && r.previousAttention === 'herdr_observation_unknown' || r.previousPhase === 'running' && r.previousAttention === null) &&
+        (['needs_attention', 'stopped'].includes(r.previousPhase) && r.previousAttention === 'herdr_observation_unknown' || r.previousPhase === 'running' && r.previousAttention === null) &&
         r.businessReplayed === false, 'lifecycle_recovery_mismatch')
     }
     demand(data.schema === 1 ? data.handoff === undefined : validHandoffRecord(data.handoff) && data.handoff.payload.native.device_id === this.identity, 'lifecycle_handoff_mismatch')
@@ -103,7 +103,15 @@ export class StateStore {
       await this.write(snapshot)
     })
   }
-  async write(data) {
+  recheckObservation(expected, next) {
+    return this.serialize(async () => {
+      demand(expected.phase === 'needs_attention' && expected.attention === 'herdr_observation_unknown' && !expected.handoff &&
+        JSON.stringify(next) === JSON.stringify({ ...expected, phase: 'running', attention: null }), 'herdr_recheck_not_eligible')
+      demand(JSON.stringify(await this.load()) === JSON.stringify(expected), 'herdr_recheck_state_changed')
+      await this.write(next, expected)
+    })
+  }
+  async write(data, expected = null) {
     // Existing journal and publication mechanism; no second task/request ledger.
     const raw = `${JSON.stringify(data)}\n`
     demand(Buffer.byteLength(raw) <= 262144, 'lifecycle_state_too_large')
@@ -113,6 +121,10 @@ export class StateStore {
     const h = await this.io.open(temporary, 'wx')
     try { await h.writeFile(raw); await h.sync() } finally { await h.close() }
     await this.checkpoint('file_synced')
+    if (expected !== null && JSON.stringify(await this.load()) !== JSON.stringify(expected)) {
+      await this.io.unlink(temporary)
+      throw new LifecycleError('herdr_recheck_state_changed')
+    }
     await this.io.rename(temporary, this.file)
     await this.checkpoint('published')
   }
@@ -542,6 +554,33 @@ export class EndpointLifecycle {
         try { await this.attention(code(error)) } catch { throw error }
       }
       return this.snapshot()
+    })()
+    try { return await this.active } finally { this.active = null }
+  }
+  async recheckHerdr({ validateConfiguration = async () => {} } = {}) {
+    demand(!this.active && !this.starting && !this.stopping && this.release, 'herdr_recheck_busy')
+    this.active = (async () => {
+      const expected = structuredClone(this.state)
+      demand(expected?.phase === 'needs_attention' && expected.attention === 'herdr_observation_unknown' && !expected.handoff && !this.journalError && !this.cleanupError,
+        'herdr_recheck_not_eligible')
+      demand(!this.transfer?.snapshot().attention && this.driver.alive('herdr') && this.driver.alive('connector') && typeof this.driver.ownedGeneration === 'function' && typeof this.driver.ownedHostRequest === 'function', 'herdr_recheck_not_eligible')
+      this.driver.checkPrograms?.()
+      const generation = await this.driver.ownedGeneration()
+      const host = await this.driver.ownedHostStatus()
+      demand(host.running === true && host.version === (this.driver.herdrVersion || '0.9.5') && host.endpoint_compatible === true, 'herdr_observation_unknown')
+      const peer = await this.driver.ownedHostRequest('ping')
+      demand(peer.type === 'pong' && peer.version === (this.driver.herdrVersion || '0.9.5'), 'herdr_ownership_unverified')
+      demand(!connectorAttention(await this.driver.connectorStatus()), 'herdr_recheck_connector_unverified')
+      demand(await this.driver.ownedGeneration() === generation && this.driver.alive('connector') && !this.stopping, 'herdr_recheck_owner_changed')
+      this.driver.checkPrograms?.()
+      await validateConfiguration()
+      demand(!this.stopping, 'herdr_recheck_owner_changed')
+      demand(JSON.stringify(this.state) === JSON.stringify(expected), 'herdr_recheck_state_changed')
+      const next = { ...expected, phase: 'running', attention: null }
+      try { await this.store.recheckObservation(expected, next) }
+      catch (error) { this.journalError = error; throw new LifecycleError(error.code === 'herdr_recheck_state_changed' ? error.code : 'herdr_recheck_persistence_unknown') }
+      this.state = next
+      return this.snapshot() // Normal later tick, not this command, may advance files.
     })()
     try { return await this.active } finally { this.active = null }
   }

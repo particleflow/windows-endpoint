@@ -493,3 +493,40 @@ test('abrupt host death produces stale observation and no automatic restart of u
   assert.equal(next.events.filter(e => e.event === 'component_started' || e.event === 'transfer_action').length, 0)
   await stop(next)
 })
+
+test('foreground recheck-herdr command resumes the same owned synthetic components after an observation latch', async t => {
+  const f = await fixture(t, true), p = launch(t, f, 'observation-recheck')
+  const initial = await syntheticRunning(p)
+  await attention(p, 'herdr_observation_unknown')
+  const original = JSON.stringify({ task: 'original', state: 'unknown' })
+  const history = path.join(f.stateDirectory, 'original-attempt.json')
+  await fs.writeFile(history, original)
+  p.fixture('allow_observation')
+  await p.waitFor(() => p.events.find(e => e.event === 'observation_available'))
+  const before = p.statuses.length
+  p.command('status')
+  await p.waitFor(() => p.statuses.slice(before).some(s => s.attention === 'herdr_observation_unknown'))
+  p.command('recheck-herdr')
+  await p.waitFor(() => p.statuses.some(s => s.runId === initial.runId && s.componentLifecycle?.phase === 'running' && s.attention === null && s.updatedAt > initial.updatedAt))
+  assert.equal(p.events.filter(e => e.event === 'component_started').length, 2)
+  assert.equal(p.events.filter(e => e.event === 'component_stopped').length, 0)
+  assert.equal(await fs.readFile(history, 'utf8'), original)
+  assert.equal((await stop(p)).code, 0)
+})
+
+test('foreground failed recheck leaves the same host and latch available for later explicit retry', async t => {
+  const f = await fixture(t, true), p = launch(t, f, 'observation-recheck')
+  await syntheticRunning(p); await attention(p, 'herdr_observation_unknown')
+  p.command('recheck-herdr')
+  await p.waitFor(() => p.statuses.find(s => s.error === 'herdr_observation_unknown'))
+  // The periodic tick must not turn a rejected read-only recheck into host shutdown.
+  p.command('status')
+  await p.waitFor(() => p.statuses.filter(s => s.phase === 'running' && s.attention === 'herdr_observation_unknown').length >= 2)
+  p.fixture('allow_observation')
+  await p.waitFor(() => p.events.find(e => e.event === 'observation_available'))
+  const before = p.statuses.length
+  p.command('recheck-herdr')
+  await p.waitFor(() => p.statuses.slice(before).find(s => s.componentLifecycle?.phase === 'running' && !s.attention))
+  assert.equal(p.events.filter(e => e.event === 'component_started').length, 2)
+  assert.equal((await stop(p)).code, 0)
+})

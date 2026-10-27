@@ -109,7 +109,8 @@ still has no production admission-barrier implementation.
 
 The [foreground host](docs/foreground-host.md) can run in an existing canonical
 root using `node endpoint.mjs host run --root DIR`. It accepts only local stdin
-status/stop commands, holds a lifetime lease and reports configuration, authorization
+status/stop commands and an explicit owned Herdr observation recheck (see the
+version boundary in that document), holds a lifetime lease and reports configuration, authorization
 and component qualification separately. Direct `host run` uses that supplied
 program; `deploy run` uses the selected portable program. Real components require
 the existing explicit request and local checks;

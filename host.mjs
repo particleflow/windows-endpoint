@@ -236,6 +236,7 @@ export class ForegroundHost {
     // Metadata is not authenticated identity; the official Runtime owns loading.
   }
   async tick() {
+    if (this.rechecking) return
     if (this.active) return this.active
     this.active = (async () => {
       if (this.stopRequested || this.phase !== 'running') return
@@ -259,6 +260,21 @@ export class ForegroundHost {
     if (this.closing) return this.closing
     this.closing = this.stopOwned()
     try { await catalogStop; return await this.closing } finally { this.closing = null }
+  }
+  async recheckHerdr() {
+    if (this.stopRequested || this.phase !== 'running' || this.attention || !this.runtime?.recheckHerdr) throw new HostError('host_recheck_not_eligible')
+    if (this.rechecking) throw new HostError('herdr_recheck_busy')
+    this.rechecking = true
+    const validateConfiguration = async () => {
+      if (this.stopRequested || stamp(await this.configRaw()) !== this.configStamp || stamp(await this.configRaw(this.runtimeFile)) !== this.runtimeStamp) throw new HostError('host_configuration_changed')
+    }
+    try {
+      if (this.active) await this.active
+      await validateConfiguration()
+      await this.runtime.recheckHerdr({ validateConfiguration })
+      if (!this.stopRequested) await this.publish()
+      return this.snapshot()
+    } finally { this.rechecking = false }
   }
   async stopOwned() {
     this.phase = 'stopping'
@@ -338,8 +354,13 @@ export async function runForeground({ root, input = process.stdin, output = proc
     for (const line of lines) {
       let value
       try { value = JSON.parse(line) } catch { void stop('host_control_input_invalid', 'invalid_input'); return }
-      if (!value || Object.keys(value).length !== 1 || !['status', 'stop'].includes(value.action)) { void stop('host_control_input_invalid', 'invalid_input'); return }
+      if (!value || Object.keys(value).length !== 1 || !['status', 'stop', 'recheck-herdr'].includes(value.action)) { void stop('host_control_input_invalid', 'invalid_input'); return }
       if (value.action === 'stop') void stop()
+      else if (value.action === 'recheck-herdr') {
+        if (commandBusy) { emit({ error: 'herdr_recheck_busy', ready: false }); continue }
+        commandBusy = true
+        void host.recheckHerdr().then(emit, error => emit({ error: safeCode(error), ready: false })).finally(() => { commandBusy = false })
+      }
       else if (!commandBusy) { commandBusy = true; emit(host.snapshot()); setImmediate(() => { commandBusy = false }) }
     }
   }

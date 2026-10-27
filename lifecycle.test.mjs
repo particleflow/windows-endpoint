@@ -697,3 +697,108 @@ for (const action of ['lifecycle-summary', 'advance-results']) {
     })
   }
 }
+
+async function latchedHerdrFixture(t) {
+  const actions = []
+  const transfer = new TransferLifecycle({ driver: { invoke: async action => {
+    actions.push(action); return transferResult(action, transferDecision('idle'))
+  } } })
+  const f = await fixture(t, { transfer })
+  await f.lifecycle.start()
+  f.driver.ownedGeneration = async () => '123:456'
+  f.driver.ownedHostRequest = async action => { assert.equal(action, 'ping'); return { type: 'pong', version: '0.9.5' } }
+  f.driver.ownedHostStatus = async () => { throw new LifecycleError('herdr_observation_unknown') }
+  await f.lifecycle.tick()
+  f.driver.ownedHostStatus = async () => f.driver.hostStatus()
+  return { ...f, actions, transfer }
+}
+
+test('explicit Herdr recheck restores only the owned observation latch without replay or component restart', async t => {
+  const f = await latchedHerdrFixture(t), before = structuredClone(f.lifecycle.state), calls = [...f.calls]
+  const history = path.join(f.directory, 'original-unknown.json'), raw = '{"attempt":"original","state":"unknown"}\n'
+  await fs.writeFile(history, raw)
+  await f.lifecycle.tick()
+  assert.equal(f.lifecycle.state.attention, 'herdr_observation_unknown')
+  assert.deepEqual(f.actions, []) // Merely becoming healthy does not clear the latch.
+  await f.lifecycle.recheckHerdr()
+  assert.deepEqual(f.lifecycle.state, { ...before, phase: 'running', attention: null })
+  assert.deepEqual(await f.store.load(), f.lifecycle.state)
+  assert.deepEqual(f.calls, calls); assert.deepEqual(f.actions, [])
+  assert.equal(await fs.readFile(history, 'utf8'), raw)
+  await f.lifecycle.tick()
+  assert.deepEqual(f.actions, ['lifecycle-summary'])
+  assert.deepEqual(f.calls, calls)
+})
+
+for (const scenario of ['owner_changed', 'owner_unreadable', 'foreign_peer', 'wrong_peer_version', 'not_running', 'wrong_version', 'incompatible', 'connector_auth', 'transfer_attention', 'other_attention', 'configuration_changed', 'program_changed', 'handoff']) {
+  test(`Herdr recheck retains evidence and refuses ${scenario}`, async t => {
+    const f = await latchedHerdrFixture(t), calls = [...f.calls]
+    let validateConfiguration = async () => {}
+    if (scenario === 'owner_changed') { let n = 0; f.driver.ownedGeneration = async () => ++n === 1 ? '123:456' : '123:789' }
+    if (scenario === 'owner_unreadable') f.driver.ownedGeneration = async () => { throw new LifecycleError('herdr_ownership_unverified') }
+    if (scenario === 'foreign_peer') f.driver.ownedHostRequest = async () => { throw new LifecycleError('herdr_owner_mismatch') }
+    if (scenario === 'wrong_peer_version') f.driver.ownedHostRequest = async () => ({ type: 'pong', version: '0.9.6' })
+    if (scenario === 'not_running') f.driver.ownedHostStatus = async () => ({ running: false, version: '0.9.5', endpoint_compatible: true })
+    if (scenario === 'wrong_version') f.driver.ownedHostStatus = async () => ({ running: true, version: '0.9.6', endpoint_compatible: true })
+    if (scenario === 'incompatible') f.driver.ownedHostStatus = async () => ({ running: true, version: '0.9.5', endpoint_compatible: null })
+    if (scenario === 'connector_auth') f.driver.status = { state: 'needs_attention', lastError: 'handshake_401' }
+    if (scenario === 'transfer_attention') f.transfer.snapshot = () => ({ attention: 'transfer_permission' })
+    if (scenario === 'other_attention') { await f.lifecycle.attention('herdr_generation_changed') }
+    if (scenario === 'configuration_changed') validateConfiguration = async () => { throw new LifecycleError('host_configuration_changed') }
+    if (scenario === 'program_changed') f.driver.checkPrograms = () => { throw new LifecycleError('installation_changed_restart_required') }
+    if (scenario === 'handoff') f.lifecycle.state.handoff = { state: 'recorded_unverified' }
+    const before = await fs.readFile(f.store.file, 'utf8'), state = structuredClone(f.lifecycle.state)
+    await assert.rejects(f.lifecycle.recheckHerdr({ validateConfiguration }))
+    assert.deepEqual(f.lifecycle.state, state)
+    assert.equal(await fs.readFile(f.store.file, 'utf8'), before)
+    assert.deepEqual(f.calls, calls); assert.deepEqual(f.actions, [])
+    if (scenario === 'handoff') delete f.lifecycle.state.handoff
+  })
+}
+
+test('Herdr recheck rejects journal CAS change at publication and preserves that evidence', async t => {
+  const f = await latchedHerdrFixture(t)
+  const concurrent = { ...f.lifecycle.state, attention: 'herdr_generation_changed' }
+  f.store.checkpoint = async stage => { if (stage === 'file_synced') await fs.writeFile(f.store.file, JSON.stringify(concurrent)) }
+  await assert.rejects(f.lifecycle.recheckHerdr(), { code: 'herdr_recheck_state_changed' })
+  assert.deepEqual(await f.store.load(), concurrent)
+  assert.equal(f.lifecycle.state.attention, 'herdr_observation_unknown')
+  assert.ok(f.lifecycle.journalError); assert.deepEqual(f.actions, [])
+  assert.deepEqual((await fs.readdir(f.directory)).filter(name => name.endsWith('.tmp')), [])
+  f.store.checkpoint = async () => {}
+})
+
+test('Herdr recheck with uncertain publication stays fenced instead of adopting a possible new journal', async t => {
+  const f = await latchedHerdrFixture(t)
+  f.store.checkpoint = async stage => { if (stage === 'published') throw new Error('synthetic fsync outcome unknown') }
+  await assert.rejects(f.lifecycle.recheckHerdr(), { code: 'herdr_recheck_persistence_unknown' })
+  assert.equal(f.lifecycle.state.attention, 'herdr_observation_unknown')
+  await assert.rejects(f.lifecycle.recheckHerdr(), { code: 'herdr_recheck_not_eligible' })
+  await f.lifecycle.tick(); assert.deepEqual(f.actions, [])
+  f.store.checkpoint = async () => {}
+})
+
+test('stop during Herdr recheck cannot resume the consumer or issue replacement components', async t => {
+  const f = await latchedHerdrFixture(t), calls = [...f.calls]
+  let finish, entered
+  const waiting = new Promise(resolve => { entered = resolve })
+  f.driver.ownedHostStatus = () => new Promise(resolve => { finish = () => resolve(f.driver.hostStatus()); entered() })
+  const recheck = f.lifecycle.recheckHerdr(); await waiting
+  const stopped = f.lifecycle.stop()
+  finish()
+  await assert.rejects(recheck, { code: 'herdr_recheck_owner_changed' })
+  await assert.rejects(stopped, { code: 'herdr_recheck_owner_changed' })
+  assert.equal(f.lifecycle.state.phase, 'stopped')
+  assert.equal(f.lifecycle.state.attention, 'herdr_recheck_owner_changed')
+  assert.deepEqual(f.calls, [...calls, 'stop:connector', 'stop:herdr']); assert.deepEqual(f.actions, [])
+})
+
+test('Herdr recheck cannot clear attention when the journal write is denied before publication', async t => {
+  const f = await latchedHerdrFixture(t), before = await fs.readFile(f.store.file, 'utf8')
+  f.store.checkpoint = async stage => { if (stage === 'before_write') throw Object.assign(new Error('synthetic denied write'), { code: 'EACCES' }) }
+  await assert.rejects(f.lifecycle.recheckHerdr(), { code: 'herdr_recheck_persistence_unknown' })
+  assert.equal(await fs.readFile(f.store.file, 'utf8'), before)
+  assert.equal(f.lifecycle.state.attention, 'herdr_observation_unknown')
+  assert.deepEqual(f.actions, [])
+  f.store.checkpoint = async () => {}
+})

@@ -90,6 +90,7 @@ class CandidateTests(unittest.TestCase):
             self.assertTrue(manifest['native_transfer_direct_cli'])
             self.assertTrue(manifest['native_runtime_project_root'])
             self.assertTrue(manifest['native_running_recovery'])
+            self.assertTrue(manifest['native_stopped_observation_recovery'])
             self.assertIn('runtime-connector/dist/cli.mjs', names)
             self.assertEqual(set(names), {f['path'] for f in manifest['files']} | {'candidate.json'})
             for entry in manifest['files']:

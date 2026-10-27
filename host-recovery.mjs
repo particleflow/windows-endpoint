@@ -175,11 +175,13 @@ export async function recoverHost({root,expectedRun,expectedState,expectedConfig
     }
     demand(hash(stateRaw) === expectedState,'host_recovery_state_changed')
     const orphanedRunning = state.phase === 'running' && state.attention === null
-    demand((orphanedRunning || state.phase === 'needs_attention' && state.attention === 'herdr_observation_unknown') && !state.handoff,'host_recovery_state_not_eligible')
+    const stoppedObservation = state.phase === 'stopped' && state.attention === 'herdr_observation_unknown'
+    demand((orphanedRunning || stoppedObservation || state.phase === 'needs_attention' && state.attention === 'herdr_observation_unknown') && !state.handoff,'host_recovery_state_not_eligible')
     const statusRaw = await boundedRead(files.status,32768), status = JSON.parse(statusRaw)
     demand(status.schema === 1 && status.owner === 'windows-endpoint-host' && status.runId === expectedRun && Number.isSafeInteger(status.pid) && status.pid > 0 && status.pid !== process.pid && Number.isSafeInteger(status.updatedAt) && Date.now()-status.updatedAt > 5000,'host_recovery_status_not_eligible')
     // A later rejected launch must not stand in for the original running run.
     if (orphanedRunning) demand(status.phase === 'running' && status.attention === null, 'host_recovery_status_not_eligible')
+    if (stoppedObservation) demand(status.phase === 'stopped' && status.attention === state.attention, 'host_recovery_status_not_eligible')
     const inspected = await inspect(config,undefined,{inspectHistoryOnly:true})
     const effective = inspected.config
     demand(path.resolve(process.execPath).toLowerCase() === path.resolve(effective.programs.node).toLowerCase() || observe !== nativeRecoveryEvidence,'host_recovery_node_mismatch')

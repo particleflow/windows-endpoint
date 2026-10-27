@@ -35,7 +35,28 @@ is one JSON line:
 {"action":"stop"}
 ```
 
-Only these two actions are accepted. Unknown fields/actions or a buffered input
+For a host built with the observation-recheck entry, the same open stdin also
+accepts `{"action":"recheck-herdr"}`. This explicitly rechecks only a latched
+`herdr_observation_unknown`: the host must still own both live components and
+the same Herdr PID/marker generation and verified pipe peer (read-only ping),
+verified programs and unchanged endpoint
+and runtime configuration. The native status must report the expected version,
+`running:true` and `endpoint_compatible:true`; connector authentication and file
+consumer attention must remain clear. The existing journal is compared again
+before publication. Success changes only the observation phase/attention; it
+does not start/stop components, attach an external server, issue a transfer call
+or replay a task. The subsequent ordinary tick may resume the finite consumer.
+An ownership, configuration, journal or persistence uncertainty keeps it fenced.
+A failed read-only recheck can be retried through that still-open stdin after
+its cause is resolved; EOF leaves no stdin retry path.
+
+The installed `57ae131` host accepts only `status` and `stop`. **Do not send
+`recheck-herdr` to that version**: its invalid-input handler requests a stop.
+An external successful status query alone cannot unlock its attention. Updating
+that host requires the existing controlled stop/update flow and its task gates;
+this new command neither retrofits a running old host nor grants stop authority.
+
+Unknown fields/actions or a buffered input
 over 1 KiB cause a controlled stop without echoing input. EOF, SIGINT and SIGTERM
 also request a drain. Windows forced process termination does not promise signal
 handlers or cleanup; the controlled stdin command is the tested graceful path.
@@ -63,7 +84,7 @@ Node exit code; it does not detach a process or install a service. After it retu
 retain `$LASTEXITCODE` in that same session. A temporary caller that closes its
 pipes or discards its process result can still lose its own exit evidence.
 Do not pipe a one-shot input into a host intended to remain running: EOF is a
-graceful stop request. While it runs, stdin accepts only the two JSON actions above.
+graceful stop request. The stdin actions are versioned as described above.
 
 ## One root and explicit unavailable states
 
@@ -284,8 +305,20 @@ continuation, process adoption or business replay follows the recheck.
 
 Success means **infrastructure rechecked, no process started**. Explicit foreground
 start remains separate, through the existing selected program and same HostRoot.
-Deployment update still retains `task_handoff_unverified` for original attempts;
-this acknowledgement does not authorize an active-task upgrade or stop. Business
+When an old host's controlled stop retained `herdr_observation_unknown`, the same
+offline recovery also accepts that exact `stopped` journal and matching stopped
+status/run. It still requires the original configured processes absent, ordinary
+session evidence, immutable attempts and all publication-time comparisons. It
+archives the original stopped/attention bytes without changing the old status or
+unknown tasks. A program update can consume this bounded recovery without first
+restarting the old host. The target must advertise
+`native_stopped_observation_recovery`; incompatible older readers are refused.
+This is not permission to stop a running task or use offline recovery against a
+live Herdr. The installed old recovery command does not gain this behavior; use
+the reviewed new program's entry only after the controlled stop and evidence readback.
+Original attempts still require the existing retained-history checks; mismatches
+retain `task_handoff_unverified`. This acknowledgement does not authorize an
+active-task upgrade or stop. Business
 continuation uses the original NAS operation/attempt and its authenticated resume
 entry, after the original Runtime connection is restored. The CLI never calls it.
 

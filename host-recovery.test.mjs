@@ -343,3 +343,35 @@ if(process.platform === 'win32')test('native orphaned generic script predating t
  }
  await orphan(false);await orphan(true)
 })
+
+async function stoppedObservationFixture(t) {
+ const f=await fixture(t)
+ f.state.phase='stopped';f.raw=JSON.stringify(f.state)
+ await fs.writeFile(f.stateFile,f.raw);f.options.expectedState=hash(f.raw)
+ f.status.phase='stopped';f.status.attention='herdr_observation_unknown'
+ await fs.writeFile(f.statusFile,JSON.stringify(f.status))
+ return f
+}
+test('controlled old-host stop retaining observation attention can use the same absence-proven recovery without replay',async t=>{
+ const f=await stoppedObservationFixture(t),receipt=await fs.readFile(f.receipt),snapshot=await fs.readFile(f.snapshot),status=await fs.readFile(f.statusFile)
+ const result=await recoverHost(f.options,f.deps)
+ assert.equal(result.state,'infrastructure_rechecked');assert.equal(result.started,false);assert.equal(result.businessReplayed,false)
+ const saved=await new StateStore(f.dir,f.config.deviceId).load()
+ assert.equal(saved.infrastructureRecovery.previousPhase,'stopped');assert.equal(saved.infrastructureRecovery.previousAttention,'herdr_observation_unknown')
+ assert.equal(saved.attention,null);assert.equal(saved.phase,'stopped')
+ assert.equal(await fs.readFile(path.join(f.dir,`lifecycle-before-recheck-${f.options.expectedState}.json`),'utf8'),f.raw)
+ assert.deepEqual(await fs.readFile(f.receipt),receipt);assert.deepEqual(await fs.readFile(f.snapshot),snapshot);assert.deepEqual(await fs.readFile(f.statusFile),status)
+ assert.equal((await recoverHost(f.options,f.deps)).state,'already_rechecked')
+})
+for(const kind of ['running_status','different_attention','related_process','unknown_process','changed_state'])test(`stopped observation recovery refuses ${kind}`,async t=>{
+ const f=await stoppedObservationFixture(t)
+ if(kind==='running_status')f.status.phase='running'
+ if(kind==='different_attention')f.status.attention='connector_authentication_required'
+ await fs.writeFile(f.statusFile,JSON.stringify(f.status))
+ if(['related_process','unknown_process'].includes(kind))f.deps.observe=async()=>{throw Object.assign(new Error('native absence unverified'),{code:'host_recovery_process_evidence_unavailable'})}
+ if(kind==='changed_state')f.deps.checkpoint=async stage=>{if(stage==='before_publish')await fs.appendFile(f.stateFile,' ')}
+ const before=await fs.readFile(f.stateFile),receipt=await fs.readFile(f.receipt)
+ await assert.rejects(recoverHost(f.options,f.deps))
+ assert.deepEqual(await fs.readFile(f.stateFile),kind==='changed_state'?Buffer.concat([before,Buffer.from(' ')]):before)
+ assert.deepEqual(await fs.readFile(f.receipt),receipt)
+})
