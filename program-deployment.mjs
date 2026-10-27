@@ -225,6 +225,42 @@ async function optional(file, limit = 65536) {
 // Called by the existing trusted local owner maintenance process. The reader
 // must use that process's authenticated Memoh owner client, never CLI receipts.
 // No bearer token, remote write/retry, enrollment or new listener lives here.
+export function createOwnerAdmissionReader({ sdk, client, botId }) {
+  demand(client && /^[a-f0-9-]{36}$/.test(botId || '') &&
+    ['getUsersMe','getBotsByBotIdWorkspaceTargets','getUsersMeRuntimesByIdAdmission'].every(name => typeof sdk?.[name] === 'function'), 'deployment_profile_switch_owner_client_required')
+  return async ({ ownerId, runtimeId, targetId }) => {
+    const get = async (name, path) => {
+      let result
+      try { result = await sdk[name]({ client, ...(path ? { path } : {}), signal: AbortSignal.timeout(10000), throwOnError: true }) }
+      catch { throw new DeploymentError('deployment_profile_switch_owner_observation_unknown') }
+      demand(result?.response?.status === 200 && !result.error && result.data && typeof result.data === 'object', 'deployment_profile_switch_owner_observation_unknown')
+      return result.data
+    }
+    const user = await get('getUsersMe')
+    demand(user.id === ownerId && user.is_active !== false && user.membership_is_active !== false && user.principal_is_active !== false, 'deployment_profile_switch_owner_binding_changed')
+    const targets = await get('getBotsByBotIdWorkspaceTargets', { bot_id: botId })
+    const matches = Array.isArray(targets.targets) ? targets.targets.filter(target => target.target_id === targetId) : []
+    demand(matches.length === 1 && matches[0].runtime_id === runtimeId && matches[0].provider === 'memoh' && matches[0].kind === 'remote', 'deployment_profile_switch_owner_binding_changed')
+    const admission = await get('getUsersMeRuntimesByIdAdmission', { id: runtimeId })
+    return { ownerId: user.id, runtimeId, targetId, admission }
+  }
+}
+
+// Recovery after an uncertain owner PUT: query only, and adopt CAS facts only
+// when the atomic snapshot names the intended local profile and original pause.
+export async function reconcileProfileSwitchWithOwner(options, { sdk, client, botId, checkpoint } = {}) {
+  const readOwnerState = createOwnerAdmissionReader({ sdk, client, botId })
+  const manager = await programDeployment(options.root)
+  const observed = await readOwnerState(options), g = observed.admission
+  demand(g?.connection_id === options.runtimeId && g.device_id === options.runtimeId && g.instance_id === options.instanceId &&
+    g.request_id === options.pauseRequestId && g.scope === 'owner_connection_instance' && g.paused === true &&
+    g.agent_config_dir === manager.config.piConfigDir && hashValue(g.config_sha256) && hashValue(g.target_fingerprint) &&
+    typeof g.revision === 'string' && /^[1-9][0-9]{0,18}$/.test(g.revision) && typeof options.previousRevision === 'string' &&
+    /^[1-9][0-9]{0,18}$/.test(options.previousRevision) && BigInt(g.revision) === BigInt(options.previousRevision) + 1n,
+  'deployment_profile_switch_owner_binding_changed')
+  return reconcileProfileSwitch({ ...options, revision: g.revision, configSha256: g.config_sha256, targetFingerprint: g.target_fingerprint }, { readOwnerState, checkpoint })
+}
+
 export async function reconcileProfileSwitch({ root, requestId, direction, ownerId, targetId, runtimeId, instanceId, pauseRequestId,
   previousRevision, revision, configSha256, targetFingerprint, localConfigSha256, localLifecycleSha256 }, { readOwnerState, checkpoint = async () => {} } = {}) {
   demand(typeof readOwnerState === 'function', 'deployment_profile_switch_owner_client_required')
@@ -273,11 +309,11 @@ export async function reconcileProfileSwitch({ root, requestId, direction, owner
       let observed
       try { observed = await readOwnerState({ ownerId, runtimeId, targetId }) }
       catch { throw new DeploymentError('deployment_profile_switch_owner_observation_unknown') }
-      const g = observed?.admission, n = observed?.nativeHerdr
+      const g = observed?.admission
       demand(observed?.ownerId === ownerId && observed.runtimeId === runtimeId && observed.targetId === targetId &&
-        n?.connection_id === runtimeId && n.device_id === runtimeId && n.instance_id === instanceId && n.session === manager.config.session && n.config_sha256 === configSha256 && n.target_fingerprint === targetFingerprint &&
         g?.connection_id === runtimeId && g.device_id === runtimeId && g.instance_id === instanceId && g.request_id === pauseRequestId &&
-        g.scope === 'owner_connection_instance' && g.paused === true && g.revision === revision, 'deployment_profile_switch_owner_binding_changed')
+        g.scope === 'owner_connection_instance' && g.paused === true && g.revision === revision &&
+        g.config_sha256 === configSha256 && g.target_fingerprint === targetFingerprint && g.agent_config_dir === manager.config.piConfigDir, 'deployment_profile_switch_owner_binding_changed')
     }
     await checkLocal(); await checkRemote(); await checkLocal()
     if (receiptRaw === null) {

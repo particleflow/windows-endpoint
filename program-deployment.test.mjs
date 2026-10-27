@@ -5,7 +5,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { PassThrough } from 'node:stream'
-import { programDeployment, programDeploymentMain, runSelectedProgram, prepareProfileSwitch, archiveProfileSwitch, commitProfileSwitch, reconcileProfileSwitch } from './program-deployment.mjs'
+import { programDeployment, programDeploymentMain, runSelectedProgram, prepareProfileSwitch, archiveProfileSwitch, commitProfileSwitch, reconcileProfileSwitch, createOwnerAdmissionReader, reconcileProfileSwitchWithOwner } from './program-deployment.mjs'
 import { verifyCandidate } from './candidate.mjs'
 import { digest } from './endpoint.mjs'
 import { StateStore, acquireLeases } from './lifecycle.mjs'
@@ -32,6 +32,22 @@ async function fixture(t, { native = false } = {}) {
 }
 const apply = (f, pkg, mode = 'install') => programDeploymentMain([mode, '--root', f.root, '--source', pkg.directory, '--manifest-sha256', pkg.hash])
 async function preserve(f) { assert.deepEqual(await Promise.all(f.originalFiles.map(p => fs.readFile(p))), f.originals) }
+
+test('owner SDK adapter uses only existing GETs and stops on authentication or target mismatch without retry', async () => {
+  const ownerId = randomUUID(), targetId = randomUUID(), runtimeId = randomUUID(), botId = randomUUID(), client = {}
+  let reads = 0
+  const sdk = { getUsersMe: async () => ({ response: { status: 200 }, data: { id: ownerId } }),
+    getBotsByBotIdWorkspaceTargets: async () => ({ response: { status: 200 }, data: { targets: [{ target_id: targetId, runtime_id: runtimeId, kind: 'remote', provider: 'memoh' }] } }),
+    getUsersMeRuntimesByIdAdmission: async () => { reads++; throw new Error('PRIVATE-TRANSPORT-DETAIL') } }
+  const reader = createOwnerAdmissionReader({ sdk, client, botId })
+  await assert.rejects(reader({ ownerId, targetId, runtimeId }), error => error.code === 'deployment_profile_switch_owner_observation_unknown' && !String(error).includes('PRIVATE'))
+  assert.equal(reads, 1)
+  await assert.rejects(reader({ ownerId, targetId: randomUUID(), runtimeId }), { code: 'deployment_profile_switch_owner_binding_changed' })
+  assert.equal(reads, 1)
+  sdk.getUsersMe = async () => ({ response: { status: 403 }, error: { detail: 'PRIVATE' } })
+  await assert.rejects(reader({ ownerId, targetId, runtimeId }), { code: 'deployment_profile_switch_owner_observation_unknown' })
+  assert.equal(reads, 1)
+})
 
 test('offline local profile commit resumes after both publications without replaying original unknown', async t => {
   const f = await fixture(t, { native: true }), store = f.manager.lifecycleStore
@@ -77,11 +93,12 @@ test('offline local profile commit resumes after both publications without repla
     localConfigSha256: sha(configRaw), localLifecycleSha256: sha(stateRaw) }
   const remote = { ownerId, targetId, runtimeId: f.config.runtimeId,
     nativeHerdr: { connection_id: f.config.runtimeId, device_id: f.config.runtimeId, instance_id: f.config.instanceId, session: f.config.session, config_sha256: binding.configSha256, target_fingerprint: binding.targetFingerprint },
-    admission: { connection_id: f.config.runtimeId, device_id: f.config.runtimeId, instance_id: f.config.instanceId, request_id: pauseRequestId, scope: 'owner_connection_instance', paused: true, revision: binding.revision } }
+    admission: { connection_id: f.config.runtimeId, device_id: f.config.runtimeId, instance_id: f.config.instanceId, request_id: pauseRequestId, scope: 'owner_connection_instance', paused: true, revision: binding.revision,
+      config_sha256: binding.configSha256, target_fingerprint: binding.targetFingerprint, agent_config_dir: f.config.piConfigDir } }
   await assert.rejects(reconcileProfileSwitch(binding), { code: 'deployment_profile_switch_owner_client_required' })
   await assert.rejects(reconcileProfileSwitch(binding, { readOwnerState: async () => { throw new Error('lost read response') } }), { code: 'deployment_profile_switch_owner_observation_unknown' })
   for (const bad of [{ ...remote, targetId: randomUUID() }, { ...remote, admission: { ...remote.admission, revision: binding.previousRevision } },
-    { ...remote, nativeHerdr: { ...remote.nativeHerdr, config_sha256: 'c'.repeat(64) } }, { ...remote, admission: { ...remote.admission, paused: false } }]) {
+    { ...remote, admission: { ...remote.admission, config_sha256: 'c'.repeat(64) } }, { ...remote, admission: { ...remote.admission, agent_config_dir: profile } }, { ...remote, admission: { ...remote.admission, paused: false } }]) {
     await assert.rejects(reconcileProfileSwitch(binding, { readOwnerState: async () => bad }), { code: 'deployment_profile_switch_owner_binding_changed' })
   }
   await assert.rejects(reconcileProfileSwitch(binding, { readOwnerState: async () => remote, checkpoint: async p => { if (p === 'owner_receipt_published') throw new Error('synthetic interruption') } }))
@@ -89,7 +106,15 @@ test('offline local profile commit resumes after both publications without repla
   await assert.rejects(reconcileProfileSwitch(binding, { readOwnerState: async () => remote, checkpoint: async p => { if (p === 'owner_receipt_published') await fs.appendFile(attempt, '!') } }), { code: 'deployment_profile_switch_evidence_changed' })
   await fs.stat(path.join(f.manager.lifecycleDirectory, 'profile-switch-pending.json'))
   await fs.writeFile(attempt, 'SYNTHETIC UNKNOWN RECEIPT')
-  assert.equal((await reconcileProfileSwitch(binding, { readOwnerState: async () => remote })).revision, binding.revision)
+  const client = {}, botId = randomUUID(), calls = []
+  const result = data => ({ response: { status: 200 }, data })
+  const sdk = {
+    getUsersMe: async args => { assert.equal(args.client, client); calls.push('owner'); return result({ id: ownerId, is_active: true }) },
+    getBotsByBotIdWorkspaceTargets: async args => { assert.equal(args.path.bot_id, botId); calls.push('target'); return result({ targets: [{ target_id: targetId, runtime_id: f.config.runtimeId, provider: 'memoh', kind: 'remote' }] }) },
+    getUsersMeRuntimesByIdAdmission: async args => { assert.equal(args.path.id, f.config.runtimeId); assert.ok(args.signal); calls.push('admission'); return result(remote.admission) },
+  }
+  assert.equal((await reconcileProfileSwitchWithOwner(binding, { sdk, client, botId })).revision, binding.revision)
+  assert.ok(calls.filter(x => x === 'admission').length >= 3)
   assert.equal((await reconcileProfileSwitch(binding, { readOwnerState: async () => remote })).state, 'profile_reconciled')
   await assert.rejects(fs.stat(path.join(f.manager.lifecycleDirectory, 'profile-switch-pending.json')), { code: 'ENOENT' })
   assert.equal(await fs.readFile(attempt, 'utf8'), 'SYNTHETIC UNKNOWN RECEIPT')

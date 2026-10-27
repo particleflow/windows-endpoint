@@ -13,13 +13,18 @@ new registration digest and target fingerprint, and the exact new local config
 and lifecycle digests. Only revision +1 is accepted. Server registration digests
 are distinct from the endpoint's raw configuration-file digest.
 
-The injected `readOwnerState({ownerId,runtimeId,targetId})` must perform the
-existing authenticated owner reads and verify the owned Bot mount still selects
-that runtime. Its projection is `{ownerId,runtimeId,targetId,nativeHerdr,admission}`;
-`nativeHerdr` is the existing Runtime DTO's `native_herdr` value and `admission`
-is GET `/users/me/runtimes/{id}/admission`. Do not project caller-authored JSON
-as an authenticated read. Production client wiring belongs to the owner
-orchestrator, and is not included in this module. Tests inject synthetic reads.
+`createOwnerAdmissionReader({sdk,client,botId})` bridges the existing generated
+SDK methods `getUsersMe`, `getBotsByBotIdWorkspaceTargets`, and
+`getUsersMeRuntimesByIdAdmission` using the caller's existing authenticated
+client. It verifies the account and exact native mount, then uses the admission
+GET's atomic profile/gate snapshot. No Runtime credential-management list is
+read. Authentication or transport failure stops the read without retry; no PUT
+is issued. `reconcileProfileSwitchWithOwner(options,{sdk,client,botId})` is the
+owner maintenance composition entry and supplies these reads to the transaction.
+The SDK/client are reused in memory, not bundled, configured, minted or persisted
+by this endpoint. A raw CLI receipt is not accepted. The local owner must invoke
+this entry from its already authenticated maintenance process; it is not an
+unauthenticated command or defense against arbitrary same-owner code.
 
 The function rechecks both local original archives and the current local
 generation, then checks the authenticated read twice before retiring the pending
@@ -30,14 +35,16 @@ stale revisions, wrong target/profile digests or unpaused admission leave startu
 blocked. Rollback requires its own successful server cutover's fresh revision;
 returning A->B->A never revives the first revision.
 
-Memoh source `3424c1be9d19d98b68ec545e2f693ac0d525f592` returns Admission
-from PUT `/users/me/runtimes/{id}/native-herdr/profile-cutover`. GET exposes the
-registration digest/fingerprint, but not `agent.config_dir`. A lost PUT response
-must first be queried, never blindly repeated. If the owner has no independently
-known expected new digest, those GETs alone cannot distinguish its proposed
-profile from a concurrent winning proposal. Keep the transaction blocked until
-the existing owner API supplies sufficient profile/intent attribution; do not
-derive success solely from an increased revision.
+Memoh source `fa8348ee8da587238fc4d692e0916769b5561609` exposes
+`agent_config_dir`, `config_sha256`, `target_fingerprint` and gate `revision`
+from one admission GET SQL snapshot. After an uncertain PUT, the owner wrapper
+queries this snapshot, requires the intended current local profile, original
+identity/pause and exactly the next revision, and only then adopts its CAS facts.
+A different winner or stale revision stays blocked; the wrapper never resends
+PUT or resumes admission. The normal reconciliation re-reads the snapshot before
+retiring pending. These checks observe a snapshot, not a lock on future NAS
+writes; the owner must keep admission paused and use the returned revision for
+any subsequent cutover or resume.
 
 This source provides the local reconciliation state machine and synthetic
 positive/negative tests, not deployed Memoh/Windows or authenticated end-to-end
