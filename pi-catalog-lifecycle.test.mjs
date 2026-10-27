@@ -5,6 +5,8 @@ import path from 'node:path'
 import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { fileURLToPath } from 'node:url'
+import { assertCatalogAclPreserved } from './test-support/pi-catalog-acl.mjs'
 import { createPiCatalogStore, replacePiCatalogFile } from './pi-catalog-store.mjs'
 import { PiCatalogLifecycle } from './pi-catalog-lifecycle.mjs'
 import { ForegroundHost } from './host.mjs'
@@ -97,12 +99,34 @@ test('stop completes even when discovery ignores abort, and late data cannot wri
   complete([addition]); await new Promise(resolve => setImmediate(resolve))
   assert.equal(await fs.readFile(f.file, 'utf8'), f.raw)
 })
+async function fixtureAcl(file, mode = 'read') {
+  const result = await promisify(execFile)(path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+    ['-NoLogo','-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./test-support/pi-catalog-acl.ps1', import.meta.url)),file,mode],
+    { windowsHide: true, timeout: 10000, maxBuffer: 16384 })
+  return JSON.parse(result.stdout.replace(/^\uFEFF/, ''))
+}
 test('Windows ReplaceFile preserves the destination ACL', { skip: process.platform !== 'win32' }, async t => {
-  const f = await disk(t), store = createPiCatalogStore(f.file), run = promisify(execFile)
-  const acl = async () => (await run(path.join(process.env.SystemRoot, 'System32/icacls.exe'), [f.file], { windowsHide: true })).stdout
-  const before = await store.read(), permissions = await acl()
-  assert.equal(await store.compareAndSwap(before, before + '\n'), true)
-  assert.equal(await acl(), permissions)
+  for (const mode of ['read', 'restrict-fixture']) {
+    const f = await disk(t), store = createPiCatalogStore(f.file)
+    const permissions = await fixtureAcl(f.file, mode), before = await store.read()
+    if (mode === 'restrict-fixture') { assert.equal(permissions.protected, true); assert.equal(permissions.aces.length, 1) }
+    assert.equal(await store.compareAndSwap(before, before + '\n'), true)
+    assertCatalogAclPreserved(permissions, await fixtureAcl(f.file))
+    const backup = (await fs.readdir(f.config.piConfigDir)).find(name => name.endsWith('.previous'))
+    assertCatalogAclPreserved(permissions, await fixtureAcl(path.join(f.config.piConfigDir, backup)))
+  }
+})
+test('ACL comparison allows only appended identical inherited ACEs, never expanded rights', () => {
+  const allow = { inherited: false, binary: 'synthetic-allow-user-full' }, deny = { inherited: false, binary: 'synthetic-deny-other-write' }
+  const before = {owner:'owner',group:'group',protected:false,nullDacl:false,aces:[deny,allow]}
+  assertCatalogAclPreserved(before, {...before,aces:[deny,allow,{...allow,inherited:true}]})
+  for (const change of [
+    {owner:'other'}, {group:'other'}, {protected:true}, {nullDacl:true},
+    {aces:[allow,deny]}, {aces:[deny]},
+    {aces:[deny,allow,{inherited:true,binary:'new-subject-or-mask'}]},
+    {aces:[deny,allow,allow]}, {aces:[{...allow,inherited:true},deny,allow]},
+  ]) assert.throws(() => assertCatalogAclPreserved(before, {...before,...change}))
+  assert.throws(() => assertCatalogAclPreserved({...before,protected:true},before))
 })
 test('edit in the final replacement window is preserved, detected and stops future sync', async t => {
   const f = await disk(t); let calls = 0
