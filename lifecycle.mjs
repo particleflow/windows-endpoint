@@ -555,9 +555,19 @@ export class EndpointLifecycle {
   async tick() {
     if (this.active) return this.active
     this.active = (async () => {
-      if (this.stopping || this.state?.phase !== 'running') return this.snapshot()
+      const snapshotsOnly = this.state?.phase === 'needs_attention' && this.state.attention === 'herdr_observation_unknown' &&
+        this.release && this.transfer && !this.state.handoff && !this.journalError && !this.cleanupError
+      if (this.stopping || this.state?.phase !== 'running' && !snapshotsOnly) return this.snapshot()
       try {
         this.driver.checkPrograms?.()
+        if (snapshotsOnly) {
+          // The reviewed CLI alone selects already-admitted private bytes.
+          // No source collection, normal advance, control recovery or task start.
+          demand(JSON.stringify(await this.store.load()) === JSON.stringify(this.state), 'transfer_snapshot_host_state_changed')
+          const transfer = await this.transfer.tick({ snapshotsOnly: true })
+          if (transfer.attention) await this.attention(transfer.attention)
+          return this.snapshot()
+        }
         const previousConnection = this.observedConnection
         const s = await this.driver.connectorStatus()
         this.observedConnection = s?.state === 'online' ? 'online_snapshot' : s?.state || 'unverified'
