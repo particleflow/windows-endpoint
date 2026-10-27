@@ -5,7 +5,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { PassThrough } from 'node:stream'
-import { programDeployment, programDeploymentMain, runSelectedProgram, prepareProfileSwitch, archiveProfileSwitch, commitProfileSwitch } from './program-deployment.mjs'
+import { programDeployment, programDeploymentMain, runSelectedProgram, prepareProfileSwitch, archiveProfileSwitch, commitProfileSwitch, reconcileProfileSwitch } from './program-deployment.mjs'
 import { verifyCandidate } from './candidate.mjs'
 import { digest } from './endpoint.mjs'
 import { StateStore, acquireLeases } from './lifecycle.mjs'
@@ -71,6 +71,29 @@ test('offline local profile commit resumes after both publications without repla
   assert.deepEqual(await fs.readFile(store.file), stateRaw)
   assert.equal(await fs.readFile(attempt, 'utf8'), 'SYNTHETIC UNKNOWN RECEIPT')
   await assert.rejects(runSelectedProgram(f.root), { code: 'deployment_profile_switch_recovery_required' })
+  const ownerId = randomUUID(), targetId = randomUUID(), pauseRequestId = randomUUID()
+  const binding = { root: f.root, requestId: options.requestId, direction: 'rollback', ownerId, targetId, runtimeId: f.config.runtimeId, instanceId: f.config.instanceId,
+    pauseRequestId, previousRevision: '9007199254740993', revision: '9007199254740994', configSha256: 'a'.repeat(64), targetFingerprint: 'b'.repeat(64),
+    localConfigSha256: sha(configRaw), localLifecycleSha256: sha(stateRaw) }
+  const remote = { ownerId, targetId, runtimeId: f.config.runtimeId,
+    nativeHerdr: { connection_id: f.config.runtimeId, device_id: f.config.runtimeId, instance_id: f.config.instanceId, session: f.config.session, config_sha256: binding.configSha256, target_fingerprint: binding.targetFingerprint },
+    admission: { connection_id: f.config.runtimeId, device_id: f.config.runtimeId, instance_id: f.config.instanceId, request_id: pauseRequestId, scope: 'owner_connection_instance', paused: true, revision: binding.revision } }
+  await assert.rejects(reconcileProfileSwitch(binding), { code: 'deployment_profile_switch_owner_client_required' })
+  await assert.rejects(reconcileProfileSwitch(binding, { readOwnerState: async () => { throw new Error('lost read response') } }), { code: 'deployment_profile_switch_owner_observation_unknown' })
+  for (const bad of [{ ...remote, targetId: randomUUID() }, { ...remote, admission: { ...remote.admission, revision: binding.previousRevision } },
+    { ...remote, nativeHerdr: { ...remote.nativeHerdr, config_sha256: 'c'.repeat(64) } }, { ...remote, admission: { ...remote.admission, paused: false } }]) {
+    await assert.rejects(reconcileProfileSwitch(binding, { readOwnerState: async () => bad }), { code: 'deployment_profile_switch_owner_binding_changed' })
+  }
+  await assert.rejects(reconcileProfileSwitch(binding, { readOwnerState: async () => remote, checkpoint: async p => { if (p === 'owner_receipt_published') throw new Error('synthetic interruption') } }))
+  await fs.stat(path.join(f.manager.lifecycleDirectory, 'profile-switch-pending.json'))
+  await assert.rejects(reconcileProfileSwitch(binding, { readOwnerState: async () => remote, checkpoint: async p => { if (p === 'owner_receipt_published') await fs.appendFile(attempt, '!') } }), { code: 'deployment_profile_switch_evidence_changed' })
+  await fs.stat(path.join(f.manager.lifecycleDirectory, 'profile-switch-pending.json'))
+  await fs.writeFile(attempt, 'SYNTHETIC UNKNOWN RECEIPT')
+  assert.equal((await reconcileProfileSwitch(binding, { readOwnerState: async () => remote })).revision, binding.revision)
+  assert.equal((await reconcileProfileSwitch(binding, { readOwnerState: async () => remote })).state, 'profile_reconciled')
+  await assert.rejects(fs.stat(path.join(f.manager.lifecycleDirectory, 'profile-switch-pending.json')), { code: 'ENOENT' })
+  assert.equal(await fs.readFile(attempt, 'utf8'), 'SYNTHETIC UNKNOWN RECEIPT')
+  assert.deepEqual(await fs.readFile(path.join(history, `${options.requestId}.lifecycle.json`)), stateRaw)
 })
 
 test('profile preparation fixes original hashes, is reentrant, and blocks host startup without changing unknown history', async t => {

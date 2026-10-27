@@ -221,6 +221,85 @@ export async function commitProfileSwitch({ root, requestId, rollback = false },
 async function optional(file, limit = 65536) {
   try { return await boundedRead(file, limit) } catch (error) { if (error.code === 'ENOENT') return null; throw error }
 }
+
+// Called by the existing trusted local owner maintenance process. The reader
+// must use that process's authenticated Memoh owner client, never CLI receipts.
+// No bearer token, remote write/retry, enrollment or new listener lives here.
+export async function reconcileProfileSwitch({ root, requestId, direction, ownerId, targetId, runtimeId, instanceId, pauseRequestId,
+  previousRevision, revision, configSha256, targetFingerprint, localConfigSha256, localLifecycleSha256 }, { readOwnerState, checkpoint = async () => {} } = {}) {
+  demand(typeof readOwnerState === 'function', 'deployment_profile_switch_owner_client_required')
+  const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value) && value !== '00000000-0000-0000-0000-000000000000'
+  const decimal = value => typeof value === 'string' && /^[1-9][0-9]{0,18}$/.test(value) && BigInt(value) <= 9223372036854775807n
+  demand([requestId,ownerId,targetId,runtimeId,pauseRequestId].every(uuid) && ['commit','rollback'].includes(direction) &&
+    typeof instanceId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(instanceId) && [configSha256,targetFingerprint,localConfigSha256,localLifecycleSha256].every(hashValue) &&
+    decimal(previousRevision) && decimal(revision) && BigInt(revision) === BigInt(previousRevision) + 1n, 'deployment_profile_switch_reconciliation_invalid')
+  const manager = await programDeployment(root)
+  demand(isNativeRuntimeConfig(manager.config) && runtimeId === manager.config.runtimeId && instanceId === manager.config.instanceId, 'deployment_profile_switch_reconciliation_invalid')
+  return manager.locked(async () => {
+    const pending = path.join(manager.lifecycleDirectory, 'profile-switch-pending.json')
+    const history = path.join(manager.lifecycleDirectory, 'profile-switch-history')
+    const completed = path.join(history, `${requestId}.completed-pending.json`)
+    const pendingRaw = await optional(pending, 16384), completedRaw = await optional(completed, 16384)
+    demand(pendingRaw !== null || completedRaw !== null, 'deployment_profile_switch_checkpoint_required')
+    demand(completedRaw === null || pendingRaw === null, 'deployment_profile_switch_pending_conflict')
+    const markerRaw = pendingRaw ?? completedRaw, marker = JSON.parse(markerRaw)
+    demand(marker.schema === 1 && marker.state === 'prepared' && marker.requestId === requestId && marker.authority === 'preparation_only' &&
+      marker.started === false && marker.businessReplayed === false &&
+      [marker.configurationSha256,marker.lifecycleSha256,marker.continuationSha256,marker.attemptsSha256].every(hashValue), 'deployment_profile_switch_journal_invalid')
+    const oldConfigRaw = await boundedRead(path.join(history, `${requestId}.configuration.json`), 262144)
+    const oldStateRaw = await boundedRead(path.join(history, `${requestId}.lifecycle.json`), 262144)
+    demand(sha256(oldConfigRaw) === marker.configurationSha256 && sha256(oldStateRaw) === marker.lifecycleSha256, 'deployment_profile_switch_archive_conflict')
+    const oldConfig = validateConfig(JSON.parse(oldConfigRaw))
+    const expected = { ...oldConfig, piConfigDir: direction === 'commit' ? marker.profile : oldConfig.piConfigDir }
+    demand(JSON.stringify(manager.config) === JSON.stringify(expected), 'deployment_profile_switch_evidence_changed')
+    const receipt = { schema: 1, requestId, direction, ownerId, targetId, runtimeId, instanceId, pauseRequestId, previousRevision, revision,
+      configSha256, targetFingerprint, localConfigSha256, localLifecycleSha256, pendingSha256: sha256(markerRaw), businessReplayed: false }
+    const receiptFile = path.join(history, `${requestId}.owner-reconciliation.json`), desired = JSON.stringify(receipt) + '\n'
+    const receiptRaw = await optional(receiptFile, 16384)
+    demand(receiptRaw === null || receiptRaw === desired, 'deployment_profile_switch_pending_conflict')
+    const checkLocal = async () => {
+      await manager.unchanged()
+      const raw = await boundedRead(manager.lifecycleStore.file, 262144), state = await manager.lifecycleStore.load()
+      demand(state.phase === 'stopped' && state.attention === null && !state.handoff && sha256(manager.configRaw) === localConfigSha256 &&
+        sha256(raw) === localLifecycleSha256 && await attemptEvidence(oldConfig) === marker.attemptsSha256, 'deployment_profile_switch_evidence_changed')
+      await verifySessionContinuation(manager.config, state.sessionContinuation)
+      demand(await boundedRead(path.join(history, `${requestId}.configuration.json`), 262144) === oldConfigRaw &&
+        await boundedRead(path.join(history, `${requestId}.lifecycle.json`), 262144) === oldStateRaw &&
+        await optional(pendingRaw === null ? completed : pending, 16384) === markerRaw, 'deployment_profile_switch_evidence_changed')
+    }
+    const checkRemote = async () => {
+      // This projection is produced by authenticated owner GETs (owned runtime,
+      // its target mount and admission). No PUT is dispatched on any outcome.
+      let observed
+      try { observed = await readOwnerState({ ownerId, runtimeId, targetId }) }
+      catch { throw new DeploymentError('deployment_profile_switch_owner_observation_unknown') }
+      const g = observed?.admission, n = observed?.nativeHerdr
+      demand(observed?.ownerId === ownerId && observed.runtimeId === runtimeId && observed.targetId === targetId &&
+        n?.connection_id === runtimeId && n.device_id === runtimeId && n.instance_id === instanceId && n.session === manager.config.session && n.config_sha256 === configSha256 && n.target_fingerprint === targetFingerprint &&
+        g?.connection_id === runtimeId && g.device_id === runtimeId && g.instance_id === instanceId && g.request_id === pauseRequestId &&
+        g.scope === 'owner_connection_instance' && g.paused === true && g.revision === revision, 'deployment_profile_switch_owner_binding_changed')
+    }
+    await checkLocal(); await checkRemote(); await checkLocal()
+    if (receiptRaw === null) {
+      const temporary = path.join(history, `.owner-reconciliation-${randomUUID()}.tmp`)
+      const handle = await fs.open(temporary, 'wx')
+      try { await handle.writeFile(desired); await handle.sync() } finally { await handle.close() }
+      await checkpoint('owner_receipt_synced')
+      await checkLocal(); await checkRemote()
+      demand(await optional(receiptFile, 16384) === null, 'deployment_profile_switch_pending_conflict')
+      await fs.rename(temporary, receiptFile)
+    }
+    await checkpoint('owner_receipt_published')
+    await checkLocal(); await checkRemote(); await checkLocal()
+    demand(await boundedRead(receiptFile, 16384) === desired, 'deployment_profile_switch_pending_conflict')
+    if (pendingRaw !== null) {
+      demand(await optional(completed, 16384) === null, 'deployment_profile_switch_pending_conflict')
+      await fs.rename(pending, completed)
+    }
+    await checkpoint('profile_reconciled')
+    return { state: 'profile_reconciled', requestId, admission: 'still_paused', revision, started: false, businessReplayed: false }
+  })
+}
 async function exists(file) {
   try { await fs.lstat(file); return true } catch (error) { if (error.code === 'ENOENT') return false; throw error }
 }
