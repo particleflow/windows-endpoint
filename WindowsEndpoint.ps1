@@ -12,7 +12,8 @@ param(
     [switch]$ReviewCandidate,
     [string]$ExpectedRun,
     [string]$ExpectedStateSha256,
-    [string]$ExpectedConfigurationSha256
+    [string]$ExpectedConfigurationSha256,
+    [ValidatePattern('^[A-Za-z0-9_.-]{1,100}$')][string]$PiCatalogProvider
 )
 $ErrorActionPreference = 'Stop'
 function Require-RegularPath([string]$Path) {
@@ -106,7 +107,10 @@ try {
         }
         'Dependencies' { $arguments = @('installation','dependencies','--from',$References) }
         'MigrationPlan' { $arguments = @('installation','migration-plan','--from',$References,'--root',$ProductRoot) }
-        'Run' { $arguments = @('deploy','run','--root',$ProductRoot) }
+        'Run' {
+            $arguments = @('deploy','run','--root',$ProductRoot)
+            if ($PiCatalogProvider) { $arguments += @('--pi-catalog-provider',$PiCatalogProvider) }
+        }
         'Status' { $arguments = @('host','status','--root',$ProductRoot) }
         'Doctor' { $arguments = @('doctor','--config',(Join-Path $ProductRoot 'config/endpoint.json')) }
         'Update' {

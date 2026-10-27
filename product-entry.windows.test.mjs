@@ -15,7 +15,7 @@ import { digest } from './endpoint.mjs'
 
 assert.equal(process.platform,'win32','this differential entry test requires actual Windows')
 const powershell=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe')
-async function fixture(t,unicodeNode=false){
+async function fixture(t,unicodeNode=false,{selectedHost=null}={}){
   const f=await nativeInstalledFixture(t),root=path.join(f.base,'persistent product')
   f.config.programs.node=await fs.realpath(process.execPath)
   if(unicodeNode){
@@ -24,6 +24,13 @@ async function fixture(t,unicodeNode=false){
     f.config.programs.node=copy
   }
   const source=await programPackage(path.join(f.base,'disposable extraction'),'product-entry',{native:true})
+  if(selectedHost!==null){
+    const entry=path.join(source.directory,'host.mjs');await fs.writeFile(entry,selectedHost)
+    const member=source.manifest.files.find(file=>file.path==='host.mjs')
+    member.size=Buffer.byteLength(selectedHost);member.sha256=await digest(entry)
+    await fs.writeFile(path.join(source.directory,'candidate.json'),JSON.stringify(source.manifest))
+    source.hash=await digest(path.join(source.directory,'candidate.json'))
+  }
   const from=path.join(f.base,'references.json');await fs.writeFile(from,JSON.stringify(f.config))
   const result=await installProduct({from,root,source:source.directory,manifestSha256:source.hash,review:true,transfer:'disabled'},
     {setup:options=>setupEndpoint(options,{doctor:async()=>({checks:[]})}),
@@ -36,6 +43,32 @@ async function fixture(t,unicodeNode=false){
   return {...f,root,entry:result.entry}
 }
 const args=f=>['-NoProfile','-NonInteractive','-File',f.entry]
+test('stable PowerShell Run forwards PiCatalogProvider and preserves old selected-host compatibility',async t=>{
+  const wrapper=version=>`import fs from 'node:fs/promises';import path from 'node:path';
+${version===null?'':`export const piCatalogBindingVersion=${version};`}
+export async function runForeground({root,piCatalogBinding}){
+ const config=JSON.parse(await fs.readFile(path.join(root,'config/endpoint.json'),'utf8'));
+ const binding=typeof piCatalogBinding==='function'?piCatalogBinding(config):piCatalogBinding;
+ process.stdout.write(JSON.stringify({provider:binding?.providerId??null,profile:config.piConfigDir})+'\\n');
+ return 0;
+}\n`
+  for(const version of [1,null]){
+    const f=await fixture(t,false,{selectedHost:wrapper(version)})
+    const config=path.join(f.root,'config/endpoint.json'),selection=path.join(f.root,'control/deployment.json')
+    const before=await Promise.all([config,selection,f.config.connector.enrollmentFile].map(file=>fs.readFile(file)))
+    const run=extra=>promisify(execFile)(powershell,[...args(f),'-Action','Run',...extra],{timeout:20000,maxBuffer:16384})
+    const plain=JSON.parse((await run([])).stdout)
+    assert.deepEqual(plain,{provider:null,profile:f.config.piConfigDir})
+    if(version===1){
+      const enabled=JSON.parse((await run(['-PiCatalogProvider','existing-magpie'])).stdout)
+      assert.deepEqual(enabled,{provider:'existing-magpie',profile:f.config.piConfigDir})
+    }else{
+      await assert.rejects(run(['-PiCatalogProvider','existing-magpie']),error=>error.code===2&&error.stderr.includes('deployment_pi_catalog_unsupported'))
+    }
+    assert.deepEqual(await Promise.all([config,selection,f.config.connector.enrollmentFile].map(file=>fs.readFile(file))),before)
+    assert.equal(await fs.readFile(f.config.connector.enrollmentFile,'utf8'),'SYNTHETIC UNREAD ENROLLMENT')
+  }
+})
 test('actual installer process refuses unqualified default and reports unverified dependencies without installing them',async t=>{
   const f=await nativeInstalledFixture(t),root=path.join(f.base,'actual installer product')
   f.config.programs.node=await fs.realpath(process.execPath)

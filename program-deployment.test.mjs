@@ -5,12 +5,12 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { PassThrough } from 'node:stream'
-import { programDeployment, programDeploymentMain, runSelectedProgram } from './program-deployment.mjs'
+import { programDeployment, programDeploymentMain, runSelectedProgram, prepareProfileSwitch, archiveProfileSwitch, commitProfileSwitch, reconcileProfileSwitch, createOwnerAdmissionReader, reconcileProfileSwitchWithOwner } from './program-deployment.mjs'
 import { verifyCandidate, programProfileHash } from './candidate.mjs'
 import { digest } from './endpoint.mjs'
 import { StateStore, acquireLeases } from './lifecycle.mjs'
 import { captureSessionContinuation } from './session-continuation.mjs'
-import { ForegroundHost } from './host.mjs'
+import { ForegroundHost, runForeground } from './host.mjs'
 import { nativeInstalledFixture } from './test-support/installed-fixture.mjs'
 import { attemptEvidence, recoveryConfigurationHash } from './host-recovery.mjs'
 import { programPackage } from './test-support/program-package.mjs'
@@ -31,6 +31,176 @@ async function fixture(t, { runtimeRequest = false } = {}) {
 }
 const apply = (f, pkg, mode = 'install') => programDeploymentMain([mode, '--root', f.root, '--source', pkg.directory, '--manifest-sha256', pkg.hash])
 async function preserve(f) { assert.deepEqual(await Promise.all(f.originalFiles.map(p => fs.readFile(p))), f.originals) }
+
+test('selected deploy run forwards catalog binding using current profile and keeps pending-profile startup fenced', async t => {
+  const f = await fixture(t, { runtimeRequest: true })
+  const profile = path.join(f.base, 'current user Pi profile'); await fs.mkdir(profile)
+  await fs.writeFile(path.join(f.root, 'config/endpoint.json'), JSON.stringify({ ...f.config, piConfigDir: profile }))
+  // A selected-package boundary fixture only; no component, credential or model
+  // is loaded. Actual foreground catalog lifecycle has its own host fixture.
+  const wrapper = `import fs from 'node:fs/promises'; import path from 'node:path';
+export const piCatalogBindingVersion = 1;
+export async function runForeground({ root, piCatalogBinding }) {
+  const config = JSON.parse(await fs.readFile(path.join(root, 'config/endpoint.json'), 'utf8'));
+  const binding = typeof piCatalogBinding === 'function' ? piCatalogBinding(config) : piCatalogBinding;
+  return binding?.providerId === 'existing-magpie' ? 0 : 3;
+}\n`
+  const entry = path.join(f.a.directory, 'host.mjs'); await fs.writeFile(entry, wrapper)
+  const proof = f.a.manifest.files.find(file => file.path === 'host.mjs'); proof.size = Buffer.byteLength(wrapper); proof.sha256 = await digest(entry)
+  await fs.writeFile(path.join(f.a.directory, 'candidate.json'), JSON.stringify(f.a.manifest)); f.a.hash = await digest(path.join(f.a.directory, 'candidate.json'))
+  await apply(f, f.a)
+  let seen = null
+  assert.equal(await runSelectedProgram(f.root, { piCatalogBinding: config => { seen = config.piConfigDir; return { providerId: 'existing-magpie' } } }), 0)
+  assert.equal(seen, profile)
+  assert.equal((await programDeploymentMain(['run', '--root', f.root, '--pi-catalog-provider', 'existing-magpie'])).hostExitCode, 0)
+  await assert.rejects(programDeploymentMain(['run', '--root', f.root, '--pi-catalog-provider', 'invalid provider']), { code: 'deployment_arguments_invalid' })
+  const oldWrapper = wrapper.replace('piCatalogBindingVersion = 1', 'piCatalogBindingVersion = 0')
+  const oldEntry = path.join(f.b.directory, 'host.mjs'); await fs.writeFile(oldEntry, oldWrapper)
+  const oldProof = f.b.manifest.files.find(file => file.path === 'host.mjs'); oldProof.size = Buffer.byteLength(oldWrapper); oldProof.sha256 = await digest(oldEntry)
+  await fs.writeFile(path.join(f.b.directory, 'candidate.json'), JSON.stringify(f.b.manifest)); f.b.hash = await digest(path.join(f.b.directory, 'candidate.json'))
+  await apply(f, f.b, 'update')
+  await assert.rejects(runSelectedProgram(f.root, { piCatalogBinding: () => assert.fail('unsupported host must not call binding') }), { code: 'deployment_pi_catalog_unsupported' })
+  await fs.writeFile(path.join(f.manager.lifecycleDirectory, 'profile-switch-pending.json'), '{}')
+  await assert.rejects(runSelectedProgram(f.root, { piCatalogBinding: () => assert.fail('pending transaction must fence discovery') }), { code: 'deployment_profile_switch_recovery_required' })
+})
+
+test('owner SDK adapter uses only existing GETs and stops on authentication or target mismatch without retry', async () => {
+  const ownerId = randomUUID(), targetId = randomUUID(), runtimeId = randomUUID(), botId = randomUUID(), client = {}
+  let reads = 0
+  const sdk = { getUsersMe: async () => ({ response: { status: 200 }, data: { id: ownerId } }),
+    getBotsByBotIdWorkspaceTargets: async () => ({ response: { status: 200 }, data: { targets: [{ target_id: targetId, runtime_id: runtimeId, kind: 'remote', provider: 'memoh' }] } }),
+    getUsersMeRuntimesByIdAdmission: async () => { reads++; throw new Error('PRIVATE-TRANSPORT-DETAIL') } }
+  const reader = createOwnerAdmissionReader({ sdk, client, botId })
+  await assert.rejects(reader({ ownerId, targetId, runtimeId }), error => error.code === 'deployment_profile_switch_owner_observation_unknown' && !String(error).includes('PRIVATE'))
+  assert.equal(reads, 1)
+  await assert.rejects(reader({ ownerId, targetId: randomUUID(), runtimeId }), { code: 'deployment_profile_switch_owner_binding_changed' })
+  assert.equal(reads, 1)
+  sdk.getUsersMe = async () => ({ response: { status: 403 }, error: { detail: 'PRIVATE' } })
+  await assert.rejects(reader({ ownerId, targetId, runtimeId }), { code: 'deployment_profile_switch_owner_observation_unknown' })
+  assert.equal(reads, 1)
+})
+
+test('offline local profile commit resumes after both publications without replaying original unknown', async t => {
+  const f = await fixture(t, { runtimeRequest: true }), store = f.manager.lifecycleStore
+  await apply(f, f.a)
+  const attempt = path.join(f.config.sourceRoot, '.memoh-computer/attempts/original/receipt.json')
+  await fs.mkdir(path.dirname(attempt), { recursive: true }); await fs.writeFile(attempt, 'SYNTHETIC UNKNOWN RECEIPT')
+  const continuation = await captureSessionContinuation(f.config)
+  await store.save({ ...(await store.load()), sessionContinuation: continuation })
+  const configRaw = await fs.readFile(f.manager.configFile), stateRaw = await fs.readFile(store.file)
+  const profile = path.join(f.base, 'new Pi profile'); await fs.mkdir(profile)
+  const sha = value => createHash('sha256').update(value).digest('hex')
+  const options = { root: f.root, requestId: randomUUID(), profile, configurationSha256: sha(configRaw), lifecycleSha256: sha(stateRaw),
+    continuationSha256: sha(JSON.stringify(continuation)), attemptsSha256: await attemptEvidence(f.config) }
+  await fs.writeFile(path.join(f.manager.lifecycleDirectory, 'host-status.json'), JSON.stringify({ schema: 1, owner: 'windows-endpoint-host', phase: 'stopped', attention: null, pid: 4242, runId: randomUUID(), updatedAt: Date.now() }))
+  await prepareProfileSwitch(options); await archiveProfileSwitch(options)
+  const inspect = async config => ({ config, assertUnchanged() {} })
+  const observe = async () => ({ ownerVerified: true, oldHostAbsent: true, referencedProcessesAbsent: true, herdrAbsent: true })
+  await assert.rejects(commitProfileSwitch(options, { inspect, observe: async () => ({ ownerVerified: true, oldHostAbsent: true, referencedProcessesAbsent: true, herdrAbsent: false }) }), { code: 'deployment_profile_switch_host_unverified' })
+  await assert.rejects(commitProfileSwitch(options, { inspect, observe, checkpoint: async p => { if (p === 'configuration_file_synced') await fs.appendFile(f.manager.configFile, ' ') } }), { code: 'deployment_profile_switch_evidence_changed' })
+  assert.deepEqual(await fs.readFile(store.file), stateRaw)
+  await fs.writeFile(f.manager.configFile, configRaw)
+  await assert.rejects(commitProfileSwitch(options, { inspect, observe, checkpoint: async p => { if (p === 'configuration_published') throw new Error('synthetic crash') } }))
+  assert.equal(JSON.parse(await fs.readFile(f.manager.configFile)).piConfigDir, profile)
+  assert.deepEqual(await fs.readFile(store.file), stateRaw)
+  await assert.rejects(commitProfileSwitch(options, { inspect, observe, checkpoint: async p => { if (p === 'lifecycle_published') throw new Error('synthetic crash') } }))
+  assert.equal((await commitProfileSwitch(options, { inspect, observe })).state, 'local_profile_prepared')
+  assert.equal((await commitProfileSwitch(options, { inspect, observe })).state, 'local_profile_prepared')
+  const history = path.join(f.manager.lifecycleDirectory, 'profile-switch-history')
+  assert.deepEqual(await fs.readFile(path.join(history, `${options.requestId}.configuration.json`)), configRaw)
+  assert.deepEqual(await fs.readFile(path.join(history, `${options.requestId}.lifecycle.json`)), stateRaw)
+  assert.equal(await fs.readFile(attempt, 'utf8'), 'SYNTHETIC UNKNOWN RECEIPT')
+  assert.notEqual(JSON.parse(await fs.readFile(store.file)).sessionContinuation.binding, continuation.binding)
+  await assert.rejects(runSelectedProgram(f.root), { code: 'deployment_profile_switch_recovery_required' })
+  await assert.rejects(commitProfileSwitch({ ...options, rollback: true }, { inspect, observe, checkpoint: async p => { if (p === 'lifecycle_published') throw new Error('synthetic rollback interruption') } }))
+  assert.equal((await commitProfileSwitch({ ...options, rollback: true }, { inspect, observe })).state, 'local_profile_rolled_back')
+  assert.deepEqual(await fs.readFile(f.manager.configFile), configRaw)
+  assert.deepEqual(await fs.readFile(store.file), stateRaw)
+  assert.equal(await fs.readFile(attempt, 'utf8'), 'SYNTHETIC UNKNOWN RECEIPT')
+  await assert.rejects(runSelectedProgram(f.root), { code: 'deployment_profile_switch_recovery_required' })
+  const ownerId = randomUUID(), targetId = randomUUID(), pauseRequestId = randomUUID()
+  const binding = { root: f.root, requestId: options.requestId, direction: 'rollback', ownerId, targetId, runtimeId: f.config.runtimeId, instanceId: f.config.instanceId,
+    pauseRequestId, previousRevision: '9007199254740993', revision: '9007199254740994', configSha256: 'a'.repeat(64), targetFingerprint: 'b'.repeat(64),
+    localConfigSha256: sha(configRaw), localLifecycleSha256: sha(stateRaw) }
+  const remote = { ownerId, targetId, runtimeId: f.config.runtimeId,
+    nativeHerdr: { connection_id: f.config.runtimeId, device_id: f.config.runtimeId, instance_id: f.config.instanceId, session: f.config.session, config_sha256: binding.configSha256, target_fingerprint: binding.targetFingerprint },
+    admission: { connection_id: f.config.runtimeId, device_id: f.config.runtimeId, instance_id: f.config.instanceId, request_id: pauseRequestId, scope: 'owner_connection_instance', paused: true, revision: binding.revision,
+      config_sha256: binding.configSha256, target_fingerprint: binding.targetFingerprint, agent_config_dir: f.config.piConfigDir } }
+  await assert.rejects(reconcileProfileSwitch(binding), { code: 'deployment_profile_switch_owner_client_required' })
+  await assert.rejects(reconcileProfileSwitch(binding, { readOwnerState: async () => { throw new Error('lost read response') } }), { code: 'deployment_profile_switch_owner_observation_unknown' })
+  for (const bad of [{ ...remote, targetId: randomUUID() }, { ...remote, admission: { ...remote.admission, revision: binding.previousRevision } },
+    { ...remote, admission: { ...remote.admission, config_sha256: 'c'.repeat(64) } }, { ...remote, admission: { ...remote.admission, agent_config_dir: profile } }, { ...remote, admission: { ...remote.admission, paused: false } }]) {
+    await assert.rejects(reconcileProfileSwitch(binding, { readOwnerState: async () => bad }), { code: 'deployment_profile_switch_owner_binding_changed' })
+  }
+  await assert.rejects(reconcileProfileSwitch(binding, { readOwnerState: async () => remote, checkpoint: async p => { if (p === 'owner_receipt_published') throw new Error('synthetic interruption') } }))
+  await fs.stat(path.join(f.manager.lifecycleDirectory, 'profile-switch-pending.json'))
+  await assert.rejects(reconcileProfileSwitch(binding, { readOwnerState: async () => remote, checkpoint: async p => { if (p === 'owner_receipt_published') await fs.appendFile(attempt, '!') } }), { code: 'deployment_profile_switch_evidence_changed' })
+  await fs.stat(path.join(f.manager.lifecycleDirectory, 'profile-switch-pending.json'))
+  await fs.writeFile(attempt, 'SYNTHETIC UNKNOWN RECEIPT')
+  const client = {}, botId = randomUUID(), calls = []
+  const result = data => ({ response: { status: 200 }, data })
+  const sdk = {
+    getUsersMe: async args => { assert.equal(args.client, client); calls.push('owner'); return result({ id: ownerId, is_active: true }) },
+    getBotsByBotIdWorkspaceTargets: async args => { assert.equal(args.path.bot_id, botId); calls.push('target'); return result({ targets: [{ target_id: targetId, runtime_id: f.config.runtimeId, provider: 'memoh', kind: 'remote' }] }) },
+    getUsersMeRuntimesByIdAdmission: async args => { assert.equal(args.path.id, f.config.runtimeId); assert.ok(args.signal); calls.push('admission'); return result(remote.admission) },
+  }
+  assert.equal((await reconcileProfileSwitchWithOwner(binding, { sdk, client, botId })).revision, binding.revision)
+  assert.ok(calls.filter(x => x === 'admission').length >= 3)
+  assert.equal((await reconcileProfileSwitch(binding, { readOwnerState: async () => remote })).state, 'profile_reconciled')
+  await assert.rejects(fs.stat(path.join(f.manager.lifecycleDirectory, 'profile-switch-pending.json')), { code: 'ENOENT' })
+  assert.equal(await fs.readFile(attempt, 'utf8'), 'SYNTHETIC UNKNOWN RECEIPT')
+  assert.deepEqual(await fs.readFile(path.join(history, `${options.requestId}.lifecycle.json`)), stateRaw)
+})
+
+test('profile preparation fixes original hashes, is reentrant, and blocks host startup without changing unknown history', async t => {
+  const f = await fixture(t, { runtimeRequest: true }), store = f.manager.lifecycleStore
+  await apply(f, f.a)
+  const attempt = path.join(f.config.sourceRoot, '.memoh-computer/attempts/original/receipt.json')
+  await fs.mkdir(path.dirname(attempt), { recursive: true }); await fs.writeFile(attempt, 'SYNTHETIC UNKNOWN RECEIPT')
+  const continuation = await captureSessionContinuation(f.config)
+  await store.save({ ...(await store.load()), sessionContinuation: continuation })
+  const configRaw = await fs.readFile(f.manager.configFile), lifecycleRaw = await fs.readFile(store.file)
+  const profile = path.join(f.base, 'existing Pi profile'); await fs.mkdir(profile)
+  const sha = value => createHash('sha256').update(value).digest('hex')
+  const options = { root: f.root, requestId: randomUUID(), profile, configurationSha256: sha(configRaw), lifecycleSha256: sha(lifecycleRaw),
+    continuationSha256: sha(JSON.stringify(continuation)), attemptsSha256: await attemptEvidence(f.config) }
+  const pending = path.join(f.manager.lifecycleDirectory, 'profile-switch-pending.json')
+  const release = await acquireLeases([`host:${f.root}`], f.manager.lifecycleDirectory)
+  try { const result = await prepareProfileSwitch(options); assert.equal(result.state, 'deferred'); assert.equal(result.reason, 'endpoint_owned') } finally { await release() }
+  await assert.rejects(prepareProfileSwitch(options, { checkpoint: async phase => { if (phase === 'before_prepare') await fs.appendFile(attempt, '!') } }), { code: 'deployment_profile_switch_evidence_changed' })
+  await assert.rejects(fs.stat(pending), { code: 'ENOENT' })
+  await fs.writeFile(attempt, 'SYNTHETIC UNKNOWN RECEIPT')
+  await assert.rejects(prepareProfileSwitch(options, { checkpoint: async phase => { if (phase === 'prepared') throw new Error('simulated interruption') } }))
+  assert.equal((await prepareProfileSwitch(options)).state, 'already_prepared')
+  await assert.rejects(prepareProfileSwitch({ ...options, requestId: randomUUID() }), { code: 'deployment_profile_switch_pending_conflict' })
+  const marker = await fs.readFile(pending)
+  await assert.rejects(archiveProfileSwitch(options, { checkpoint: async phase => { if (phase === 'linked_configuration') throw new Error('synthetic link interruption') } }))
+  await assert.rejects(archiveProfileSwitch(options, { checkpoint: async phase => { if (phase === 'archived_lifecycle') throw new Error('synthetic interruption') } }))
+  assert.equal((await archiveProfileSwitch(options)).state, 'old_files_archived')
+  const archive = path.join(f.manager.lifecycleDirectory, 'profile-switch-history')
+  assert.deepEqual(await fs.readFile(path.join(archive, `${options.requestId}.configuration.json`)), configRaw)
+  assert.deepEqual(await fs.readFile(path.join(archive, `${options.requestId}.lifecycle.json`)), lifecycleRaw)
+  assert.deepEqual(await fs.readFile(pending), marker)
+  const archivedConfig = path.join(archive, `${options.requestId}.configuration.json`)
+  await fs.writeFile(archivedConfig, 'SYNTHETIC FOREIGN CHANGE')
+  await assert.rejects(archiveProfileSwitch(options), { code: 'deployment_profile_switch_archive_conflict' })
+  assert.equal(await fs.readFile(archivedConfig, 'utf8'), 'SYNTHETIC FOREIGN CHANGE')
+  let started = false
+  const host = new ForegroundHost({ root: f.root, createTestRuntime: async () => { started = true; throw new Error('must not start') } })
+  await assert.rejects(host.start(), { code: 'host_profile_switch_recovery_required' })
+  await assert.rejects(runSelectedProgram(f.root), { code: 'deployment_profile_switch_recovery_required' })
+  const input = new PassThrough(), output = new PassThrough(); let observed = ''
+  output.on('data', chunk => { observed += chunk })
+  assert.equal(await runForeground({ root: f.root, input, output }), 2)
+  assert.match(observed, /host_profile_switch_recovery_required/)
+  input.destroy(); output.destroy()
+  assert.equal(started, false)
+  assert.deepEqual(await fs.readFile(f.manager.configFile), configRaw)
+  assert.deepEqual(await fs.readFile(store.file), lifecycleRaw)
+  assert.equal(await fs.readFile(attempt, 'utf8'), 'SYNTHETIC UNKNOWN RECEIPT')
+  await fs.appendFile(attempt, '!')
+  await assert.rejects(prepareProfileSwitch(options), { code: 'deployment_profile_switch_evidence_changed' })
+})
 
 test('portable program installs, updates, rolls back and runs the selected real foreground entry without copying official components', async t => {
   const f = await fixture(t)

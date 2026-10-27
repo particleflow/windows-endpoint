@@ -134,8 +134,15 @@ export function validateConfig(config) {
     if (native) requireThat(config.deviceId === config.runtimeId, 'native_runtime_identity_mismatch')
     requireThat(path.basename(config.herdrConfigRoot) === 'herdr' && path.basename(config.herdrStateRoot) === 'herdr', 'herdr_root_name_required')
     const programs = programPaths(config)
-    const programRoots = [path.dirname(programs.node), ...(programs.herdr ? [path.dirname(programs.herdr)] : []), config.programs.piPackage, config.programs.piBin, config.programs.gitRoot, connectorPackageRoot(config)]
-    for (const root of roots.map(k => config[k])) for (const location of programRoots) requireThat(!overlaps(root, location), 'data_program_overlap')
+    const programEntries = [ ['node', path.dirname(programs.node)], ...(programs.herdr ? [['herdr', path.dirname(programs.herdr)]] : []), ['piPackage', config.programs.piPackage], ['piBin', config.programs.piBin], ['gitRoot', config.programs.gitRoot], ['connector', connectorPackageRoot(config)] ]
+    const programRoots = programEntries.map(([, location]) => location)
+    for (const key of roots) for (const [role, location] of programEntries) {
+      const relative = path.relative(config.piConfigDir, location)
+      const existingPiWithinProfile = native && key === 'piConfigDir' &&
+        ['piPackage', 'piBin'].includes(role) && relative !== '' &&
+        !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`)
+      requireThat(existingPiWithinProfile || !overlaps(config[key], location), 'data_program_overlap')
+    }
     if (native) {
       for (const location of [...roots.map(k => config[k]), ...programRoots]) requireThat(!overlaps(config.connector.enrollmentFile, location), 'connector_enrollment_overlap')
     }
@@ -435,7 +442,7 @@ export async function main(args) {
     requireThat(/^--[a-z][a-z0-9-]*$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'invalid_arguments')
     options[rest[i]] = rest[i + 1]
   }
-  if (command === 'help' || !command) return { commands: ['installation install|dependencies|migration-plan (see WindowsEndpoint.ps1)', 'setup --from FILE --root DIR --source DIR --manifest-sha256 SHA256 --transfer disabled|existing-queue [--browse-source-root native]', 'configure --from FILE --root DIR [--browse-source-root native]', 'directory-pick [--config FILE]', 'configure --from FILE --config FILE', 'doctor --config FILE', 'layout --config FILE --root DIR', 'plan --config FILE', 'host run --root DIR', 'host status --root DIR', 'host recover --root DIR --expected-run UUID --expected-state-sha256 SHA256 --expected-configuration-sha256 SHA256', 'host handoff-status --root DIR --request-id UUID', 'deploy install|update --root DIR --source DIR --manifest-sha256 SHA256', 'deploy rollback --root DIR --manifest-sha256 SHA256', 'deploy run|recover|status --root DIR'], status: 'portable program deployment and foreground review available; production release and active-task handoff remain unqualified' }
+  if (command === 'help' || !command) return { commands: ['installation install|dependencies|migration-plan (see WindowsEndpoint.ps1)', 'setup --from FILE --root DIR --source DIR --manifest-sha256 SHA256 --transfer disabled|existing-queue [--browse-source-root native]', 'configure --from FILE --root DIR [--browse-source-root native]', 'directory-pick [--config FILE]', 'configure --from FILE --config FILE', 'doctor --config FILE', 'layout --config FILE --root DIR', 'plan --config FILE', 'host run --root DIR', 'host status --root DIR', 'host recover --root DIR --expected-run UUID --expected-state-sha256 SHA256 --expected-configuration-sha256 SHA256', 'host handoff-status --root DIR --request-id UUID', 'deploy install|update --root DIR --source DIR --manifest-sha256 SHA256', 'deploy rollback --root DIR --manifest-sha256 SHA256', 'deploy run|recover|status --root DIR', 'deploy prepare-profile --root DIR --request-id UUID --profile DIR --configuration-sha256 SHA256 --lifecycle-sha256 SHA256 --continuation-sha256 SHA256 --attempts-sha256 SHA256', 'deploy archive-profile --root DIR --request-id UUID', 'deploy commit-profile|rollback-profile --root DIR --request-id UUID'], status: 'portable program deployment and foreground review available; production release and active-task handoff remain unqualified' }
   if (['start', 'activate', 'update', 'rollback', 'uninstall'].includes(command)) throw new EndpointError('qualification_required_no_runtime_or_data_changed')
   if (command === 'layout') {
     keys(options, ['--config', '--root'])

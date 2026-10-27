@@ -161,6 +161,22 @@ test('unknown host observation stops recovery without guessing from unavailable'
   assert.equal(calls.filter(c => c.startsWith('start:')).length, 2)
 })
 
+test('elevated-server permission refusal remains explicit and never retries or starts another server', async t => {
+  const f = await fixture(t)
+  const refusal = new LifecycleError('herdr_observation_permission_denied')
+  f.driver.hostStatus = () => { throw refusal }
+  await assert.rejects(f.lifecycle.start(), { code: refusal.code })
+  assert.equal(f.calls.filter(c => c.startsWith('start:')).length, 0)
+  assert.equal((await f.store.load()).attention, refusal.code)
+  const running = await fixture(t)
+  await running.lifecycle.start()
+  running.driver.ownedHostStatus = async () => { throw refusal }
+  await running.lifecycle.tick(); await running.lifecycle.tick()
+  assert.equal(running.lifecycle.state.attention, refusal.code)
+  assert.equal(running.calls.filter(c => c === 'start:herdr').length, 1)
+  assert.equal(running.lifecycle.state.restarts.length, 0)
+})
+
 for (const reason of ['herdr_observation_unknown', 'herdr_owner_exited']) {
   test(`confirmed owned exit racing ${reason} recovers once through the existing budget`, async t => {
     const { lifecycle, driver, alive, calls, store } = await fixture(t)
@@ -279,8 +295,21 @@ test('native runtime status probe lets pending process events run before reporti
   let eventLoopTurn = false
   const pending = new Promise(resolve => setImmediate(() => { eventLoopTurn = true; resolve() }))
   await assert.rejects(driver.observeHostStatus(), { code: 'herdr_observation_unknown' })
+  const diagnostic = driver.diagnostics().find(record => record.component === 'herdr_observation')
+  assert.equal(diagnostic.outcome, 'nonzero_exit')
+  assert.equal(Number.isInteger(diagnostic.exitCode), true)
+  assert.equal(diagnostic.stderrClass, 'arguments_rejected')
+  assert.ok(diagnostic.stderrBytes > 0)
   assert.equal(eventLoopTurn, true, 'status observation must not starve owned-child exit delivery')
   await pending
+  driver.recordStatusFailure('nonzero_exit', { code: 1, stderr: 'Access is denied PRIVATE-PATH-AND-SECRET', stdout: 'PRIVATE-STDOUT' })
+  const redacted = driver.diagnostics().find(record => record.component === 'herdr_observation')
+  assert.equal(redacted.stderrClass, 'permission_denied')
+  assert.equal(JSON.stringify(redacted).includes('PRIVATE'), false)
+  const refused = driver.statusFailure('nonzero_exit', { code: 1, stderr: 'For an elevated server, use an administrator terminal. PRIVATE-CONFIG' })
+  assert.equal(refused.code, 'herdr_observation_permission_denied')
+  assert.equal(driver.statusObservation.stderrClass, 'permission_denied')
+  assert.equal(JSON.stringify(driver.statusObservation).includes('PRIVATE'), false)
 })
 
 async function nativeConnectorFixture(t) {
@@ -594,6 +623,19 @@ test('shared transfer state gets one endpoint lease even across devices and sess
 const transferDecision = (state, error_class = 'none') => ({ schema: 'memoh.delivery.lifecycle.v1', state, next_due_at: null, error_class })
 const transferResult = (action, value, status = 0) => ({ status, stdout: JSON.stringify(action === 'advance-results' ?
   { ...value, delivery_id: 'original-delivery', phase: 'uploading', offset: 3, admitted: true, associated: false, feedback_status: 'recorded' } : value) })
+
+test('Herdr observation failure currently fences the finite consumer even with a due producer decision', async t => {
+  const actions = []
+  const transfer = new TransferLifecycle({ driver: { invoke: async action => { actions.push(action); return transferResult(action, transferDecision('due')) } } })
+  const f = await fixture(t, { transfer })
+  await f.lifecycle.start()
+  f.driver.ownedHostStatus = async () => { throw new LifecycleError('herdr_observation_unknown') }
+  await f.lifecycle.tick(); await f.lifecycle.tick()
+  assert.equal(f.lifecycle.state.attention, 'herdr_observation_unknown')
+  assert.deepEqual(actions, [])
+  assert.equal(transfer.snapshot().attention, null)
+  assert.equal(f.calls.filter(c => c === 'start:herdr').length, 1)
+})
 
 for (const action of ['lifecycle-summary', 'advance-results']) {
   for (const failure of [
