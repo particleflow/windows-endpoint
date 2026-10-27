@@ -22,6 +22,8 @@ test('native Pi profile may contain its existing official Pi installation withou
   assert.equal(managedEnvironment(config).PI_CODING_AGENT_DIR, profile)
   assert.throws(() => validateConfig({ ...config, piConfigDir: programs.piPackage }), { code: 'data_program_overlap' })
   assert.throws(() => validateConfig({ ...config, programs: { ...programs, node: path.join(profile, 'other/node.exe') } }), { code: 'data_program_overlap' })
+  assert.throws(() => validateConfig({ ...config, programs: { ...programs, node: path.join(programs.piBin, 'node.exe') } }), { code: 'data_program_overlap' })
+  assert.throws(() => validateConfig({ ...config, programs: { ...programs, gitRoot: programs.piBin } }), { code: 'data_program_overlap' })
   assert.throws(() => validateConfig({ ...config, sourceRoot: profile }), { code: 'data_program_overlap' })
 })
 

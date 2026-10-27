@@ -130,11 +130,12 @@ export function validateConfig(config) {
     if (native) requireThat(config.deviceId === config.runtimeId, 'native_runtime_identity_mismatch')
     requireThat(path.basename(config.herdrConfigRoot) === 'herdr' && path.basename(config.herdrStateRoot) === 'herdr', 'herdr_root_name_required')
     const programs = programPaths(config)
-    const programRoots = [path.dirname(programs.node), ...(programs.herdr ? [path.dirname(programs.herdr)] : []), config.programs.piPackage, config.programs.piBin, config.programs.gitRoot, connectorPackageRoot(config)]
-    for (const key of roots) for (const location of programRoots) {
+    const programEntries = [ ['node', path.dirname(programs.node)], ...(programs.herdr ? [['herdr', path.dirname(programs.herdr)]] : []), ['piPackage', config.programs.piPackage], ['piBin', config.programs.piBin], ['gitRoot', config.programs.gitRoot], ['connector', connectorPackageRoot(config)] ]
+    const programRoots = programEntries.map(([, location]) => location)
+    for (const key of roots) for (const [role, location] of programEntries) {
       const relative = path.relative(config.piConfigDir, location)
       const existingPiWithinProfile = native && key === 'piConfigDir' &&
-        [config.programs.piPackage, config.programs.piBin].includes(location) && relative !== '' &&
+        ['piPackage', 'piBin'].includes(role) && relative !== '' &&
         !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`)
       requireThat(existingPiWithinProfile || !overlaps(config[key], location), 'data_program_overlap')
     }
