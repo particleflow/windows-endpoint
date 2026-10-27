@@ -194,7 +194,19 @@ export class NativeDriver {
     const records = [...this.children].map(([component, c]) => ({ ...project(component, c), previousExit: project(component, this.previousChildren.get(component)) }))
     const native = this.nativeConnector?.diagnostics()
     if (native) records.push(native)
+    if (this.statusObservation) records.push(this.statusObservation)
     return records
+  }
+  recordStatusFailure(outcome, result = {}) {
+    const stderr = String(result.stderr || '').slice(0, 4096)
+    const stderrClass = /permission denied|access (?:is )?denied|os error 5\b/i.test(stderr) ? 'permission_denied' :
+      /unexpected argument|unrecognized (?:option|argument)|unknown (?:option|argument)|bad option|invalid session/i.test(stderr) ? 'arguments_rejected' :
+      /connection refused|pipe.*(?:not found|busy)|server_not_running/i.test(stderr) ? 'endpoint_unavailable' : stderr ? 'unclassified' : 'absent'
+    this.statusObservation = { component: 'herdr_observation', outcome,
+      exitCode: Number.isInteger(result.code) ? result.code : null,
+      errorCode: ['ENOENT','EACCES','EPERM','ETIMEDOUT','ERR_CHILD_PROCESS_STDIO_MAXBUFFER'].includes(result.code) ? result.code : null,
+      signal: typeof result.signal === 'string' && /^SIG[A-Z]+$/.test(result.signal) ? result.signal : null,
+      stdoutBytes: Math.min(16385, Buffer.byteLength(String(result.stdout || ''))), stderrBytes: Math.min(16385, Buffer.byteLength(String(result.stderr || ''))), stderrClass }
   }
   command(file, args, timeout = 10000) {
     this.checkPrograms?.()
@@ -216,14 +228,19 @@ export class NativeDriver {
     // exit while the status CLI is running. spawnSync in this path held that
     // evidence back and converted a concurrent known crash into permanent
     // herdr_observation_unknown attention before recovery could run.
-    let value
+    let value, result
     try {
-      const result = await promisify(execFile)(this.herdr, ['--session', this.config.session, 'status', 'server', '--json'], {
+      result = await promisify(execFile)(this.herdr, ['--session', this.config.session, 'status', 'server', '--json'], {
         env: this.env, cwd: this.config.sourceRoot, timeout: 3000, maxBuffer: 16384, windowsHide: true, shell: false,
       })
-      value = JSON.parse(result.stdout)
-    } catch { throw new LifecycleError('herdr_observation_unknown') }
-    demand(typeof value.running === 'boolean', 'herdr_observation_unknown')
+    } catch (error) {
+      this.recordStatusFailure(error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 'output_limit' : error.killed ? 'deadline' : Number.isInteger(error.code) ? 'nonzero_exit' : 'process_error', error)
+      throw new LifecycleError('herdr_observation_unknown')
+    }
+    try { value = JSON.parse(result.stdout) }
+    catch { this.recordStatusFailure('invalid_json', { ...result, code: 0 }); throw new LifecycleError('herdr_observation_unknown') }
+    if (typeof value?.running !== 'boolean') { this.recordStatusFailure('invalid_shape', { ...result, code: 0 }); throw new LifecycleError('herdr_observation_unknown') }
+    this.statusObservation = null
     return value
   }
   async ownedGeneration(capture = false) {
