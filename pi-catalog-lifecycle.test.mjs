@@ -5,22 +5,27 @@ import path from 'node:path'
 import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { createPiCatalogStore } from './pi-catalog-store.mjs'
+import { createPiCatalogStore, replacePiCatalogFile } from './pi-catalog-store.mjs'
 import { PiCatalogLifecycle } from './pi-catalog-lifecycle.mjs'
 import { ForegroundHost } from './host.mjs'
 import { installedFixture } from './test-support/installed-fixture.mjs'
 
 const original = { providers: { approved: { apiKey: '$EXISTING_AUTH_REFERENCE', models: [{ id: 'old', custom: true }], modelOverrides: { old: { maxTokens: 42 } } } } }
 const addition = { id: 'from-catalog', contextWindow: 1000, maxTokens: 100, reasoning: false, input: ['text'] }
+// Linux exercises state transitions only. Two renames are NOT a substitute
+// for Windows ReplaceFile's atomic displacement semantics in production.
+const simulatedReplace = async ({ file, temporary, backup }) => { await fs.rename(file, backup); await fs.rename(temporary, file) }
+const storeFor = file => createPiCatalogStore(file, process.platform === 'win32' ? {} : { replace: simulatedReplace })
+const commit = process.platform === 'win32' ? replacePiCatalogFile : simulatedReplace
 async function disk(t) {
   const piConfigDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'pi-catalog-')))
   t.after(() => fs.rm(piConfigDir, { recursive: true, force: true }))
   const file = path.join(piConfigDir, 'models.json'), raw = JSON.stringify(original)
   await fs.writeFile(file, raw, { mode: 0o600 })
-  return { config: { piConfigDir }, file, raw }
+  return { config: { piConfigDir }, file, raw, store: storeFor(file) }
 }
 test('disk publication keeps mode, rejects edits and leaves no temporary files', async t => {
-  const f = await disk(t), store = createPiCatalogStore(f.file)
+  const f = await disk(t), store = f.store
   const before = await store.read(), mode = (await fs.stat(f.file)).mode
   await fs.writeFile(f.file, before + ' ')
   assert.equal(await store.compareAndSwap(before, before + '\n'), false)
@@ -28,7 +33,9 @@ test('disk publication keeps mode, rejects edits and leaves no temporary files',
   const current = await store.read()
   assert.equal(await store.compareAndSwap(current, before + '\n'), true)
   assert.equal((await fs.stat(f.file)).mode, mode)
-  assert.deepEqual(await fs.readdir(f.config.piConfigDir), ['models.json'])
+  const files = await fs.readdir(f.config.piConfigDir)
+  assert.equal(files.some(n => n.endsWith('.tmp') || n.endsWith('pending.json')), false)
+  assert.equal(files.filter(n => n.endsWith('.previous')).length, 1)
 })
 test('cycle publishes once, repeated data and failures preserve bytes and mtime', async t => {
   const f = await disk(t); let now = 0, fail = false, calls = 0
@@ -56,7 +63,7 @@ test('cancellation aborts in-flight discovery and prevents publication or restar
   assert.equal(await lifecycle.tick(), 'cancelled')
 })
 test('embedded credentials are never staged and links are rejected', async t => {
-  const f = await disk(t), store = createPiCatalogStore(f.file)
+  const f = await disk(t), store = f.store
   const before = await store.read()
   const unsafe = JSON.stringify({ providers: { approved: { apiKey: 'synthetic-private-material' } } })
   await assert.rejects(store.compareAndSwap(before, unsafe), /embedded_credential/)
@@ -96,4 +103,58 @@ test('Windows ReplaceFile preserves the destination ACL', { skip: process.platfo
   const before = await store.read(), permissions = await acl()
   assert.equal(await store.compareAndSwap(before, before + '\n'), true)
   assert.equal(await acl(), permissions)
+})
+test('edit in the final replacement window is preserved, detected and stops future sync', async t => {
+  const f = await disk(t); let calls = 0
+  const userEdit = JSON.stringify({ ...original, userEdit: 'retain exactly' })
+  const store = createPiCatalogStore(f.file, { replace: async args => {
+    await fs.writeFile(f.file, userEdit)
+    await commit(args)
+  } })
+  const lifecycle = new PiCatalogLifecycle({ ...f, store, providerId: 'approved', discover: async () => { calls++; return [addition] } })
+  assert.equal(await lifecycle.tick(), 'conflict')
+  const files = await fs.readdir(f.config.piConfigDir), backup = files.find(n => n.endsWith('.previous'))
+  assert.equal(await fs.readFile(path.join(f.config.piConfigDir, backup), 'utf8'), userEdit)
+  assert.ok(files.includes('.pi-models-pending.json'))
+  const laterEdit = JSON.stringify({ subsequentEdit: true })
+  await fs.writeFile(f.file, laterEdit)
+  assert.equal(await lifecycle.tick(), 'conflict'); assert.equal(calls, 1)
+  await assert.rejects(storeFor(f.file).read(), { code: 'catalog_recovery_required' })
+  assert.equal(await fs.readFile(f.file, 'utf8'), laterEdit)
+})
+test('same bytes from a different file identity are also a conflict', async t => {
+  const f = await disk(t)
+  const store = createPiCatalogStore(f.file, { replace: async args => {
+    const editor = path.join(f.config.piConfigDir, 'editor.tmp')
+    await fs.writeFile(editor, f.raw); await fs.rename(editor, f.file)
+    await commit(args)
+  } })
+  const before = await store.read()
+  await assert.rejects(store.compareAndSwap(before, before + '\n'), { code: 'catalog_recovery_required' })
+})
+test('interruption before, during or after replacement never triggers automatic restoration', async t => {
+  for (const phase of ['prepared', 'displaced', 'replaced']) {
+    const f = await disk(t)
+    const store = createPiCatalogStore(f.file, { replace: async args => {
+      if (phase === 'displaced') await fs.rename(args.file, args.backup)
+      if (phase === 'replaced') await commit(args)
+      throw Error('injected_interruption')
+    } })
+    const before = await store.read()
+    await assert.rejects(store.compareAndSwap(before, before + '\n'), { code: 'catalog_recovery_required' })
+    const files = await fs.readdir(f.config.piConfigDir), old = phase === 'prepared' ? f.file : path.join(f.config.piConfigDir, files.find(n => n.endsWith('.previous')))
+    assert.equal(await fs.readFile(old, 'utf8'), before)
+    await fs.writeFile(f.file, 'new user bytes after interruption')
+    await assert.rejects(storeFor(f.file).read(), { code: 'catalog_recovery_required' })
+    assert.equal(await fs.readFile(f.file, 'utf8'), 'new user bytes after interruption')
+  }
+})
+test('late writes through an old handle are retained and stop the next cycle', async t => {
+  const f = await disk(t), before = await f.store.read()
+  assert.equal(await f.store.compareAndSwap(before, before + '\n'), true)
+  const files = await fs.readdir(f.config.piConfigDir)
+  const backup = path.join(f.config.piConfigDir, files.find(n => n.endsWith('.previous')))
+  await fs.writeFile(backup, 'late editor bytes')
+  await assert.rejects(storeFor(f.file).read(), { code: 'catalog_recovery_required' })
+  assert.equal(await fs.readFile(backup, 'utf8'), 'late editor bytes')
 })

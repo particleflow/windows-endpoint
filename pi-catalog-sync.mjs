@@ -42,13 +42,14 @@ export async function syncPiCatalogOnce({ read, discover, compareAndSwap, provid
     const before = await read({ signal })
     if (signal?.aborted) return 'cancelled'
     const document = JSON.parse(before)
-    const models = await abortable(discover({ signal }), signal)
+    const models = await abortable(discover({ signal, provider: document.providers?.[providerId] }), signal)
     if (signal?.aborted) return 'cancelled'
     const merged = mergePiCatalog(document, providerId, models)
     if (merged === document) return 'unchanged'
     if (signal?.aborted) return 'cancelled'
     return await compareAndSwap(before, `${JSON.stringify(merged, null, 2)}\n`, { signal }) ? 'updated' : 'conflict'
-  } catch {
+  } catch (error) {
+    if (error?.code === 'catalog_recovery_required') return 'conflict'
     return signal?.aborted ? 'cancelled' : 'unavailable'
   }
 }
