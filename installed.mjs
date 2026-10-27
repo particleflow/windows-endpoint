@@ -232,8 +232,8 @@ export async function installedDoctor(config, target = null, { run = probe, obse
     }
     if (target) { result.producer = compareProducerTarget(inspected.config, target).state; checks.push({ check: 'producer_configuration', state: 'passed' }) }
   } catch (error) { checks.push({ check: 'installation_preflight', state: 'blocked', code: error instanceof EndpointError ? error.code : error.code === 'ENOENT' ? 'installation_input_missing' : 'installation_input_unavailable' }) }
-  // The existing file principal/binding still belongs to the original Agenvo
-  // connection. Local paths and payload checks do not authenticate a mapping
+  // The existing file credential remains bound to its original recorded principal
+  // and producer configuration bytes. Local paths and payload checks do not authenticate a mapping
   // from native control identity. This diagnostic never alters the authorized
   // original queue consumer or substitutes a Runtime key for its credential.
   if (config.transfer) checks.push({ check: 'native_control_file_principal_mapping', state: 'blocked', code: 'native_file_principal_mapping_unverified' })

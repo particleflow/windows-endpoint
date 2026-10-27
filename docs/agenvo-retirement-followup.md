@@ -17,7 +17,7 @@ This is an open retirement follow-up, not a clean-state certificate.
 | Old default/example | `endpoint.example.json`, `deployment-layout.json.references.agenvoConfigDir`, `packaging/endpoint.references.example.json`, `packaging/build_candidate.py.TEMPLATES` | The old root and packaged example are deleted; the build no longer ships the schema-2 template. `deployment-layout.json` old locator spelling remains for historical layout/identity reading. The native schema-3 sample is the current setup input. |
 | Active old CI fixtures | `official-smoke/{verify,lifecycle,host,existing,pi-workload}.mjs`, `.github/workflows/windows-endpoint.yml` | Workflow no longer launches old lifecycle/reference/transfer-host scenarios. Standalone official Herdr/Pi checks and the Pi workload use native reference programs; the actual native Runtime fixture remains. Replacement native packaged upload/auth/TLS acceptance is an explicit failing gate, alongside the unchanged original positive-TLS gate. The subsequent diagnostic delta deletes legacy host/reference/lifecycle/inventory fixtures and their unused trust helper. The supported supervisor accepts only native Runtime/Pi scenarios; no trust-store operation remains. |
 | Misleading current instructions | `README.md`, `packaging/README.md`, `docs/{delivery,lifecycle,existing-installations-plan,explicit-runtime,foreground-host,owner-handoff-transport}.md` | README, packaged instructions, explicit-runtime and lifecycle contracts now describe native-only startup and removed examples. The existing-installation diagnostic guide and TLS failure record are also corrected; The later writer delta rewrites delivery, foreground, transaction and owner-control instructions around native-only entries and deletes the unused relay probe. Other evidence documents still require precise historical-use review; no full documentation-zero claim is made. Exact-source provenance remains only to explain an actual result at its recorded commit. |
-| Environment pollution guards | `endpoint.mjs` AGENVO_* removal; `official-smoke/transfer.mjs` inherited environment filter | Keep the deny/filter until old inherited variables can no longer influence a child; do not remove a pollution rejection merely to erase a string. No global/user environment variable deletion is authorized by a source filter. |
+| Environment pollution guards | `endpoint.mjs` AGENVO_* removal and current native child environment filters | Keep current child pollution guards; the old artifact-only harness and its local filter are removed together, because that harness has no execution role. Do not remove a pollution rejection merely to erase a string. No global/user environment variable deletion is authorized by a source filter. |
 | Historical path locators | `session-continuation.mjs`, old fields in data-layout/compatibility checks | Original saved locator/fingerprint decoding is necessary for old receipt/history access. It must not authorize an old process, switch a target, rewrite fingerprints or replay work. Inspect individual reader call sites before pruning; the name alone is insufficient. |
 
 A case-insensitive tracked-tree `agenvo` scan at the stated PR5 head matched
@@ -153,3 +153,13 @@ installed official programs, current onsite profiles or unknown work. The exact
 onsite binary/startup/service/environment inventory and credential-preserving
 Pi/Herdr root migration are still outstanding. Memoh transport implementation
 cleanup is a separate repository step; no global zero-residue result is claimed.
+
+The later artifact/document increment removes the obsolete 0.3.0 extractor,
+execution harness and lock; they had no execution caller, only syntax CI calls.
+The original artifact ID/hash/expiry and CONNECT 403 are retained as refusal
+evidence in `transfer-integration-gap.md`, not as a runnable handoff. The original
+integration-gap document now specifies native acceptance and no longer proposes
+retired MCP/OAuth setup. No archive retrieval, old CLI or trust operation ran.
+
+Checks and exact scope for that increment are in
+[artifact boundary evidence](evidence/agenvo-artifact-boundary.md).

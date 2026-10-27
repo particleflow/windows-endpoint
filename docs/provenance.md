@@ -52,9 +52,10 @@ report their own Windows CI evidence. Official Herdr/Pi/Agenvo source is not pat
 No full installer, real Agent pending-tool, automatic transfer, update/rollback,
 real UI, capacity or physical power-loss acceptance is established by these tests.
 
-The explicit runtime CI additionally builds the public Memoh source at
+An earlier explicit runtime checkpoint built public Memoh source
 [`40f0a69fd4b7e34dfcf36ec8a44a9805403e7be8`](https://github.com/particleflow/Memoh/commit/40f0a69fd4b7e34dfcf36ec8a44a9805403e7be8)
-using that commit's unchanged build script. Its plugin version is 0.7.0. No Go
+using that commit's unchanged build script. Current CI uses the fixed source in
+`dependencies.json`; the earlier build is historical provenance only. Its plugin version is 0.7.0. No Go
 implementation is imported, no old denied artifact is fetched, and no binary is
 redistributed by this repository. See [scope and limits](explicit-runtime.md).
 
@@ -74,7 +75,8 @@ Compared with the preceding `4c880e07` component, the transfer build closure
 changes only `internal/transferclient/api_base.go`, `api_base_test.go`,
 `client.go` and that vector file. CLI JSON/actions, queue and publication code,
 `deliverymeta`, raw-byte `HostBinding`, plugin 0.7.0, module dependencies and the
-seven-payload build script are unchanged. Herdr/Pi/Agenvo pins are unchanged.
+seven-payload build script are unchanged. Official Herdr/Pi pins are unchanged; the Agenvo catalog entry remains only for
+historical bundle-manifest decoding, without an installation or staging adapter.
 Previously ambiguous direct-CLI API bases now fail validation; no configuration
 bytes, queue identities or stored records are normalized or migrated. A source
 pin update alone does not establish a safe live component upgrade or production

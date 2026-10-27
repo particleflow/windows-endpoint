@@ -55,7 +55,7 @@ per existing endpoint identity:
    may use an exposed next-due timestamp; a conservative bounded interval is a
    fallback only after error classification is available. The queue checks its
    persisted due times, so this is not a second transfer scheduler.
-5. Network/relay availability recovery can request an early wake; it must not
+5. Network/Runtime availability recovery can request an early wake; it must not
    reset existing queue due times or repeatedly restart a working connector.
 
 Each invocation has an execution/output limit, no overlapping instance, bounded

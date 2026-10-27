@@ -5,60 +5,42 @@ This inspection preserves endpoint runtime checkpoint
 `4c880e07ecdff1b6caadd86348779603fce9e8aa`. It does not qualify a production
 installation, a historical-session takeover, or a PC/NAS connection.
 
-## Existing implementation and test seams
+## Original operation integration boundary
 
-The existing `computer_task_result` path already observes the original operation.
-Memoh `internal/computertask/source.go:114` calls the service observation path;
-`internal/computertask/pi_batch.go:123,197,243` uses `ObserveBatch` and
-`ReadBatchPage`. The receipt, original attempt, Pi session and bounded page offsets
-belong to that existing record. No replacement result collector or ledger is
-needed here. Reading a batch file can issue a bounded read command to the original
-dedicated control pane; this is not permission to replay the Pi invocation.
+The saved operation, original attempt, Pi session, receipt and page offsets
+remain the result authority. A bounded read through the original dedicated
+control pane does not permit a new Pi invocation or replacement result collector.
+Current execution uses official Memoh Runtime → Herdr/Pi, with the existing
+trusted application-turn binding, native target checks and task ledger. The
+old inspection's MCP/OAuth connection proposal is retired and is not an
+integration instruction for this branch.
 
-The fixtures presently cover separate boundaries:
+The earlier checkpoint examined separate in-memory task/result tests, a
+Windows NTFS/PG delivery fixture and an endpoint fixture with synthetic relay
+welcome/pong responses. Those checks did not join real authenticated application
+execution, original task identity, persistent PG, native processes and result
+association. The removed relay fixture has no current invocation. Its historical
+result cannot qualify the native replacement.
 
-| Existing fixture | Evidence | Missing from this fixture |
-| --- | --- | --- |
-| Retired endpoint fixture at `a7fb5c5`, `official-smoke/existing.mjs:31-36` (historical source only) | Real official component processes with a synthetic relay's welcome/pong responses | Real Memoh MCP dispatch, scope authorization, original task and PG |
-| Memoh `internal/computertask/pi_batch_test.go:329` | Original-ID, receipt, page-offset and restart rules using a synthetic transport and in-memory stores | Native Windows processes and persistent PG integration |
-| Memoh `internal/db/computer_delivery_native_windows_test.go:190-224` | Native delivery handler, NTFS and disposable PG using `server.NewServer` inside `httptest.NewTLSServer` | Full `cmd/agent` process and the actual Agenvo/Herdr/Pi task-result path |
+A remaining joined acceptance test must execute one deterministic task through
+the existing authenticated native path, disconnect/reconnect control, then read
+the same operation and compare the original attempt, Pi session and receipt.
+It must demonstrate one invocation and one associated result in the same PG
+state. Seeding a completion row, substituting a mock transport or submitting
+another task after uncertainty does not establish that result. A public tools
+HTTP call with invented conversation headers does not supply the trusted turn
+binding. This document adds no production API or competing authority.
 
-Memoh's `scripts/test-native-delivery-postgres.ps1` already supplies a disposable
-loopback PG cluster using the Windows runner's installed `PGBIN`. It does not
-install or start the machine's PostgreSQL service. It is a reusable test setup,
-not an existing end-to-end original-task fixture.
-
-The missing integration setup must drive a real trusted application turn and an
-authorized official Agenvo MCP connection. A public `/bots/{bot_id}/tools` call
-with invented conversation headers is not equivalent:
-`internal/handlers/mcp_tools.go:99` marks it `PublicRequest`, and
-`internal/toolcontext/computer_binding.go:76-91` rejects that as computer-task
-authority. The real binding is supplied by
-`internal/agent/application/service_workspace_target.go:88-90`;
-`cmd/internal/core/agenvo.go:17-36` resolves the owned active HTTP MCP connection
-and existing OAuth path. No new production API is established as necessary by
-this inspection.
-
-The minimum remaining test joins those existing pieces with a deterministic
-synthetic workload, then disconnects/reconnects the official connector and reads
-the same operation. It must compare the original attempt, Pi session and receipt,
-prove one execution, and read the committed result/reference from the same PG
-state. It must not seed a completion record and label that an actual execution,
-replace the transport with a mock and label it native, or submit another task to
-recover an unknown outcome. No such joined test ran in this checkpoint.
-
-`official-smoke/pi-workload.mjs` prepares the native workload for that join using
-the already assembled CI Herdr/Pi, a disposable loopback model, and the unchanged
-`internal/agenvo/pi_result.cjs` at producer `40f0a69`. The model uses Pi 1.2.0's
-[existing compatible-endpoint configuration](https://github.com/earendil-works/pi/blob/v1.2.0/packages/coding-agent/docs/models.md#configure-a-compatible-endpoint).
-It offers one fixed `write` call and one final reply, with no external inference
-or real credential. Real Pi must create the file, persist its session and emit
-JSONL that the producer accepts; repeated native/producer reads must leave the
-single invocation and saved result unchanged. The existing CI process-tree
-supervisor bounds execution and cleanup. This fixture creates no Memoh operation
-or producer receipt, makes no Agenvo connection/grant, and does not test PG,
-connector reconnection, historical-session recovery or a phone/PC/NAS workflow.
-It is a prerequisite for the joined test, not a replacement for it.
+`official-smoke/pi-workload.mjs` is a prerequisite fixture using real official
+Herdr/Pi, a disposable loopback model and the fixed producer projection. It offers
+one deterministic write and one final reply, without external inference or real
+credentials. Repeated reads must preserve the original file, Pi session and
+single invocation. Its isolated process-tree supervisor owns cleanup. It does
+not create a Memoh operation/producer association or prove the PG joint task,
+historical-session recovery, production Magpie request or physical PC/NAS path.
+The separate native Runtime fixture covers its own reconnect and original
+process/session preservation boundaries; the two results must not be conflated.
+See [current runtime evidence and limits](explicit-runtime.md).
 
 ## Build preflight blocked before compilation
 
@@ -116,7 +98,7 @@ receipt and delivery identities. This endpoint batch adds no competing field,
 origin alias, queue reset or new transfer service.
 
 The subsequent endpoint fix adopts the shared syntax contract at Memoh
-`91149ad7` for both configuration schemas; see
+`91149ad7` for native references and historical schema decoding; see
 [API base configuration and existing-binding limits](existing-installations-plan.md#existing-transfer-plugin-reference).
 The original routing probe and build failure above remain historical evidence.
 Accepting the correct prefix does not complete positive TLS, real task recovery

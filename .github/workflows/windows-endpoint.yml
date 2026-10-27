@@ -40,7 +40,6 @@ jobs:
         run: go test -v -race -count=1 -timeout=90s -run 'Test(HostNetwork|ConfiguredLAN)' ./internal/transferclient
       - name: Validate transfer fixture JavaScript syntax
         run: |
-          node --check official-smoke/transfer.mjs
           node --check official-smoke/feedback-fixture.mjs
           node --check official-smoke/native-runtime.mjs
       - name: Verify portable candidate packaging and extracted entry
@@ -51,8 +50,6 @@ jobs:
         run: |
           $tokens = $null
           $errors = $null
-          $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./official-smoke/prepare-transfer.ps1), [ref]$tokens, [ref]$errors)
-          if ($errors.Count -ne 0) { throw 'Transfer fixture PowerShell parse failed' }
           foreach ($file in @('host-tls.ps1','fixture-process.ps1','private-fixture.ps1')) {
             $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path (Join-Path ./official-smoke $file)), [ref]$tokens, [ref]$errors)
             if ($errors.Count -ne 0) { throw 'TLS fixture PowerShell parse failed' }

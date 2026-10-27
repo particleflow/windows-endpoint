@@ -125,8 +125,8 @@ export function validateConfig(config) {
       requireThat(config.connector.kind === 'memoh-runtime', 'connector_kind_unsupported')
       absolute(config.connector.enrollmentFile)
     }
-    // Legacy omitted Herdr resolves from its selected official Agenvo instance.
-    // Native mode keeps one explicit official installation reference.
+    // Legacy metadata may omit the Herdr path; no live instance resolution occurs.
+    // Native mode requires one explicit official installation reference.
     keys(config.programs, ['node', 'piPackage', 'piBin', 'gitRoot', ...(native ? ['herdr'] : ['connectorPackage'])], native ? ['connectorPackage'] : ['herdr'])
     for (const key of roots) absolute(config[key], key === 'sourceRoot')
     for (const value of Object.values(config.programs)) absolute(value)
