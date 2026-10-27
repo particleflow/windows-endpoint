@@ -90,7 +90,7 @@ const enrolledFixture = spawnSync(powershell, ['-NoProfile', '-NonInteractive', 
 await fs.rm(input)
 assert.equal(enrolledFixture.status, 0, 'fresh CI-home enrollment must be created without changing existing ACLs')
 const env = managedEnvironment(config), marker = path.join(config.herdrConfigRoot, 'sessions', config.session, 'herdr.sock')
-const hosts = new Set(), checks = []
+const hosts = new Set(), checks = [], retainedFixtureProcesses = new Set()
 const checked = name => { checks.push(name); process.stdout.write(JSON.stringify({ nativeRuntimeCheck: name, state: 'passed' }) + '\n') }
 async function stage(name, action) {
   const started = Date.now()
@@ -123,6 +123,35 @@ async function eventually(predicate, message, ms = 30000) {
   const deadline = Date.now() + ms
   while (Date.now() < deadline) { if (await predicate()) return; await delay(100) }
   throw new Error(message)
+}
+// This positive recovery fixture requires an absent ORIGINAL PID. Keep an OS
+// handle to our still-running child until recovery ends, so a later probe or
+// unrelated fixture cannot reuse its PID. Production PID-reuse refusal stays.
+async function retainFixtureProcess(host) {
+  assert.equal(host.child.exitCode, null)
+  const pid = host.child.pid
+  assert.equal(host.states.at(-1).pid, pid)
+  assert.ok(Number.isSafeInteger(pid) && pid > 0)
+  const script = `$ErrorActionPreference='Stop'; $p=[Diagnostics.Process]::GetProcessById(${pid}); try { $h=$p.Handle; [Console]::Out.WriteLine('retained'); if ([Console]::ReadLine() -ne 'release') { throw 'fixture handle release missing' } } finally { $p.Dispose() }`
+  const child = spawn(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], { stdio: ['pipe','pipe','pipe'], windowsHide: true })
+  let ready = false, output = '', bytes = 0
+  const closed = new Promise(resolve => child.once('close', code => resolve(code)))
+  child.stdin.on('error', () => {})
+  child.stdout.on('data', chunk => { output += chunk; bytes += chunk.length; ready = output === 'retained\r\n' || output === 'retained\n' })
+  child.stderr.on('data', chunk => { bytes += chunk.length })
+  const holder = { async release() {
+    child.stdin.end('release\n')
+    assert.equal(await bounded(closed, 10000, 'fixture process handle release deadline'), 0)
+    retainedFixtureProcesses.delete(holder)
+  } }
+  retainedFixtureProcesses.add(holder)
+  await eventually(() => { assert.ok(bytes < 1024); assert.equal(child.exitCode, null); return ready }, 'fixture process handle acquisition deadline', 10000)
+  return { async observeAbsent() {
+    const script = `$ErrorActionPreference='Stop'; $end=[DateTime]::UtcNow.AddSeconds(10); do { $rows=@(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' -OperationTimeoutSec 3); if ($rows.Count -eq 0) { [Console]::Out.WriteLine('observed_absent'); exit 0 }; Start-Sleep -Milliseconds 100 } while ([DateTime]::UtcNow -lt $end); throw 'original fixture host still observed'`
+    const result = await promisify(execFile)(powershell, ['-NoProfile','-NonInteractive','-Command',script], { timeout: 15000, maxBuffer: 1024, windowsHide: true, shell: false })
+    assert.equal(result.stdout.trim(), 'observed_absent')
+    process.stdout.write(JSON.stringify({ nativeRuntimeRecoveryPrerequisite: 'original_fixture_pid_absent_with_handle_retained' }) + '\n')
+  } }
 }
 function launch() {
   const child = spawn(node, [endpoint, 'host', 'run', '--root', hostRoot], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
@@ -347,7 +376,9 @@ try {
   const attempts = peer.counts.attempts, restarted = launch()
   await restarted.until(s => s.phase === 'running' && s.attention === 'connector_authentication_required')
   assert.equal(peer.counts.attempts, attempts)
+  const retainedOriginalHost = await retainFixtureProcess(restarted)
   assert.equal(await restarted.stop(), 2)
+  await retainedOriginalHost.observeAbsent()
   assert.equal(await fs.readFile(path.join(config.sourceRoot, 'invocations.txt'), 'utf8'), 'once\n')
   assert.deepEqual(await transferCLI('lifecycle-summary'), emptyQueue)
   checked('persisted_attention_restart_does_not_reconnect_or_replay_herdr_work')
@@ -447,6 +478,7 @@ try {
 } finally {
   const [modelCleanup] = await Promise.allSettled([bounded(model.close(), 5000, 'Pi model fixture close deadline')])
   const cleanup = await Promise.allSettled([...hosts].map(host => host.stop()))
+  const handleCleanup = await Promise.allSettled([...retainedFixtureProcesses].map(holder => holder.release()))
   const [peerCleanup] = await Promise.allSettled([Promise.resolve().then(() => bounded(peer.close(), 5000, 'native Runtime fixture peer close deadline'))])
   // Only the exclusive fresh fixture child above is ours to remove. Do not
   // remove its enrollment while any host cleanup remains unconfirmed.
@@ -457,9 +489,11 @@ try {
     await assert.rejects(fs.stat(enrollmentRoot), { code: 'ENOENT' })
   })])
   process.stdout.write(JSON.stringify({ nativeRuntimeFixtureCleanup: 'observed', remainingHosts: hosts.size,
+    processHandleReleaseFailures: handleCleanup.filter(r => r.status === 'rejected').length,
     stopFailures: cleanup.filter(r => r.status === 'rejected').length, peer: peerCleanup.status === 'fulfilled' ? 'closed' : 'close_failed',
     enrollment: enrollmentCleanup.status === 'fulfilled' ? 'fresh_child_removed' : 'retained_or_cleanup_failed', model: modelCleanup.status === 'fulfilled' ? 'closed' : 'close_failed' }) + '\n')
   try {
+    assert.equal(handleCleanup.filter(r => r.status === 'rejected').length, 0, 'fixture process handle cleanup failed')
     assert.equal(cleanup.filter(r => r.status === 'rejected').length, 0)
     assert.equal(hosts.size, 0)
     assert.equal(peerCleanup.status, 'fulfilled', 'native Runtime fixture peer cleanup failed')
