@@ -44,7 +44,7 @@ export async function programPackage(directory, label = 'a', { native = false } 
     producer_commit: catalog.components.transfer.revision, state_profile: programStateProfile, workspace_unc_source_root: true, central_component_data: true, stable_installation_entry: 1, native_pi_catalog:nativeCatalogPackage, files }
   if (native) Object.assign(manifest, { native_runtime: { repository: 'particleflow/Memoh', commit: catalog.nativeRuntime.revision,
     version: catalog.nativeRuntime.version, entry: catalog.nativeRuntime.entry, provenance: 'runtime-connector/SHA256SUMS.json' },
-    native_runtime_project_root: true, native_running_recovery: true, native_transfer_directory_pair: true, native_transfer_direct_cli: true })
+    native_runtime_project_root: true, native_running_recovery: true, native_stopped_observation_recovery:true, native_transfer_directory_pair: true, native_transfer_direct_cli: true })
   await fs.writeFile(path.join(directory, 'candidate.json'), JSON.stringify(manifest))
   return { directory, hash: await digest(path.join(directory, 'candidate.json')), manifest }
 }

@@ -44,7 +44,7 @@ function validatedStatus(value) {
   if (!['unverified', 'missing', 'loaded', 'invalid', 'changed_restart_required'].includes(value.configuration) || !['unavailable_unqualified', 'unavailable_missing', 'unavailable_invalid', 'synthetic_fixture', 'verified_local'].includes(value.components) || !['unverified', 'authorization_unverified', 'authorization_required', 'online_snapshot', 'offline', 'connecting', 'authenticating', 'stopped', 'needs_attention', 'recovering'].includes(value.connection)) invalid()
   if (!['host_process_only', 'synthetic_components', 'native_components'].includes(value.evidence) || value.desktop !== 'unavailable' || value.agent !== 'unavailable_unqualified' || !['unverified', 'recording', 'capacity_reached'].includes(value.log)) invalid()
   if (Object.hasOwn(value, 'control') && !['unverified', 'stdin_open', 'stdin_closed'].includes(value.control)) invalid()
-  if (Object.hasOwn(value, 'piCatalog') && !['unverified', 'updated', 'unchanged', 'unavailable', 'cancelled', 'conflict', 'unsupported_acl'].includes(value.piCatalog)) invalid()
+  if (Object.hasOwn(value, 'piCatalog') && !['unverified', 'updated', 'unchanged', 'unavailable', 'cancelled', 'conflict'].includes(value.piCatalog)) invalid()
   if (Object.hasOwn(value, 'piCatalogDeferred') && (!Number.isSafeInteger(value.piCatalogDeferred) || value.piCatalogDeferred < 0)) invalid()
   if (value.componentLifecycle !== null) {
     const c = value.componentLifecycle
@@ -238,6 +238,7 @@ export class ForegroundHost {
     // Metadata is not authenticated identity; the official Runtime owns loading.
   }
   async tick() {
+    if (this.rechecking) return
     if (this.active) return this.active
     this.active = (async () => {
       if (this.stopRequested || this.phase !== 'running') return
@@ -259,6 +260,21 @@ export class ForegroundHost {
     if (this.closing) return this.closing
     this.closing = this.stopOwned()
     try { return await this.closing } finally { this.closing = null }
+  }
+  async recheckHerdr() {
+    if (this.stopRequested || this.phase !== 'running' || this.attention || !this.runtime?.recheckHerdr) throw new HostError('host_recheck_not_eligible')
+    if (this.rechecking) throw new HostError('herdr_recheck_busy')
+    this.rechecking = true
+    const validateConfiguration = async () => {
+      if (this.stopRequested || stamp(await this.configRaw()) !== this.configStamp || stamp(await this.configRaw(this.runtimeFile)) !== this.runtimeStamp) throw new HostError('host_configuration_changed')
+    }
+    try {
+      if (this.active) await this.active
+      await validateConfiguration()
+      await this.runtime.recheckHerdr({ validateConfiguration })
+      if (!this.stopRequested) await this.publish()
+      return this.snapshot()
+    } finally { this.rechecking = false }
   }
   async stopOwned() {
     this.phase = 'stopping'
@@ -338,8 +354,13 @@ export async function runForeground({ root, input = process.stdin, output = proc
     for (const line of lines) {
       let value
       try { value = JSON.parse(line) } catch { void stop('host_control_input_invalid', 'invalid_input'); return }
-      if (!value || Object.keys(value).length !== 1 || !['status', 'stop'].includes(value.action)) { void stop('host_control_input_invalid', 'invalid_input'); return }
+      if (!value || Object.keys(value).length !== 1 || !['status', 'stop', 'recheck-herdr'].includes(value.action)) { void stop('host_control_input_invalid', 'invalid_input'); return }
       if (value.action === 'stop') void stop()
+      else if (value.action === 'recheck-herdr') {
+        if (commandBusy) { emit({ error: 'herdr_recheck_busy', ready: false }); continue }
+        commandBusy = true
+        void host.recheckHerdr().then(emit, error => emit({ error: safeCode(error), ready: false })).finally(() => { commandBusy = false })
+      }
       else if (!commandBusy) { commandBusy = true; emit(host.snapshot()); setImmediate(() => { commandBusy = false }) }
     }
   }
@@ -349,7 +370,10 @@ export async function runForeground({ root, input = process.stdin, output = proc
   process.on('SIGINT', sigint); process.on('SIGTERM', sigterm)
   try {
     try { await host.start() }
-    catch (error) { await stop(safeCode(error), 'startup_failed') }
+    catch (error) {
+      if (error instanceof HostError && ['host_profile_switch_recovery_required','host_pi_catalog_recovery_required'].includes(error.code)) { emit({ error: error.code, ready: false }); return 2 }
+      await stop(safeCode(error), 'startup_failed')
+    }
     if (!host.stopRequested) {
       timer = setInterval(() => {
         void host.tick().catch(() => stop('host_lifecycle_failed', 'tick_failed'))

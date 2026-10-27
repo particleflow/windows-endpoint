@@ -86,7 +86,7 @@ export class StateStore {
       const r = data.infrastructureRecovery
       demand(r && Object.keys(r).sort().join(',') === 'attempts,businessReplayed,configuration,fromState,previousAttention,previousPhase,run,schema' &&
         r.schema === 1 && ['attempts','configuration','fromState'].every(k => /^[a-f0-9]{64}$/.test(r[k])) && /^[a-f0-9-]{36}$/.test(r.run) &&
-        (r.previousPhase === 'needs_attention' && r.previousAttention === 'herdr_observation_unknown' || r.previousPhase === 'running' && r.previousAttention === null) &&
+        (['needs_attention', 'stopped'].includes(r.previousPhase) && r.previousAttention === 'herdr_observation_unknown' || r.previousPhase === 'running' && r.previousAttention === null) &&
         r.businessReplayed === false, 'lifecycle_recovery_mismatch')
     }
     demand(data.schema === 1 ? data.handoff === undefined : validHandoffRecord(data.handoff) && data.handoff.payload.native.device_id === this.identity, 'lifecycle_handoff_mismatch')

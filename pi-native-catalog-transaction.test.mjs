@@ -48,6 +48,10 @@ for(const phase of ['native_catalog_prepared','native_catalog_published','native
   const direct=new ForegroundHost({root:f.root,createTestRuntime:async()=>{starts++;return{}}})
   await assert.rejects(direct.start(),{code:'host_pi_catalog_recovery_required'})
   assert.equal(starts,0)
+  const nextProfile=path.join(f.base,'different-profile');await fs.mkdir(nextProfile)
+  const profileArgs=['prepare-profile','--root',f.root,'--request-id',randomUUID(),'--profile',nextProfile,
+    ...['configuration','lifecycle','continuation','attempts'].flatMap(name=>[`--${name}-sha256`,'0'.repeat(64)])]
+  await assert.rejects(programDeploymentMain(profileArgs),{code:'deployment_pi_catalog_recovery_required'})
   assert.equal((await prepareNativePiCatalog(request)).state,'prepared_native_catalog')
   await assert.rejects(fs.stat(path.join(f.manager.lifecycleDirectory,nativeCatalogPendingName)),{code:'ENOENT'})
   await unchanged(f)

@@ -172,6 +172,7 @@ def build(source, commit, producer, producer_source, output, native_runtime=None
         manifest['native_transfer_direct_cli'] = True
         manifest['native_runtime_project_root'] = True
         manifest['native_running_recovery'] = True
+        manifest['native_stopped_observation_recovery'] = True
     manifest_bytes = (json.dumps(manifest, indent=2) + '\n').encode()
     payload['candidate.json'] = manifest_bytes
     output.mkdir(parents=True, exist_ok=False)

@@ -90,6 +90,7 @@ class CandidateTests(unittest.TestCase):
             self.assertTrue(manifest['native_transfer_direct_cli'])
             self.assertTrue(manifest['native_runtime_project_root'])
             self.assertTrue(manifest['native_running_recovery'])
+            self.assertTrue(manifest['native_stopped_observation_recovery'])
             self.assertEqual(manifest['native_pi_catalog'], {
                 'schema': 1, 'mode': 'pi-in-process', 'piVersion': '1.4.0',
                 'entry': 'pi-magpie-native-profile-entry.mjs',
