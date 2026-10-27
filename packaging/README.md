@@ -154,8 +154,10 @@ transfer.json. Explicit IPs are tried in order; only TCP connection failure fall
 back to the original authority's IPv6. Certificate/auth failures never select
 another route. An invalid policy or conflicting proxy fails visibly.
 
-This candidate pins producer 0894a6eb8ff69c8796e2da5450fa172d4cd5ef81, plugin
-0.10.1. The prior 648/a51/c292 candidates remain separate checkpoints. Endpoint program
+This candidate pins producer 62d27ed995c53f405297eb0069290f3aefba2c51, plugin
+0.10.1. Exact-source strict-TLS builds and the new retained-snapshot Go/CLI
+fixtures are required before treating this pin as verified. See the
+[qualification record](../docs/evidence/closed-snapshot-producer-qualification.md). The prior 648/a51/c292 candidates remain separate checkpoints. Endpoint program
 update does not replace/relink an external producer, and cross-producer candidate
 switches remain rejected by the existing compatibility profile. Do not present
 this new build as an automatic upgrade of a running old plugin.

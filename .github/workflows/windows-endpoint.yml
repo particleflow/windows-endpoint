@@ -26,7 +26,7 @@ jobs:
         if: runner.os == 'Linux'
         with:
           repository: particleflow/Memoh
-          ref: 0894a6eb8ff69c8796e2da5450fa172d4cd5ef81
+          ref: 62d27ed995c53f405297eb0069290f3aefba2c51
           path: producer-source
           persist-credentials: false
       - uses: actions/setup-go@v5
@@ -37,7 +37,9 @@ jobs:
       - name: Verify fixed producer LAN routes and TLS/auth refusal boundaries on Linux
         if: runner.os == 'Linux'
         working-directory: producer-source
-        run: go test -v -race -count=1 -timeout=90s -run 'Test(HostNetwork|ConfiguredLAN)' ./internal/transferclient
+        run: |
+          go test -v -race -count=1 -timeout=90s -run 'Test(HostNetwork|ConfiguredLAN|SnapshotProducer)' ./internal/transferclient
+          go test -v -race -count=1 -timeout=90s -run '^TestCLISnapshotScopeNeverActivatesRegisteredInput$' ./cmd/transferqueue
       - name: Validate transfer fixture JavaScript syntax
         run: |
           node --check official-smoke/feedback-fixture.mjs
@@ -105,7 +107,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: particleflow/Memoh
-          ref: 0894a6eb8ff69c8796e2da5450fa172d4cd5ef81
+          ref: 62d27ed995c53f405297eb0069290f3aefba2c51
           path: producer-source
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -119,7 +121,7 @@ jobs:
         shell: pwsh
         working-directory: producer-source
         run: |
-          if ((git rev-parse HEAD) -ne '0894a6eb8ff69c8796e2da5450fa172d4cd5ef81') { throw 'Wrong producer source' }
+          if ((git rev-parse HEAD) -ne '62d27ed995c53f405297eb0069290f3aefba2c51') { throw 'Wrong producer source' }
           python scripts/build-transferqueue-bundle.py --output '${{ runner.temp }}/endpoint-transfer-source-build'
           if ($LASTEXITCODE -ne 0) { throw 'Producer source build failed' }
       - uses: actions/checkout@v4

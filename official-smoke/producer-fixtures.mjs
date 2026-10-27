@@ -62,6 +62,8 @@ export const budgetTests = ['TestHostBudgetConfiguration', 'TestBudgetMigrationP
 export const cliBudgetTests = ['TestCLIBudgetConfigurationAndOldQueueRecovery']
 export const registrationTests = ['TestRegisteredProcessExitBeforeAcknowledgement', 'TestRegisteredSourceRestartAndMissingChanges', 'TestRegisteredSourceResumesReceiptWithoutSnapshot', 'TestRegisteredSourceBlockProofRejectsUndetectedChange']
 export const cliRegistrationTests = ['TestProducerAdmissionPendingCanResumeSameDelivery']
+export const snapshotTests = ['TestSnapshotProducerOnlyAdvancesRetainedPrivateBytes', 'TestSnapshotProducerRejectsExplicitRegisteredAndIndexedJobs', 'TestSnapshotProducerMissingPrivateBytesFailsBeforeNetwork', 'TestSnapshotProducerRetainsAuthorizationAndTLSGuards']
+export const cliSnapshotTests = ['TestCLISnapshotScopeNeverActivatesRegisteredInput']
 export function completedTaskAPIBaseCases(output) {
   completedTests(output, taskAPIBaseTests)
   const expected = [
@@ -144,6 +146,8 @@ export async function verifyFixtures(root, sourceRoot) {
     [cliBinary, cliBudgetTests, '^TestCLIBudget', 'producerBudgetContract'],
     [binary, registrationTests, '^TestRegistered', 'producerRegistrationContract'],
     [cliBinary, cliRegistrationTests, '^TestProducerAdmissionPending', 'producerRegistrationContract'],
+    [binary, snapshotTests, '^TestSnapshotProducer', 'producerSnapshotContract'],
+    [cliBinary, cliSnapshotTests, '^TestCLISnapshotScope', 'producerSnapshotContract'],
   ]) {
     const inventory = testNames(await execute(file, [`-test.list=${selector}`], remaining(30000)), 'Test')
     requireFixture(sameSet(inventory, names), `${contractName}_inventory_changed`)
