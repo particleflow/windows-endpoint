@@ -154,6 +154,7 @@ def build(source, commit, producer, producer_source, output, native_runtime=None
         'positive_production_tls': 'unverified',
         'activation_update_rollback': 'stopped-endpoint-program-only',
         'workspace_unc_source_root': True,
+        'central_component_data': True,
         'state_profile': 'endpoint-program-v1',
         'files': [{'path': name, 'size': len(data), 'sha256': sha(data)} for name, data in sorted(payload.items())],
     }

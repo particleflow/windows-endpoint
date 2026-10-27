@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { stageBundle, validateConfig, validateDirectory, verifyBundle, transferLocations, componentRoots } from './endpoint.mjs'
+import { stageBundle, validateConfig, validateDirectory, verifyBundle, transferLocations, componentRoots, isNativeRuntimeConfig } from './endpoint.mjs'
 import { acquireLeases, leaseKeys, StateStore } from './lifecycle.mjs'
 
 // Internal offline transaction engine. No public activation command consumes
@@ -28,13 +28,44 @@ export function deploymentLayout(root) {
   demand(path.isAbsolute(root) && path.normalize(root) === root, 'deployment_absolute_root_required')
   return Object.fromEntries(['packages', 'control', 'config', 'data', 'logs'].map(name => [name, path.join(root, name)]))
 }
-export function deploymentReferences(root, references) {
-  const layout = deploymentLayout(root)
-  demand(hash(references.manifestSha256), 'deployment_manifest_hash_required')
-  const paths = Object.fromEntries(Object.entries(layoutTemplate.references).map(([key, relative]) => {
+export function deploymentReferencePaths(root) {
+  deploymentLayout(root)
+  return Object.fromEntries(Object.entries(layoutTemplate.references).map(([key, relative]) => {
     demand(typeof relative === 'string' && relative.split('/').every(part => /^[a-z][a-z.-]*$/.test(part) && part !== '..'), 'deployment_layout_invalid')
     return [key, path.join(root, relative)]
   }))
+}
+// Configuration references are not ownership grants. Dedicated component data
+// may share the product root; updater journals, packages and logs may not.
+export function hostReferenceLayout(root, config) {
+  validateConfig(config)
+  const layout = deploymentLayout(root), overlaps = (a,b) => contains(a,b) || contains(b,a)
+  const data = ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'piConfigDir', ...(!isNativeRuntimeConfig(config) ? ['agenvoConfigDir'] : [])]
+    .map(role => ({ role, path: config[role] }))
+  if (config.schema === 1 || config.transfer) {
+    const locations = transferLocations(config)
+    data.push({ role: 'transferConfigDir', path: locations.config }, { role: 'transferStateDir', path: locations.state })
+  }
+  if (isNativeRuntimeConfig(config)) data.push({ role: 'connector.enrollmentFile', path: config.connector.enrollmentFile })
+  const reserved = [layout.packages, layout.control, layout.logs, path.join(layout.data, 'endpoint'),
+    path.join(layout.config, 'endpoint.json'), path.join(layout.config, 'runtime.json')]
+  const references = data.map(entry => ({ ...entry, kind: 'component_data', centralized: contains(layout.config, entry.path) || contains(layout.data, entry.path),
+    compatible: !reserved.some(owned => overlaps(owned, entry.path)) && !(entry.role === 'sourceRoot' && overlaps(layout.config, entry.path)) }))
+  const programs = Object.entries(config.programs || {}).map(([key,value]) => ({ role: `programs.${key}`, path: value }))
+  if (config.schema === 1) programs.push({ role: 'bundleRoot', path: config.bundleRoot })
+  if (config.transfer) programs.push({ role: 'transfer.pluginRoot', path: config.transfer.pluginRoot })
+  for (const entry of programs) references.push({ ...entry, kind: 'program_reference', centralized: false,
+    compatible: [layout.config,layout.data,layout.logs,layout.control].every(owned => !overlaps(owned,entry.path)) })
+  return { schema: 1, root, compatible: references.every(entry => entry.compatible), references,
+    defaults: deploymentReferencePaths(root), evidence: 'configuration_only_not_ownership_or_live_proof',
+    dependencyOwnership: 'existing_references_not_adopted', deletionImplemented: false,
+    piTaskArchives: { layout: 'execution_root_v1', directory: path.join(config.sourceRoot, '.memoh-computer', 'sessions'),
+      attempts: path.join(config.sourceRoot, '.memoh-computer', 'attempts'), currentExistence: 'not_checked' } }
+}
+export function deploymentReferences(root, references) {
+  const layout = deploymentLayout(root)
+  demand(hash(references.manifestSha256), 'deployment_manifest_hash_required')
+  const paths = deploymentReferencePaths(root)
   return validateConfig({ ...references, ...paths, schema: 1, bundleRoot: path.join(layout.packages, references.manifestSha256) })
 }
 

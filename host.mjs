@@ -3,8 +3,8 @@ import { writeSync, fsyncSync } from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { EndpointError, validateConfig, validateDirectory, verifyBundle, installationReferences, isNativeRuntimeConfig, connectorConfigReference } from './endpoint.mjs'
-import { deploymentLayout, deploymentReferences } from './deployment.mjs'
+import { EndpointError, validateConfig, validateDirectory, verifyBundle, isNativeRuntimeConfig, connectorConfigReference } from './endpoint.mjs'
+import { deploymentLayout, deploymentReferences, hostReferenceLayout } from './deployment.mjs'
 import { acquireLeases, connectorAttention, LifecycleError, StateStore } from './lifecycle.mjs'
 import { createExplicitRuntime, validateRuntimeRequest, RuntimeError } from './runtime.mjs'
 
@@ -165,9 +165,7 @@ export class ForegroundHost {
             if (!samePath(config[key], expected[key])) throw new HostError('host_configuration_root_mismatch')
           }
         } else {
-          for (const external of installationReferences(config)) {
-            if ([this.layout.config, this.layout.data, this.layout.logs].some(owned => overlaps(owned, external))) throw new HostError('host_reference_overlap')
-          }
+          if (!hostReferenceLayout(this.root, config).compatible) throw new HostError('host_reference_overlap')
         }
         this.configuration = 'loaded'
         const runtimeRaw = await this.configRaw(this.runtimeFile)

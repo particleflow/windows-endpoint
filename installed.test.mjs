@@ -201,7 +201,7 @@ test('configure host root preserves existing installation references and rejects
   assert.equal(f.calls.length, 0, 'configuration never probes or starts an official component')
   const second = path.join(f.base, 'next-host')
   await fs.mkdir(path.join(second, 'config'), { recursive: true })
-  await f.write(input, JSON.stringify({ ...f.config, sourceRoot: path.join(second, 'data/exports') }))
+  await f.write(input, JSON.stringify({ ...f.config, sourceRoot: path.join(second, 'data/endpoint') }))
   await assert.rejects(main(['configure', '--from', input, '--root', second]), /host_reference_overlap/)
   await assert.rejects(fs.stat(path.join(second, 'config/endpoint.json')), { code: 'ENOENT' })
 })

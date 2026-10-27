@@ -4,8 +4,8 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createHash } from 'node:crypto'
-import { validateConfig, validateDirectory, installationReferences, isNativeRuntimeConfig, isWindowsUNCWorkspacePath } from './endpoint.mjs'
-import { DeploymentTransactions, DeploymentError, deploymentLayout } from './deployment.mjs'
+import { validateConfig, validateDirectory, isNativeRuntimeConfig, isWindowsUNCWorkspacePath } from './endpoint.mjs'
+import { DeploymentTransactions, DeploymentError, deploymentLayout, hostReferenceLayout } from './deployment.mjs'
 import { acquireLeases } from './lifecycle.mjs'
 import { boundedRead, readSessionHistory } from './session-diagnostics.mjs'
 import { captureSessionContinuation, verifySessionContinuation } from './session-continuation.mjs'
@@ -15,7 +15,6 @@ import { attemptEvidence, nativeRecoveryEvidence, recoveryConfigurationHash } fr
 import { inspectInstalled } from './installed.mjs'
 
 const demand = (ok, code) => { if (!ok) throw new DeploymentError(code) }
-const overlaps = (a, b) => [path.relative(a, b), path.relative(b, a)].some(r => r === '' || !path.isAbsolute(r) && r !== '..' && !r.startsWith(`..${path.sep}`))
 async function optional(file, limit = 65536) {
   try { return await boundedRead(file, limit) } catch (error) { if (error.code === 'ENOENT') return null; throw error }
 }
@@ -105,9 +104,16 @@ export class ProgramDeployment extends DeploymentTransactions {
   }
   async projectRoot(target) {
     const unc = isWindowsUNCWorkspacePath(this.config.sourceRoot)
-    if (!isNativeRuntimeConfig(this.config) && !unc) return
-    const verified = await this.verify(path.join(this.layout.packages, target), target)
-    if (unc) demand(verified.manifest.workspace_unc_source_root === true, 'deployment_unc_workspace_unsupported')
+    let verified
+    // Check reader capability before attempting platform-specific path checks.
+    if (unc) {
+      verified = await this.verify(path.join(this.layout.packages, target), target)
+      demand(verified.manifest.workspace_unc_source_root === true, 'deployment_unc_workspace_unsupported')
+    }
+    const central = hostReferenceLayout(this.root, this.config).references.some(entry => entry.centralized)
+    if (!isNativeRuntimeConfig(this.config) && !unc && !central) return
+    verified ||= await this.verify(path.join(this.layout.packages, target), target)
+    if (central) demand(verified.manifest.central_component_data === true, 'deployment_central_data_unsupported')
     if (!isNativeRuntimeConfig(this.config)) return
     demand(verified.manifest.native_runtime, 'deployment_native_connector_missing')
     demand(verified.manifest.native_runtime_project_root, 'deployment_native_project_root_unsupported')
@@ -178,8 +184,7 @@ export async function programDeployment(root, { prepare = false, io = fs, checkp
   try { config = validateConfig(JSON.parse(configRaw)); if (runtimeRaw !== null) validateRuntimeRequest(JSON.parse(runtimeRaw), config) }
   catch { throw new DeploymentError('deployment_configuration_invalid') }
   demand([2, 3].includes(config.schema), 'deployment_existing_installations_required')
-  const external = installationReferences(config)
-  demand(external.every(location => [layout.config, layout.data, layout.logs].every(owned => !overlaps(owned, location))), 'deployment_reference_overlap')
+  demand(hostReferenceLayout(root, config).compatible, 'deployment_reference_overlap')
   // The same root convention as ForegroundHost. No external directory is made.
   const lifecycleDirectory = path.join(layout.data, 'endpoint')
   if (prepare) {

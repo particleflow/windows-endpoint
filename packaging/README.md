@@ -32,6 +32,12 @@ Keep the extracted software directory separate from the existing host root and
 all component configuration, workspaces, Pi sessions, journals and logs. Extraction
 does not configure or activate anything. Never extract over a running installation.
 Use the host's existing `config`, `data` and `logs` directories.
+A fresh installation can keep dedicated Herdr/Pi/Runtime component configuration
+and state under that same persistent root. The shared layout check is used by
+configure, setup, host and program update; `layout --config FILE --root DIR`
+reports references without opening credentials or asserting live readiness.
+See [persistent layout and migration boundaries](../docs/persistent-installation-layout.md).
+This does not move an existing installation or install external prerequisites.
 
 Fill `examples/endpoint.native-runtime.example.json` with the existing authorized
 mapping and save the input outside the software directory. The placeholders

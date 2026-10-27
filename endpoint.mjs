@@ -311,7 +311,10 @@ export async function configure(from, to, root, { browseSourceRoot = false, choo
   absolute(to)
   await canonical(path.dirname(to))
   const locations = installationReferences(config)
-  if (layout && config.schema >= 2) requireThat(locations.every(location => [layout.config, layout.data, layout.logs].every(owned => !overlaps(owned, location))), 'host_reference_overlap')
+  if (layout && config.schema >= 2) {
+    const { hostReferenceLayout } = await import('./deployment.mjs')
+    requireThat(hostReferenceLayout(root, config).compatible, 'host_reference_overlap')
+  }
   requireThat(!locations.some(location => overlaps(location, to)), 'configuration_location_rejected')
   // Exclusive creation; upgrading never overwrites the references or credentials.
   const handle = await fs.open(to, 'wx')
@@ -524,8 +527,15 @@ export async function main(args) {
     requireThat(/^--[a-z][a-z0-9-]*$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'invalid_arguments')
     options[rest[i]] = rest[i + 1]
   }
-  if (command === 'help' || !command) return { commands: ['setup --from FILE --root DIR --source DIR --manifest-sha256 SHA256 --transfer disabled|existing-queue [--browse-source-root native]', 'configure --from FILE --root DIR [--browse-source-root native]', 'directory-pick [--config FILE]', 'configure --from FILE --config FILE', 'doctor --config FILE', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR', 'host recover --root DIR --expected-run UUID --expected-state-sha256 SHA256 --expected-configuration-sha256 SHA256', 'host handoff-status --root DIR --request-id UUID', 'deploy install|update --root DIR --source DIR --manifest-sha256 SHA256', 'deploy rollback --root DIR --manifest-sha256 SHA256', 'deploy run|recover|status --root DIR'], status: 'portable program deployment and foreground review available; production release and active-task handoff remain unqualified' }
+  if (command === 'help' || !command) return { commands: ['setup --from FILE --root DIR --source DIR --manifest-sha256 SHA256 --transfer disabled|existing-queue [--browse-source-root native]', 'configure --from FILE --root DIR [--browse-source-root native]', 'directory-pick [--config FILE]', 'configure --from FILE --config FILE', 'doctor --config FILE', 'layout --config FILE --root DIR', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR', 'host recover --root DIR --expected-run UUID --expected-state-sha256 SHA256 --expected-configuration-sha256 SHA256', 'host handoff-status --root DIR --request-id UUID', 'deploy install|update --root DIR --source DIR --manifest-sha256 SHA256', 'deploy rollback --root DIR --manifest-sha256 SHA256', 'deploy run|recover|status --root DIR'], status: 'portable program deployment and foreground review available; production release and active-task handoff remain unqualified' }
   if (['start', 'activate', 'update', 'rollback', 'uninstall'].includes(command)) throw new EndpointError('qualification_required_no_runtime_or_data_changed')
+  if (command === 'layout') {
+    keys(options, ['--config', '--root'])
+    const { hostReferenceLayout } = await import('./deployment.mjs')
+    const result = hostReferenceLayout(options['--root'], validateConfig(await readJSON(options['--config'])))
+    return { ...result, state: result.compatible ? 'layout_references_valid' : 'deferred',
+      ...(result.compatible ? {} : { reason: 'host_reference_overlap' }), capabilitiesVerified: false }
+  }
   if (command === 'directory-pick') {
     keys(options, [], ['--config'])
     const { pickDirectory } = await import('./directory-selection.mjs')

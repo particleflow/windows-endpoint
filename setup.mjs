@@ -2,9 +2,9 @@
 // No service registration, credential write, component install or process start.
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
-import { validateConfig, validateDirectory, configure, installationReferences, isNativeRuntimeConfig, isWindowsUNCWorkspacePath, catalog } from './endpoint.mjs'
+import { validateConfig, validateDirectory, configure, isNativeRuntimeConfig, isWindowsUNCWorkspacePath, catalog } from './endpoint.mjs'
 import { verifyCandidate } from './candidate.mjs'
-import { deploymentLayout } from './deployment.mjs'
+import { deploymentLayout, hostReferenceLayout } from './deployment.mjs'
 import { programDeploymentMain } from './program-deployment.mjs'
 import { installedDoctor } from './installed.mjs'
 import { validateRuntimeRequest } from './runtime.mjs'
@@ -58,7 +58,9 @@ export async function setupEndpoint({ from, root, source, manifestSha256, transf
   demand(!isNativeRuntimeConfig(config) || verified.manifest?.native_runtime_project_root, 'deployment_native_project_root_unsupported')
   demand(!isNativeRuntimeConfig(config) || !config.transferConfigDir || verified.manifest?.native_transfer_directory_pair === true && verified.manifest.native_transfer_direct_cli === true, 'deployment_transfer_directories_unsupported')
   const request = validateRuntimeRequest({ schema: 2, mode: 'existing-installations', transfer }, config)
-  demand(installationReferences(config).every(location => [layout.config, layout.data, layout.logs].every(owned => !overlaps(owned, location))), 'host_reference_overlap')
+  const references = hostReferenceLayout(root, config)
+  demand(references.compatible, 'host_reference_overlap')
+  demand(!references.references.some(entry => entry.centralized) || verified.manifest?.central_component_data === true, 'deployment_central_data_unsupported')
   demand(!overlaps(source, root), 'setup_source_destination_overlap')
   const configFile = path.join(layout.config, 'endpoint.json'), runtimeFile = path.join(layout.config, 'runtime.json')
   // Reject existing conflicts before creating anything. Unknown files are kept.
