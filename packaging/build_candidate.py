@@ -13,6 +13,7 @@ import zipfile
 RUNTIME_FILES = (
     'endpoint.mjs', 'endpoint.ps1', 'WindowsEndpoint.ps1', 'product-installation.mjs', 'host.mjs', 'runtime.mjs', 'installed.mjs',
     'pi-catalog-sync.mjs', 'pi-catalog-store.mjs', 'pi-catalog-lifecycle.mjs', 'pi-catalog-replace.ps1', 'pi-magpie-catalog.mjs',
+    'pi-magpie-native-extension.mjs', 'pi-magpie-native-profile-entry.mjs', 'pi-native-catalog-profile.mjs',
     'native-connector.mjs', 'native-connector-child.mjs', 'setup.mjs', 'host-recovery.mjs', 'host-recovery.ps1',
     'directory-selection.mjs', 'directory-selection.ps1',
     'lifecycle.mjs', 'handoff.mjs', 'owned-herdr.ps1', 'session-continuation.mjs',
@@ -157,6 +158,9 @@ def build(source, commit, producer, producer_source, output, native_runtime=None
         'central_component_data': True,
         'stable_installation_entry': 1,
         'state_profile': 'endpoint-program-v1',
+        'native_pi_catalog': {'schema': 1, 'mode': 'pi-in-process', 'piVersion': '1.4.0',
+                              'entry': 'pi-magpie-native-profile-entry.mjs',
+                              'settingsKey': 'windowsEndpointPiCatalog', 'legacyFileSync': False},
         'files': [{'path': name, 'size': len(data), 'sha256': sha(data)} for name, data in sorted(payload.items())],
     }
     if native:

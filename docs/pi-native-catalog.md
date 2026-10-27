@@ -8,15 +8,25 @@ this extension. The ACL diagnostic archive remains historical evidence only.
 
 ## Loading contract for the existing launch/profile owner
 
+Normal JSON product invocations now use the package resource
+`pi-magpie-native-profile-entry.mjs` in the selected profile's native
+`settings.json.extensions` list. It reads the explicit nonsecret
+`windowsEndpointPiCatalog` binding from that same file and calls the extension
+with defaults for the approved provider. No extra task argv is needed. The
+package manifest advertises this resource and includes all adjacent imports.
+See [the exact owner integration interface](pi-native-catalog-product-wiring.md)
+for the read-only preparation/preflight APIs, legacy-writer retirement and
+the remaining owner-only host call-site changes.
+
 The resource is pi-magpie-native-extension.mjs, with its existing local imports
 pi-magpie-catalog.mjs and pi-catalog-sync.mjs retained alongside it. Pi's normal
 extension loader supplies the installed official SDK export readStoredCredential.
 No npm plugin, second Pi installation, external service or new credential is
 required for production loading. No writer/profile configuration is changed here.
 
-The launch owner must pass the already selected absolute PI_CODING_AGENT_DIR and
-load this resource through the existing official extension mechanism, with
-`--magpie-native-provider EXISTING_APPROVED_ID`. There is no provider ID, URL,
+The launch owner must pass the already selected absolute PI_CODING_AGENT_DIR.
+For direct diagnostic loading of the raw extension rather than the product
+profile entry, use `--magpie-native-provider EXISTING_APPROVED_ID`. There is no provider ID, URL,
 profile path or model ID default. The provider must already exist in that profile's
 models.json. A missing/invalid selection leaves it disabled/configuration_required.
 `--magpie-native-interval-ms` defaults to 60000 and accepts at least 1000 ms.
@@ -118,3 +128,4 @@ task execution, or production functional acceptance. No paid turn was executed.
 - https://github.com/earendil-works/pi/blob/4a080252f06caf63a525d7873c5d94d3c23887e0/packages/coding-agent/src/core/models-store.ts
 - https://github.com/earendil-works/pi/blob/4a080252f06caf63a525d7873c5d94d3c23887e0/packages/coding-agent/src/core/auth-storage.ts
 - https://github.com/earendil-works/pi/blob/4a080252f06caf63a525d7873c5d94d3c23887e0/packages/coding-agent/src/modes/rpc/rpc-mode.ts#L488
+- https://github.com/earendil-works/pi/blob/4a080252f06caf63a525d7873c5d94d3c23887e0/packages/coding-agent/docs/settings.md#resources
