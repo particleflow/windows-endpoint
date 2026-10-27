@@ -19,7 +19,7 @@ export class PiCatalogLifecycle {
     if (this.controller.signal.aborted || this.now() < this.due) return Promise.resolve(this.lastResult)
     this.due = this.now() + this.intervalMs
     this.active = syncPiCatalogOnce({ ...this.store, providerId: this.providerId, discover: this.discover, signal: this.controller.signal })
-      .then(result => { this.lastResult = result; if (result === 'conflict') this.controller.abort(); return result })
+      .then(result => { this.lastResult = result; if (['conflict', 'unsupported_acl'].includes(result)) this.controller.abort(); return result })
       .finally(() => { this.active = null })
     return this.active
   }

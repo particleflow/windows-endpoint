@@ -50,6 +50,7 @@ export async function syncPiCatalogOnce({ read, discover, compareAndSwap, provid
     return await compareAndSwap(before, `${JSON.stringify(merged, null, 2)}\n`, { signal }) ? 'updated' : 'conflict'
   } catch (error) {
     if (error?.code === 'catalog_recovery_required') return 'conflict'
+    if (error?.code === 'catalog_acl_unsupported') return 'unsupported_acl'
     return signal?.aborted ? 'cancelled' : 'unavailable'
   }
 }

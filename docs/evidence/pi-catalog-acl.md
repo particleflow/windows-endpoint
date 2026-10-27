@@ -106,3 +106,36 @@ with the separate specialist. Actual installed PowerShell entry tests were
 skipped downstream of the main suite failure. The retained native packaged
 transfer/authentication/TLS acceptance gate also failed separately; no system
 trust import or onsite TLS operation was performed.
+
+## Historical refusal-only checkpoint `81076c2`
+
+This is not proved to be fixture initialization noise. Microsoft states that
+removing a parent's inheritable ACE removes its inherited copies in children;
+an explicit grant is not such a copy. Therefore the observed conversion can
+change future revocation and evaluation-order semantics, even with equal rights
+today. The strict inherited-flag assertion is retained, including a new direct
+negative case. No current-SID/mask-only relaxation is allowed.
+
+Product correction is fail-closed: check native DACL before replacement and before
+the durable pending marker; refuse unprotected or inherited DACLs without setting
+or rewriting them. Retain success only for already protected explicit DACLs,
+then verify owner/group/DACL of the actual backup and installed file. An unsafe
+ACL returns terminal `unsupported_acl`; the existing target is untouched and no
+new transaction remains. The PowerShell product helper uses .NET file/security
+APIs, avoiding module autoloading for the new native guard.
+
+Windows fixtures now make their newly allocated positive-test files explicitly
+protected (current-user-only) and separately prove that an unprotected fixture
+is refused with exact bytes, identity, ACL/flags and directory contents unchanged.
+The fixture initialization is explicit because the product's supported scope
+changed; it is not presented as a reinterpretation of the failed inherited case.
+The same-byte/different-identity race fixture also remains protected so it reaches
+the identity guard instead of being refused by the new ACL prerequisite.
+
+This does not yet enable safe writes for an actual inherited Pi profile; a fully
+functional inherited-ACL-preserving publication method remains an open gap. No
+real ACL normalization, security-policy change, environment permission bypass,
+remote push, PR update, model call or onsite write is part of this revision.
+New Windows protected-write and unchanged-refusal tests remain unexecuted in this
+Linux environment. Local unit regressions verify flag-change rejection, terminal
+unsupported status and no repeat discovery/write; they are not Windows proof.

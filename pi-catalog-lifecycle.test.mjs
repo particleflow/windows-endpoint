@@ -19,11 +19,12 @@ const addition = { id: 'from-catalog', contextWindow: 1000, maxTokens: 100, reas
 const simulatedReplace = async ({ file, temporary, backup }) => { await fs.rename(file, backup); await fs.rename(temporary, file) }
 const storeFor = file => createPiCatalogStore(file, process.platform === 'win32' ? {} : { replace: simulatedReplace })
 const commit = process.platform === 'win32' ? replacePiCatalogFile : simulatedReplace
-async function disk(t) {
+async function disk(t, { protect = true } = {}) {
   const piConfigDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'pi-catalog-')))
   t.after(() => fs.rm(piConfigDir, { recursive: true, force: true }))
   const file = path.join(piConfigDir, 'models.json'), raw = JSON.stringify(original)
   await fs.writeFile(file, raw, { mode: 0o600 })
+  if (process.platform === 'win32' && protect) await fixtureAcl(file, 'restrict-fixture')
   return { config: { piConfigDir }, file, raw, store: storeFor(file) }
 }
 test('disk publication keeps mode, rejects edits and leaves no temporary files', async t => {
@@ -51,6 +52,15 @@ test('cycle publishes once, repeated data and failures preserve bytes and mtime'
   assert.equal(await fs.readFile(f.file, 'utf8'), written)
   assert.equal((await fs.stat(f.file, { bigint: true })).mtimeNs, stamp)
   await lifecycle.stop()
+})
+test('unsupported ACL stops this lifecycle without retrying discovery or writing again', async () => {
+  let discoveries = 0, writes = 0
+  const lifecycle = new PiCatalogLifecycle({ config:{piConfigDir:'/unused'}, providerId:'approved', discover:async () => { discoveries++; return [addition] }, store:{
+    read:async () => JSON.stringify(original), compareAndSwap:async () => { writes++; throw Object.assign(Error('catalog_acl_unsupported'),{code:'catalog_acl_unsupported'}) },
+  } })
+  assert.equal(await lifecycle.tick(),'unsupported_acl')
+  assert.equal(await lifecycle.tick(),'unsupported_acl')
+  assert.equal(discoveries,1); assert.equal(writes,1)
 })
 test('cancellation aborts in-flight discovery and prevents publication or restart', async t => {
   const f = await disk(t); let entered
@@ -117,15 +127,23 @@ test('ACL child module path isolation survives mixed casing and leaves the paren
   assert.equal(process.env.PSModulePath, parent)
 })
 test('Windows ReplaceFile preserves the destination ACL', { skip: process.platform !== 'win32' }, async t => {
-  for (const mode of ['read', 'restrict-fixture']) {
-    const f = await disk(t), store = createPiCatalogStore(f.file)
-    const permissions = await fixtureAcl(f.file, mode), before = await store.read()
-    if (mode === 'restrict-fixture') { assert.equal(permissions.protected, true); assert.equal(permissions.aces.length, 1) }
-    assert.equal(await store.compareAndSwap(before, before + '\n'), true)
-    assertCatalogAclPreserved(permissions, await fixtureAcl(f.file))
-    const backup = (await fs.readdir(f.config.piConfigDir)).find(name => name.endsWith('.previous'))
-    assertCatalogAclPreserved(permissions, await fixtureAcl(path.join(f.config.piConfigDir, backup)))
-  }
+  const f = await disk(t), store = createPiCatalogStore(f.file)
+  const permissions = await fixtureAcl(f.file), before = await store.read()
+  assert.equal(permissions.protected, true); assert.equal(permissions.aces.length, 1)
+  assert.equal(await store.compareAndSwap(before, before + '\n'), true)
+  assertCatalogAclPreserved(permissions, await fixtureAcl(f.file))
+  const backup = (await fs.readdir(f.config.piConfigDir)).find(name => name.endsWith('.previous'))
+  assertCatalogAclPreserved(permissions, await fixtureAcl(path.join(f.config.piConfigDir, backup)))
+})
+test('Windows unprotected ACL is refused before replacement with bytes, identity and propagation flags intact', { skip: process.platform !== 'win32' }, async t => {
+  const f = await disk(t, { protect: false }), store = createPiCatalogStore(f.file)
+  const permissions = await fixtureAcl(f.file, 'inherit-fixture'), before = await store.read(), initial = await fs.stat(f.file, { bigint: true })
+  assert.equal(permissions.protected, false)
+  await assert.rejects(store.compareAndSwap(before, before + '\n'), { code: 'catalog_acl_unsupported' })
+  assert.equal(await fs.readFile(f.file, 'utf8'), before)
+  assert.equal((await fs.stat(f.file, { bigint: true })).ino, initial.ino)
+  assert.deepEqual(await fixtureAcl(f.file), permissions)
+  assert.deepEqual(await fs.readdir(f.config.piConfigDir), ['models.json'])
 })
 test('ACL comparison allows only appended identical inherited ACEs, never expanded rights', () => {
   const allow = { inherited: false, binary: 'synthetic-allow-user-full' }, deny = { inherited: false, binary: 'synthetic-deny-other-write' }
@@ -138,6 +156,7 @@ test('ACL comparison allows only appended identical inherited ACEs, never expand
     {aces:[deny,allow,allow]}, {aces:[{...allow,inherited:true},deny,allow]},
   ]) assert.throws(() => assertCatalogAclPreserved(before, {...before,...change}))
   assert.throws(() => assertCatalogAclPreserved({...before,protected:true},before))
+  assert.throws(() => assertCatalogAclPreserved({...before,aces:[{...allow,inherited:true}]},{...before,aces:[allow]}))
 })
 test('edit in the final replacement window is preserved, detected and stops future sync', async t => {
   const f = await disk(t); let calls = 0
@@ -160,8 +179,12 @@ test('edit in the final replacement window is preserved, detected and stops futu
 test('same bytes from a different file identity are also a conflict', async t => {
   const f = await disk(t)
   const store = createPiCatalogStore(f.file, { replace: async args => {
-    const editor = path.join(f.config.piConfigDir, 'editor.tmp')
-    await fs.writeFile(editor, f.raw); await fs.rename(editor, f.file)
+    const editorDirectory = path.join(f.config.piConfigDir, 'pi-catalog-editor')
+    await fs.mkdir(editorDirectory)
+    const editor = path.join(editorDirectory, 'models.json')
+    await fs.writeFile(editor, f.raw)
+    if (process.platform === 'win32') await fixtureAcl(editor, 'restrict-fixture')
+    await fs.rename(editor, f.file); await fs.rmdir(editorDirectory)
     await commit(args)
   } })
   const before = await store.read()
