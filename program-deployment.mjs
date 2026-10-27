@@ -114,6 +114,10 @@ export class ProgramDeployment extends DeploymentTransactions {
     if (!isNativeRuntimeConfig(this.config) && !unc && !central) return
     verified ||= await this.verify(path.join(this.layout.packages, target), target)
     if (central) demand(verified.manifest.central_component_data === true, 'deployment_central_data_unsupported')
+    // Once a stable product entry is installed, selecting an older program
+    // without its CLI protocol would strand dependency/recovery commands.
+    if (await optional(path.join(this.layout.control,'installation.json')) !== null)
+      demand(verified.manifest.stable_installation_entry === 1, 'deployment_stable_entry_unsupported')
     if (!isNativeRuntimeConfig(this.config)) return
     demand(verified.manifest.native_runtime, 'deployment_native_connector_missing')
     demand(verified.manifest.native_runtime_project_root, 'deployment_native_project_root_unsupported')

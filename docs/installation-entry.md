@@ -95,6 +95,11 @@ original explicit run/state/configuration CAS arguments; it never resumes Pi
 business automatically. A prepared entry receipt requires repeating the same
 installer source rather than bypassing it. The stable launcher protocol is 1;
 future incompatible launcher changes require a separately reviewed installer.
+An installation with this stable entry refuses selecting a previous program
+that does not advertise launcher protocol 1. Its original package, data and
+receipt are retained; rollback is only to a reader supporting the installed
+entry and existing state/producer profile. Roots without an installed entry
+retain their original compatibility rules.
 
 `-Action UninstallPlan` is explicitly non-destructive: program deletion is not
 implemented in this batch. It reports retention of config, credentials, queues,

@@ -10,6 +10,8 @@ import { acquireLeases } from './lifecycle.mjs'
 import { nativeInstalledFixture } from './test-support/installed-fixture.mjs'
 import { programPackage } from './test-support/program-package.mjs'
 import { programPaths } from './endpoint.mjs'
+import { digest } from './endpoint.mjs'
+import { programDeployment } from './program-deployment.mjs'
 
 async function fixture(t) {
   const f = await nativeInstalledFixture(t), root = path.join(f.base,'persistent product')
@@ -138,4 +140,15 @@ test('first setup persists the installed bundle reference and no longer depends 
   assert.deepEqual(saved.connector,f.config.connector)
   await fs.rm(f.source.directory,{recursive:true})
   assert.ok((await fs.stat(programPaths(saved).connector)).isFile())
+})
+test('installed stable entry refuses an unsupported old program reader without switching or changing its receipt',async t=>{
+  const f=await fixture(t);await installProduct(f.options,f.deps)
+  const old=await programPackage(path.join(f.base,'old reader'),'old',{native:true})
+  delete old.manifest.stable_installation_entry
+  await fs.writeFile(path.join(old.directory,'candidate.json'),JSON.stringify(old.manifest))
+  const oldHash=await digest(path.join(old.directory,'candidate.json')),manager=await programDeployment(f.root)
+  await manager.stage(old.directory,oldHash)
+  const before=await fs.readFile(manager.file),receipt=await fs.readFile(f.receipt)
+  for(const action of ['update','rollback'])await assert.rejects(manager.select(oldHash,action),{code:'deployment_stable_entry_unsupported'})
+  assert.deepEqual(await fs.readFile(manager.file),before);assert.deepEqual(await fs.readFile(f.receipt),receipt)
 })
