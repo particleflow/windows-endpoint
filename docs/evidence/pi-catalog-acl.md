@@ -59,3 +59,29 @@ Expect both selected tests to pass on Windows, with both inherited/protected
 subcases and original/backup checks executed. Run on both the failing CI image
 and the owner's isolated Windows directory; do not relabel Linux or historical
 onsite results as this new Windows result. No model endpoint is contacted.
+
+## Subsequent owner verification and module-path isolation
+
+The owner subsequently reported f85e65ce's two selected real Windows tests passing
+2/2 with zero skips. Its first attempt failed before ACL comparison because the
+inherited PSModulePath prevented Get-Acl from loading. Restricting that test
+process to Windows PowerShell's own modules resolved it; the owner restored
+TEMP/TMP/PSModulePath. This report is separate from the earlier CI ACL failure.
+
+Microsoft documents that PowerShell 7's module-path compatibility handling applies
+only to directly launched Windows PowerShell. Node as an intermediate process
+can forward incompatible module paths:
+https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_psmodulepath
+
+The source now supplies the ACL test child with a cloned environment, removes
+case variants of PSModulePath, and names the invoked Windows PowerShell's Modules
+directory. The test script pins $PSHOME/Modules again after startup, since Windows
+PowerShell may insert AllUsers paths during startup. Parent environment, TEMP/TMP,
+registry, global module paths and script policies are untouched. This changes only
+test support, not the production replacement helper or ACL assertions.
+
+A new targeted child-process regression, including mixed-case pollution, confirms
+that the intended environment reaches a child and the parent values remain exact.
+It passes locally 1/1; no prior Windows ACL tests or old seven-case suite were
+repeated. The owner's successful Windows run used equivalent manual isolation;
+it is not relabeled as execution of the subsequent source patch.

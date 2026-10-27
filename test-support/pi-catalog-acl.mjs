@@ -1,4 +1,14 @@
 import assert from 'node:assert/strict'
+import path from 'node:path'
+
+export function aclChildProcessOptions(executable, inherited = process.env) {
+  const env = { ...inherited }
+  // Node may sit between pwsh and Windows PowerShell, so pwsh's direct-child
+  // compatibility handling cannot be assumed. Never mutate the parent env.
+  for (const key of Object.keys(env)) if (key.toLowerCase() === 'psmodulepath') delete env[key]
+  env.PSModulePath = path.win32.join(path.win32.dirname(executable), 'Modules')
+  return { windowsHide: true, timeout: 10000, maxBuffer: 16384, env }
+}
 
 // Allow only the Windows inheritance normalization seen in CI: an unchanged
 // ordered DACL followed by inherited duplicates. No sorting or SID/mask union:

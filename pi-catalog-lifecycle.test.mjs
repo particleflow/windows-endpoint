@@ -6,7 +6,7 @@ import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
-import { assertCatalogAclPreserved } from './test-support/pi-catalog-acl.mjs'
+import { assertCatalogAclPreserved, aclChildProcessOptions } from './test-support/pi-catalog-acl.mjs'
 import { createPiCatalogStore, replacePiCatalogFile } from './pi-catalog-store.mjs'
 import { PiCatalogLifecycle } from './pi-catalog-lifecycle.mjs'
 import { ForegroundHost } from './host.mjs'
@@ -100,11 +100,22 @@ test('stop completes even when discovery ignores abort, and late data cannot wri
   assert.equal(await fs.readFile(f.file, 'utf8'), f.raw)
 })
 async function fixtureAcl(file, mode = 'read') {
-  const result = await promisify(execFile)(path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+  const executable = path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe')
+  const result = await promisify(execFile)(executable,
     ['-NoLogo','-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./test-support/pi-catalog-acl.ps1', import.meta.url)),file,mode],
-    { windowsHide: true, timeout: 10000, maxBuffer: 16384 })
+    aclChildProcessOptions(executable))
   return JSON.parse(result.stdout.replace(/^\uFEFF/, ''))
 }
+test('ACL child module path isolation survives mixed casing and leaves the parent unchanged', async () => {
+  const inherited = { PSModulePath: 'synthetic-pwsh7', psmodulepath: 'synthetic-other-modules', TEMP:'synthetic-temp', TMP:'synthetic-tmp', SystemRoot: process.env.SystemRoot ?? 'C:\\Windows' }
+  const saved = { ...inherited }, parent = process.env.PSModulePath
+  const options = aclChildProcessOptions('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', inherited)
+  assert.equal(Object.keys(options.env).filter(key => key.toLowerCase() === 'psmodulepath').length, 1)
+  const result = await promisify(execFile)(process.execPath, ['-e', 'process.stdout.write(JSON.stringify({modules:process.env.PSModulePath,temp:process.env.TEMP,tmp:process.env.TMP}))'], options)
+  assert.deepEqual(JSON.parse(result.stdout), {modules:'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules', temp:inherited.TEMP, tmp:inherited.TMP})
+  assert.deepEqual(inherited, saved)
+  assert.equal(process.env.PSModulePath, parent)
+})
 test('Windows ReplaceFile preserves the destination ACL', { skip: process.platform !== 'win32' }, async t => {
   for (const mode of ['read', 'restrict-fixture']) {
     const f = await disk(t), store = createPiCatalogStore(f.file)
