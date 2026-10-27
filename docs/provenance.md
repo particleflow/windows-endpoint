@@ -67,17 +67,23 @@ license. Only those 30 data vectors are imported; no Go implementation is copied
 They retain the same blob at the current producer pin. The source-built test
 executable runs its original contract test against all 30 cases in that checkout.
 It separately runs both task API-base boundary tests and requires all 13 cases.
-The current producer fix validates the original base's 2048-byte limit before
+That API-base migration validates the original base's 2048-byte limit before
 appending the fixed task namespace and validated IDs; it preserves TLS, ID and
 authentication checks without changing configuration or queue bytes.
 
-Compared with the preceding `4c880e07` component, the transfer build closure
-changes only `internal/transferclient/api_base.go`, `api_base_test.go`,
+At that API-base migration checkpoint, compared with `4c880e07`, the build closure
+changed only `internal/transferclient/api_base.go`, `api_base_test.go`,
 `client.go` and that vector file. CLI JSON/actions, queue and publication code,
 `deliverymeta`, raw-byte `HostBinding`, plugin 0.7.0, module dependencies and the
-seven-payload build script are unchanged. Official Herdr/Pi pins are unchanged; the Agenvo catalog entry remains only for
+seven-payload build script were unchanged at that checkpoint. The Agenvo catalog entry remains only for
 historical bundle-manifest decoding, without an installation or staging adapter.
 Previously ambiguous direct-CLI API bases now fail validation; no configuration
 bytes, queue identities or stored records are normalized or migrated. A source
 pin update alone does not establish a safe live component upgrade or production
 qualification.
+
+The current retained-snapshot candidate instead selects producer
+`62d27ed995c53f405297eb0069290f3aefba2c51`, with additional producer/CLI changes.
+The historical four-file closure above does not describe that source. Its exact
+strict-TLS build, Windows executable inventory and new upstream Go/CLI cases
+remain subject to the [qualification record](evidence/closed-snapshot-producer-qualification.md).
