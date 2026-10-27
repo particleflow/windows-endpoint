@@ -13,6 +13,18 @@ import { captureSessionContinuation, verifySessionContinuation } from './session
 import { installedFixture, nativeInstalledFixture } from './test-support/installed-fixture.mjs'
 import { deploymentReferences } from './deployment.mjs'
 
+test('native Pi profile may contain its existing official Pi installation without changing other overlap rules', async t => {
+  const f = await nativeInstalledFixture(t)
+  const profile = f.config.piConfigDir
+  const programs = { ...f.config.programs, piPackage: path.join(profile, 'install/release/package'), piBin: path.join(profile, 'install/release/bin') }
+  const config = { ...f.config, programs }
+  assert.equal(validateConfig(config), config)
+  assert.equal(managedEnvironment(config).PI_CODING_AGENT_DIR, profile)
+  assert.throws(() => validateConfig({ ...config, piConfigDir: programs.piPackage }), { code: 'data_program_overlap' })
+  assert.throws(() => validateConfig({ ...config, programs: { ...programs, node: path.join(profile, 'other/node.exe') } }), { code: 'data_program_overlap' })
+  assert.throws(() => validateConfig({ ...config, sourceRoot: profile }), { code: 'data_program_overlap' })
+})
+
 test('owned component exit and stderr byte evidence survives replacement without recording private stderr', async t => {
   const f = await installedFixture(t)
   f.config.programs.node = process.execPath

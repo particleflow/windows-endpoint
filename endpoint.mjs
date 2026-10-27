@@ -131,7 +131,13 @@ export function validateConfig(config) {
     requireThat(path.basename(config.herdrConfigRoot) === 'herdr' && path.basename(config.herdrStateRoot) === 'herdr', 'herdr_root_name_required')
     const programs = programPaths(config)
     const programRoots = [path.dirname(programs.node), ...(programs.herdr ? [path.dirname(programs.herdr)] : []), config.programs.piPackage, config.programs.piBin, config.programs.gitRoot, connectorPackageRoot(config)]
-    for (const root of roots.map(k => config[k])) for (const location of programRoots) requireThat(!overlaps(root, location), 'data_program_overlap')
+    for (const key of roots) for (const location of programRoots) {
+      const relative = path.relative(config.piConfigDir, location)
+      const existingPiWithinProfile = native && key === 'piConfigDir' &&
+        [config.programs.piPackage, config.programs.piBin].includes(location) && relative !== '' &&
+        !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`)
+      requireThat(existingPiWithinProfile || !overlaps(config[key], location), 'data_program_overlap')
+    }
     if (native) {
       for (const location of [...roots.map(k => config[k]), ...programRoots]) requireThat(!overlaps(config.connector.enrollmentFile, location), 'connector_enrollment_overlap')
     }
