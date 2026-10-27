@@ -5,7 +5,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { PassThrough } from 'node:stream'
-import { programDeployment, programDeploymentMain, runSelectedProgram, prepareProfileSwitch } from './program-deployment.mjs'
+import { programDeployment, programDeploymentMain, runSelectedProgram, prepareProfileSwitch, archiveProfileSwitch } from './program-deployment.mjs'
 import { verifyCandidate } from './candidate.mjs'
 import { digest } from './endpoint.mjs'
 import { StateStore, acquireLeases } from './lifecycle.mjs'
@@ -54,6 +54,17 @@ test('profile preparation fixes original hashes, is reentrant, and blocks host s
   await assert.rejects(prepareProfileSwitch(options, { checkpoint: async phase => { if (phase === 'prepared') throw new Error('simulated interruption') } }))
   assert.equal((await prepareProfileSwitch(options)).state, 'already_prepared')
   await assert.rejects(prepareProfileSwitch({ ...options, requestId: randomUUID() }), { code: 'deployment_profile_switch_pending_conflict' })
+  const marker = await fs.readFile(pending)
+  await assert.rejects(archiveProfileSwitch(options, { checkpoint: async phase => { if (phase === 'archived_configuration') throw new Error('synthetic interruption') } }))
+  assert.equal((await archiveProfileSwitch(options)).state, 'old_files_archived')
+  const archive = path.join(f.manager.lifecycleDirectory, 'profile-switch-history')
+  assert.deepEqual(await fs.readFile(path.join(archive, `${options.requestId}.configuration.json`)), configRaw)
+  assert.deepEqual(await fs.readFile(path.join(archive, `${options.requestId}.lifecycle.json`)), lifecycleRaw)
+  assert.deepEqual(await fs.readFile(pending), marker)
+  const archivedConfig = path.join(archive, `${options.requestId}.configuration.json`)
+  await fs.writeFile(archivedConfig, 'SYNTHETIC FOREIGN CHANGE')
+  await assert.rejects(archiveProfileSwitch(options), { code: 'deployment_profile_switch_archive_conflict' })
+  assert.equal(await fs.readFile(archivedConfig, 'utf8'), 'SYNTHETIC FOREIGN CHANGE')
   let started = false
   const host = new ForegroundHost({ root: f.root, createTestRuntime: async () => { started = true; throw new Error('must not start') } })
   await assert.rejects(host.start(), { code: 'host_profile_switch_recovery_required' })

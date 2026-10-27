@@ -3,7 +3,7 @@
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { validateConfig, validateDirectory, isNativeRuntimeConfig, isWindowsUNCWorkspacePath } from './endpoint.mjs'
 import { DeploymentTransactions, DeploymentError, deploymentLayout, hostReferenceLayout } from './deployment.mjs'
 import { acquireLeases } from './lifecycle.mjs'
@@ -65,6 +65,54 @@ export async function prepareProfileSwitch({ root, requestId, profile, configura
     await manager.unchanged()
     demand(await boundedRead(manager.lifecycleStore.file, 262144) === stateRaw && await attemptEvidence(manager.config) === attempts, 'deployment_profile_switch_evidence_changed')
     return { state: 'prepared', requestId, activation: 'blocked', businessReplayed: false }
+  })
+}
+
+// Retain the old complete files before any later change. This archive is not
+// authority for activation or evidence that NAS admission is paused.
+export async function archiveProfileSwitch({ root, requestId }, { checkpoint = async () => {} } = {}) {
+  demand(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(requestId || ''), 'deployment_profile_switch_arguments_invalid')
+  const manager = await programDeployment(root)
+  demand(isNativeRuntimeConfig(manager.config), 'deployment_profile_switch_native_required')
+  return manager.locked(async () => {
+    await manager.unchanged()
+    const markerFile = path.join(manager.lifecycleDirectory, 'profile-switch-pending.json')
+    const markerRaw = await boundedRead(markerFile, 16384)
+    let marker
+    try { marker = JSON.parse(markerRaw) } catch { throw new DeploymentError('deployment_profile_switch_journal_invalid') }
+    const fields = ['schema','state','requestId','configurationSha256','lifecycleSha256','continuationSha256','attemptsSha256','profile','authority','started','businessReplayed']
+    demand(marker && Object.keys(marker).sort().join(',') === fields.sort().join(',') && marker.schema === 1 && marker.state === 'prepared' &&
+      marker.requestId === requestId && marker.authority === 'preparation_only' && marker.started === false && marker.businessReplayed === false &&
+      [marker.configurationSha256,marker.lifecycleSha256,marker.continuationSha256,marker.attemptsSha256].every(hashValue), 'deployment_profile_switch_journal_invalid')
+    const stateRaw = await boundedRead(manager.lifecycleStore.file, 262144), state = await manager.lifecycleStore.load()
+    demand(!state.handoff && state.sessionContinuation, 'deployment_profile_switch_checkpoint_required')
+    await verifySessionContinuation(manager.config, state.sessionContinuation)
+    demand(sha256(manager.configRaw) === marker.configurationSha256 && sha256(stateRaw) === marker.lifecycleSha256 &&
+      sha256(JSON.stringify(state.sessionContinuation)) === marker.continuationSha256 &&
+      await attemptEvidence(manager.config) === marker.attemptsSha256, 'deployment_profile_switch_evidence_changed')
+    const archive = path.join(manager.lifecycleDirectory, 'profile-switch-history')
+    await directory(archive)
+    const check = async () => {
+      await manager.unchanged()
+      demand(await boundedRead(markerFile, 16384) === markerRaw && await boundedRead(manager.lifecycleStore.file, 262144) === stateRaw &&
+        await attemptEvidence(manager.config) === marker.attemptsSha256, 'deployment_profile_switch_evidence_changed')
+    }
+    for (const [name, bytes] of [['configuration', manager.configRaw], ['lifecycle', stateRaw]]) {
+      const target = path.join(archive, `${requestId}.${name}.json`)
+      const existing = await optional(target, 262144)
+      if (existing !== null) { demand(existing === bytes, 'deployment_profile_switch_archive_conflict'); continue }
+      await check()
+      const temp = path.join(archive, `.${requestId}.${name}.${randomUUID()}.tmp`)
+      const h = await fs.open(temp, 'wx')
+      try { await h.writeFile(bytes); await h.sync() } finally { await h.close() }
+      // No overwrite of an existing archive, even if a foreign writer races.
+      await fs.link(temp, target)
+      await fs.unlink(temp)
+      await checkpoint(`archived_${name}`)
+      await check()
+    }
+    await check()
+    return { state: 'old_files_archived', requestId, activation: 'blocked', businessReplayed: false, nasEvidence: 'not_checked' }
   })
 }
 async function optional(file, limit = 65536) {
@@ -305,10 +353,11 @@ export async function programDeploymentMain(args) {
     demand(/^--[a-z][a-z0-9-]*$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'deployment_arguments_invalid')
     options[rest[i]] = rest[i + 1]
   }
-  const fields = ['install', 'update'].includes(action) ? ['--root', '--source', '--manifest-sha256'] : action === 'rollback' ? ['--root', '--manifest-sha256'] : action === 'prepare-profile' ? ['--root', '--request-id', '--profile', '--configuration-sha256', '--lifecycle-sha256', '--continuation-sha256', '--attempts-sha256'] : ['--root']
-  demand(['install', 'update', 'rollback', 'recover', 'status', 'run', 'prepare-profile'].includes(action) && Object.keys(options).sort().join(',') === fields.sort().join(','), 'deployment_arguments_invalid')
+  const fields = ['install', 'update'].includes(action) ? ['--root', '--source', '--manifest-sha256'] : action === 'rollback' ? ['--root', '--manifest-sha256'] : action === 'prepare-profile' ? ['--root', '--request-id', '--profile', '--configuration-sha256', '--lifecycle-sha256', '--continuation-sha256', '--attempts-sha256'] : action === 'archive-profile' ? ['--root', '--request-id'] : ['--root']
+  demand(['install', 'update', 'rollback', 'recover', 'status', 'run', 'prepare-profile', 'archive-profile'].includes(action) && Object.keys(options).sort().join(',') === fields.sort().join(','), 'deployment_arguments_invalid')
   const root = options['--root'], target = options['--manifest-sha256']
   if (action === 'prepare-profile') return prepareProfileSwitch({ root, requestId: options['--request-id'], profile: options['--profile'], configurationSha256: options['--configuration-sha256'], lifecycleSha256: options['--lifecycle-sha256'], continuationSha256: options['--continuation-sha256'], attemptsSha256: options['--attempts-sha256'] })
+  if (action === 'archive-profile') return archiveProfileSwitch({ root, requestId: options['--request-id'] })
   if (action === 'run') return { hostExitCode: await runSelectedProgram(root) }
   const manager = await programDeployment(root, { prepare: action === 'install' })
   if (action === 'status') return describe(await manager.inventory())
