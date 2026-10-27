@@ -65,6 +65,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: |
+          node --test --test-timeout=30000 directory-selection.windows.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Windows directory dialog assembly probe failed' }
           node --test --test-timeout=30000 product-entry.windows.test.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Installed product foreground entry failed' }
           $node = (Get-Command node.exe).Source

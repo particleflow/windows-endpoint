@@ -106,15 +106,6 @@ if (process.platform === 'win32') test('UNC is a workspace reference only; compo
   assert.equal(JSON.stringify(f.config), original)
 })
 
-if (process.platform === 'win32') test('official Windows folder dialog assembly is available without opening UI or changing configuration', () => {
-  const powershell = path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe')
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== 'PSMODULEPATH'))
-  const result = spawnSync(powershell, ['-NoLogo', '-NoProfile', '-STA', '-NonInteractive', '-File',
-    fileURLToPath(new URL('./directory-selection.ps1', import.meta.url)), '-CheckOnly'], { env, encoding: 'utf8', timeout: 15000, maxBuffer: 4096 })
-  assert.equal(result.status, 0, 'load the Windows built-in assembly only; no interactive picker in CI')
-  assert.deepEqual(JSON.parse(result.stdout), { state: 'available', interactiveDesktopRequired: true })
-})
-
 if (process.platform !== 'win32') test('the public picker fails explicitly outside Windows without opening a substitute UI', () => {
   const result = spawnSync(process.execPath, [fileURLToPath(new URL('./endpoint.mjs', import.meta.url)), 'directory-pick'], {
     encoding: 'utf8', timeout: 5000, maxBuffer: 4096,
