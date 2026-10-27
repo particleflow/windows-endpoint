@@ -105,7 +105,13 @@ export async function setupEndpoint({ from, root, source, manifestSha256, transf
   // Preserve the exact reference request even if it changes while the doctor is
   // probing. The existing transaction then freezes and rechecks these bytes.
   demand(await match(configFile, config) !== null && await match(runtimeFile, request) !== null, 'setup_configuration_changed')
-  const deployment = await install(['install', '--root', root, '--source', source, '--manifest-sha256', manifestSha256])
+  // The product installer is also its explicit upgrade entry. Keep low-level
+  // setup's existing install-only behavior; reuse the normal update transaction
+  // for an already selected, different program without changing references.
+  const selectionRaw = installProgramReferences ? await optional(path.join(layout.control,'deployment.json')) : null
+  const current = selectionRaw === null ? null : parse(selectionRaw).current
+  const mode = installProgramReferences && current && current !== manifestSha256 ? 'update' : 'install'
+  const deployment = await install([mode, '--root', root, '--source', source, '--manifest-sha256', manifestSha256])
   const selected = ['selected_review_only', 'already_selected'].includes(deployment.state)
   const blocked = preflight.checks.some(check => check.state === 'blocked')
   return { state: selected ? 'prepared_review_only' : deployment.state, ready: false, activation: 'not_started',

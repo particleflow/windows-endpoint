@@ -11,6 +11,7 @@ import { nativeInstalledFixture } from './test-support/installed-fixture.mjs'
 import { programPackage } from './test-support/program-package.mjs'
 import { setupEndpoint } from './setup.mjs'
 import { installProduct } from './product-installation.mjs'
+import { digest } from './endpoint.mjs'
 
 assert.equal(process.platform,'win32','this differential entry test requires actual Windows')
 const powershell=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe')
@@ -52,6 +53,22 @@ test('actual installer process refuses unqualified default and reports unverifie
   assert.equal(result.dependencies.installationExecuted,false)
   assert.equal(JSON.parse(await fs.readFile(path.join(root,'control/installation.json'))).phase,'complete')
   assert.equal(await fs.readFile(f.config.connector.enrollmentFile,'utf8'),'SYNTHETIC UNREAD ENROLLMENT')
+  const configuration=await fs.readFile(path.join(root,'config/endpoint.json'))
+  const next=await programPackage(path.join(f.base,'updated installer extraction'),'updated',{native:true})
+  const script=path.join(next.directory,'WindowsEndpoint.ps1')
+  await fs.appendFile(script,'\n# INERT COMPATIBLE INSTALLER UPDATE\n')
+  const member=next.manifest.files.find(file=>file.path==='WindowsEndpoint.ps1')
+  member.size=(await fs.stat(script)).size;member.sha256=await digest(script)
+  await fs.writeFile(path.join(next.directory,'candidate.json'),JSON.stringify(next.manifest))
+  const nextHash=await digest(path.join(next.directory,'candidate.json'))
+  try {
+    await promisify(execFile)(powershell,['-NoProfile','-NonInteractive','-File',script,'-Action','Install','-ProductRoot',root,
+      '-ManifestSha256',nextHash,'-NodePath',f.config.programs.node,'-Transfer','disabled','-ReviewCandidate'],{timeout:20000,maxBuffer:65536})
+    assert.fail('synthetic programs must stay unqualified after update')
+  }catch(e){assert.equal(e.code,2);assert.equal(JSON.parse(e.stdout).reason,'dependencies_unverified')}
+  assert.equal(JSON.parse(await fs.readFile(path.join(root,'control/deployment.json'))).current,nextHash)
+  assert.equal(await fs.readFile(path.join(root,'control/WindowsEndpoint.ps1'),'utf8'),await fs.readFile(script,'utf8'))
+  assert.deepEqual(await fs.readFile(path.join(root,'config/endpoint.json')),configuration)
 })
 test('installed stable PowerShell entry runs and stops the real foreground observer after extraction is removed',async t=>{
   const f=await fixture(t,true),child=spawn(powershell,[...args(f),'-Action','Run'],{stdio:['pipe','pipe','pipe'],windowsHide:true})

@@ -60,6 +60,7 @@ try {
             $ProductRoot = if ($installedEntry) { Split-Path -Parent $PSScriptRoot } else { Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'NAS-Assistant' }
         }
         if (-not $References -and $installedEntry) { $References = Join-Path (Split-Path -Parent $PSScriptRoot) 'config/endpoint.json' }
+        if (-not $References -and (Test-Path -LiteralPath (Join-Path $ProductRoot 'config/endpoint.json'))) { $References = Join-Path $ProductRoot 'config/endpoint.json' }
         $manifest = Verify-Package $Source $ManifestSha256
         if (-not $NodePath) {
             $command = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue

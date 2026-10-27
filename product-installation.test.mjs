@@ -152,3 +152,24 @@ test('installed stable entry refuses an unsupported old program reader without s
   for(const action of ['update','rollback'])await assert.rejects(manager.select(oldHash,action),{code:'deployment_stable_entry_unsupported'})
   assert.deepEqual(await fs.readFile(manager.file),before);assert.deepEqual(await fs.readFile(f.receipt),receipt)
 })
+for(const interruption of [null,'entry_prepared','entry_published'])test(`same installer upgrade preserves data and recovers ${interruption||'without interruption'}`,async t=>{
+  const f=await fixture(t);await installProduct(f.options,f.deps)
+  const next=await programPackage(path.join(f.base,'new installer'),'new',{native:true})
+  const member=path.join(next.directory,'WindowsEndpoint.ps1')
+  await fs.appendFile(member,'\n# INERT TEST OF A COMPATIBLE BOOTSTRAP UPDATE\n')
+  const entry=next.manifest.files.find(file=>file.path==='WindowsEndpoint.ps1')
+  entry.size=(await fs.stat(member)).size;entry.sha256=await digest(member)
+  await fs.writeFile(path.join(next.directory,'candidate.json'),JSON.stringify(next.manifest))
+  const nextHash=await digest(path.join(next.directory,'candidate.json'))
+  const options={...f.options,source:next.directory,manifestSha256:nextHash}
+  if(interruption){
+    await assert.rejects(installProduct(options,{...f.deps,checkpoint:async stage=>{if(stage===interruption)throw new Error('synthetic upgrade interruption')}}))
+    assert.equal(JSON.parse(await fs.readFile(f.receipt)).phase,'prepared')
+  }
+  const result=await installProduct(options,f.deps)
+  assert.equal(result.state,'installed_review_only')
+  assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'control/deployment.json'))).current,nextHash)
+  assert.equal(await fs.readFile(f.entry,'utf8'),await fs.readFile(member,'utf8'))
+  assert.equal(JSON.parse(await fs.readFile(f.receipt)).source_manifest,nextHash)
+  assert.deepEqual(await Promise.all(f.originals.map(p=>fs.readFile(p))),f.before)
+})

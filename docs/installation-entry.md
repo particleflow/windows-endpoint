@@ -81,6 +81,14 @@ mean those old paths have been relocated or that PC capabilities are ready.
 
 ## Program update, recovery and removal boundary
 
+Running the **new extracted installer** with `-Action Install -ProductRoot` and
+the new manifest is also the one-step program/bootstrap upgrade path. On an
+existing root, omitted `-References` reuses that root's original endpoint.json.
+The installer chooses the existing update transaction when the selected program
+differs, then publishes the compatible stable entry with its recorded recovery
+phases. It does not rewrite those saved references or relocate data. A busy or
+unknown original task still defers the operation.
+
 ```powershell
 & $ProductRoot/control/WindowsEndpoint.ps1 -Action Update -Source $NextCandidate -ManifestSha256 $NextManifest
 & $ProductRoot/control/WindowsEndpoint.ps1 -Action Rollback -ManifestSha256 $PreviousManifest
