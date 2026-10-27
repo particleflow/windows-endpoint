@@ -9,8 +9,9 @@ import { createHash, randomUUID } from 'node:crypto'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { deploymentReferences } from './deployment.mjs'
 import { acquireLeases, leaseKeys } from './lifecycle.mjs'
-import { readHostStatus } from './host.mjs'
+import { readHostStatus, ForegroundHost } from './host.mjs'
 import { deploymentFixture, syntheticBundle } from './test-support/deployment-fixture.mjs'
+import { installedFixture } from './test-support/installed-fixture.mjs'
 
 const endpoint = fileURLToPath(new URL('./endpoint.mjs', import.meta.url))
 const worker = fileURLToPath(new URL('./test-support/host-runtime.mjs', import.meta.url))
@@ -62,6 +63,33 @@ async function syntheticRunning(p) {
   assert.equal(s.componentLifecycle?.phase, 'running')
   return s
 }
+
+test('public observer accepts explicit external installation/config roots without copying or launching them', async t => {
+  const f = await installedFixture(t), root = path.join(f.base, 'host-root')
+  await fs.mkdir(path.join(root, 'config'), { recursive: true })
+  await fs.writeFile(path.join(root, 'config/endpoint.json'), JSON.stringify(f.config))
+  const p = launch(t, { root }), s = await running(p)
+  assert.equal(s.configuration, 'loaded'); assert.equal(s.attention, null)
+  assert.equal(s.componentLifecycle, null); assert.equal(s.components, 'unavailable_unqualified')
+  assert.equal(s.ready, false)
+  assert.equal(await fs.readFile(path.join(f.config.piConfigDir, 'auth.json'), 'utf8'), 'SYNTHETIC UNREAD PI CONFIG')
+  assert.equal((await stop(p)).code, 0)
+})
+test('resolved official Herdr path cannot overlap host-owned data even when the endpoint omits its path', async t => {
+  const f = await installedFixture(t), root = path.join(f.base, 'host-root')
+  await fs.mkdir(path.join(root, 'config'), { recursive: true })
+  const binary = path.join(root, 'data/program/herdr.exe')
+  await f.write(binary, 'INERT MUST NEVER RUN')
+  delete f.config.programs.herdr; f.connector.instances[0].binary = binary
+  await fs.writeFile(path.join(f.config.agenvoConfigDir, 'config.json'), JSON.stringify(f.connector))
+  await fs.writeFile(path.join(root, 'config/endpoint.json'), JSON.stringify(f.config))
+  await fs.writeFile(path.join(root, 'config/runtime.json'), JSON.stringify({ schema: 2, mode: 'existing-installations', transfer: 'disabled' }))
+  const p = launch(t, { root })
+  await attention(p, 'host_reference_overlap')
+  assert.equal(p.statuses.some(s => s.components === 'verified_local'), false)
+  assert.equal((await stop(p)).code, 2)
+  assert.equal(await fs.readFile(binary, 'utf8'), 'INERT MUST NEVER RUN')
+})
 
 test('public foreground entry stays observable with missing config, enforces one host, and stops cleanly', async t => {
   const f = await fixture(t)
@@ -121,6 +149,26 @@ test('a complete inert bundle inventory never activates unqualified public compo
   assert.equal(s.evidence, 'host_process_only'); assert.equal(s.ready, false)
   await stop(p)
   await assert.rejects(fs.lstat(path.join(f.stateDirectory, 'lifecycle.json')), { code: 'ENOENT' })
+})
+
+test('public entry rejects a malformed explicit request without starting components or rewriting it', async t => {
+  const f = await fixture(t, true), file = path.join(f.root, 'config/runtime.json')
+  const raw = JSON.stringify({ schema: 1, mode: 'explicit-review', manifestSha256: f.config.manifestSha256, transfer: 'existing-queue', qualified: true })
+  await fs.writeFile(file, raw)
+  const p = launch(t, f)
+  const s = await attention(p, 'runtime_request_invalid')
+  assert.equal(s.componentLifecycle, null); assert.equal(s.ready, false)
+  assert.equal((await stop(p)).code, 2)
+  assert.equal(await fs.readFile(file, 'utf8'), raw)
+})
+
+test('adding explicit activation to a running observer requires restart and never hot-starts', async t => {
+  const f = await fixture(t, true), p = launch(t, f)
+  await running(p)
+  await fs.writeFile(path.join(f.root, 'config/runtime.json'), JSON.stringify({ schema: 1, mode: 'explicit-review', manifestSha256: f.config.manifestSha256, transfer: 'existing-queue' }))
+  const s = await attention(p, 'host_configuration_changed')
+  assert.equal(s.configuration, 'changed_restart_required'); assert.equal(s.componentLifecycle, null)
+  assert.equal((await stop(p)).code, 2)
 })
 
 test('a linked authorization directory is rejected without observing foreign status', async t => {
@@ -190,6 +238,56 @@ test('inherited input closure drains host instead of leaving an orphan foregroun
   p.child.stdin.end()
   assert.equal((await p.done).code, 0)
   assert.equal((await readHostStatus(f.root)).phase, 'stopped')
+})
+
+for (const trigger of ['stdin_eof', 'stop_command', 'invalid_input']) test(`same-run persistent diagnostic distinguishes ${trigger} without storing input`, async t => {
+  const f = await fixture(t, true), p = launch(t, f, 'normal'), s = await syntheticRunning(p)
+  if (trigger === 'stdin_eof') p.child.stdin.end()
+  else if (trigger === 'stop_command') p.command('stop')
+  else p.child.stdin.write('SYNTHETIC-PRIVATE-INPUT\n')
+  const result = await p.done
+  assert.equal(result.code, trigger === 'invalid_input' ? 2 : 0)
+  const raw = await fs.readFile(path.join(f.root, 'logs/endpoint-host', `${s.runId}.jsonl`), 'utf8')
+  const records = raw.trim().split('\n').map(line => JSON.parse(line))
+  const final = records.find(x => x.event === 'foreground_result')
+  assert.equal(final.returnCode, result.code); assert.equal(final.stopTrigger, trigger)
+  assert.equal(records.every(r => r.runId === s.runId), true)
+  assert.equal(raw.includes('SYNTHETIC-PRIVATE-INPUT'), false)
+  assert.ok(Buffer.byteLength(raw) <= 65536)
+})
+
+test('closing the foreground output is recorded separately from a clean stdin stop', async t => {
+  const f = await fixture(t, true), p = launch(t, f, 'normal'), s = await syntheticRunning(p)
+  p.child.stdout.destroy(); p.command('status')
+  assert.equal((await p.done).code, 2)
+  const raw = await fs.readFile(path.join(f.root, 'logs/endpoint-host', `${s.runId}.jsonl`), 'utf8')
+  const final = raw.trim().split('\n').map(line => JSON.parse(line)).find(x => x.event === 'foreground_result')
+  assert.equal(final.stopTrigger, 'observer_disconnected'); assert.equal(final.attention, 'host_observer_disconnected')
+})
+
+test('the bounded per-run log retains room for its final foreground result', async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'endpoint-log-capacity-')))
+  const host = new ForegroundHost({ root })
+  t.after(async () => { if (host.release) await host.stop(); await fs.rm(root, { recursive: true, force: true }) })
+  await host.start()
+  for (let i = 0; i < 150; i++) await host.logEvent({ event: 'synthetic_capacity_fixture', content: 'x'.repeat(512) })
+  assert.equal(host.logState, 'capacity_reached')
+  await host.stop()
+  const raw = await fs.readFile(path.join(root, 'logs/endpoint-host', `${host.runId}.jsonl`), 'utf8')
+  assert.ok(Buffer.byteLength(raw) <= 65536)
+  assert.equal(JSON.parse(raw.trim().split('\n').at(-1)).event, 'foreground_result')
+})
+
+test('uncaught host error preserves a bounded same-run exit observation without claiming cleanup or storing its message', async t => {
+  const f = await fixture(t, true), p = launch(t, f, 'fatal-error'), s = await syntheticRunning(p)
+  p.fixture('uncaught_exception'); assert.equal((await p.done).code, 1)
+  const raw = await fs.readFile(path.join(f.root, 'logs/endpoint-host', `${s.runId}.jsonl`), 'utf8')
+  const final = raw.trim().split('\n').map(line => JSON.parse(line)).find(x => x.event === 'process_exit')
+  assert.equal(final.exitCode, 1); assert.equal(final.fatalOrigin, 'uncaught_exception'); assert.equal(final.fatalType, 'TypeError')
+  assert.equal(final.cleanup, 'not_confirmed_by_process_exit')
+  assert.equal(raw.includes('SYNTHETIC-SECRET'), false)
+  assert.equal(JSON.parse(await fs.readFile(path.join(f.stateDirectory, 'lifecycle.json'))).phase, 'running')
+  // Fixture children exit on IPC disconnect; this makes no real Herdr claim.
 })
 
 test('unknown or linked status files are preserved instead of overwritten or exposed', async t => {
@@ -394,4 +492,41 @@ test('abrupt host death produces stale observation and no automatic restart of u
   assert.equal((await running(next)).attention, 'host_previous_runtime_uncertain')
   assert.equal(next.events.filter(e => e.event === 'component_started' || e.event === 'transfer_action').length, 0)
   await stop(next)
+})
+
+test('foreground recheck-herdr command resumes the same owned synthetic components after an observation latch', async t => {
+  const f = await fixture(t, true), p = launch(t, f, 'observation-recheck')
+  const initial = await syntheticRunning(p)
+  await attention(p, 'herdr_observation_unknown')
+  const original = JSON.stringify({ task: 'original', state: 'unknown' })
+  const history = path.join(f.stateDirectory, 'original-attempt.json')
+  await fs.writeFile(history, original)
+  p.fixture('allow_observation')
+  await p.waitFor(() => p.events.find(e => e.event === 'observation_available'))
+  const before = p.statuses.length
+  p.command('status')
+  await p.waitFor(() => p.statuses.slice(before).some(s => s.attention === 'herdr_observation_unknown'))
+  p.command('recheck-herdr')
+  await p.waitFor(() => p.statuses.some(s => s.runId === initial.runId && s.componentLifecycle?.phase === 'running' && s.attention === null && s.updatedAt > initial.updatedAt))
+  assert.equal(p.events.filter(e => e.event === 'component_started').length, 2)
+  assert.equal(p.events.filter(e => e.event === 'component_stopped').length, 0)
+  assert.equal(await fs.readFile(history, 'utf8'), original)
+  assert.equal((await stop(p)).code, 0)
+})
+
+test('foreground failed recheck leaves the same host and latch available for later explicit retry', async t => {
+  const f = await fixture(t, true), p = launch(t, f, 'observation-recheck')
+  await syntheticRunning(p); await attention(p, 'herdr_observation_unknown')
+  p.command('recheck-herdr')
+  await p.waitFor(() => p.statuses.find(s => s.error === 'herdr_observation_unknown'))
+  // The periodic tick must not turn a rejected read-only recheck into host shutdown.
+  p.command('status')
+  await p.waitFor(() => p.statuses.filter(s => s.phase === 'running' && s.attention === 'herdr_observation_unknown').length >= 2)
+  p.fixture('allow_observation')
+  await p.waitFor(() => p.events.find(e => e.event === 'observation_available'))
+  const before = p.statuses.length
+  p.command('recheck-herdr')
+  await p.waitFor(() => p.statuses.slice(before).find(s => s.componentLifecycle?.phase === 'running' && !s.attention))
+  assert.equal(p.events.filter(e => e.event === 'component_started').length, 2)
+  assert.equal((await stop(p)).code, 0)
 })

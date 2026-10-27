@@ -248,7 +248,7 @@ async function terminateAt(f, phase, operation, target, source = '') {
     // Unix socket files outlive their process; production deliberately fails
     // closed. Only this test's known-dead child-owned socket names are removed.
     // Windows uses actual lifetime pipes and needs no fixture lock cleanup.
-    for (const key of [...leaseKeys(f.config), `deployment:${f.root}`]) {
+    for (const key of [...leaseKeys(f.config), `host:${f.root}`, `deployment:${f.root}`]) {
       const id = createHash('sha256').update(key.toLowerCase()).digest('hex').slice(0, 32)
       const file = path.join(f.lifecycleDirectory, `${id}.sock`)
       assert.equal((await fs.lstat(file)).isSocket(), true)

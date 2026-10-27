@@ -30,9 +30,18 @@ function samePath(a, b) {
 function overlaps(a, b) {
   return [path.relative(a, b), path.relative(b, a)].some(r => r === '' || (!path.isAbsolute(r) && r !== '..' && !r.startsWith(`..${path.sep}`)))
 }
-function absolute(value) {
-  requireThat(typeof value === 'string' && path.isAbsolute(value) && value === path.normalize(value) && !/[\x00-\x1f]/.test(value), 'absolute_clean_path_required')
-  if (process.platform === 'win32') requireThat(/^[a-z]:\\/i.test(value) && !value.slice(2).includes(':'), 'local_drive_required')
+export function isWindowsUNCWorkspacePath(value) {
+  if (typeof value !== 'string' || !value.startsWith('\\\\') || /^\\\\[?.]\\/.test(value)) return false
+  const parts = value.slice(2).split('\\')
+  if (parts.at(-1) === '') parts.pop()
+  return parts.length >= 2 && parts.every(part => part && !/[<>:"/|?*\x00-\x1f]/.test(part) &&
+    !['.', '..'].includes(part) && !/[. ]$/.test(part)) &&
+    (value === path.win32.normalize(value) || value + '\\' === path.win32.normalize(value))
+}
+function absolute(value, workspace = false) {
+  const unc = process.platform === 'win32' && workspace && isWindowsUNCWorkspacePath(value)
+  requireThat(typeof value === 'string' && path.isAbsolute(value) && (value === path.normalize(value) || unc) && !/[\x00-\x1f]/.test(value), 'absolute_clean_path_required')
+  if (process.platform === 'win32') requireThat(/^[a-z]:\\/i.test(value) && !value.slice(2).includes(':') || unc, 'local_drive_required')
   return value
 }
 function relative(value) {
@@ -44,17 +53,18 @@ async function regular(file) {
   requireThat(st.isFile() && !st.isSymbolicLink() && st.nlink === 1, 'regular_private_copy_required')
   return st
 }
-async function canonical(file) {
-  requireThat(samePath(await fs.realpath(file), file), 'noncanonical_path')
+async function canonical(file, workspace = false) {
+  const resolved = await fs.realpath(file)
+  requireThat(samePath(resolved, file) || workspace && samePath(path.normalize(resolved), path.normalize(file)), 'noncanonical_path')
   // Check every ancestor, including junctions; no package traversal through links.
   for (let p = file; ; p = path.dirname(p)) {
     requireThat(!(await fs.lstat(p)).isSymbolicLink(), 'reparse_point_rejected')
     if (p === path.dirname(p)) break
   }
 }
-export async function validateDirectory(directory) {
-  absolute(directory)
-  await canonical(directory)
+export async function validateDirectory(directory, { workspace = false } = {}) {
+  absolute(directory, workspace)
+  await canonical(directory, workspace)
   requireThat((await fs.stat(directory)).isDirectory(), 'directory_required')
 }
 async function readJSON(file, limit = 65536) {
@@ -68,14 +78,103 @@ export async function digest(file) {
   return hash.digest('hex')
 }
 
+function validateAPIBase(value) {
+  // memoh.file-api-base.v1: inspect raw syntax before WHATWG URL can normalize
+  // dot segments, an empty authority or a default port. Never rewrite the value
+  // used by transfer.json's raw-byte HostBinding. Keep the existing error code.
+  const code = 'https_origin_required'
+  requireThat(typeof value === 'string' && Buffer.byteLength(value) <= 2048 && !/[\x00-\x20\x7f?#%\\]/.test(value), code)
+  const parts = value.match(/^https:\/\/([^/]+)(\/.*)?$/)
+  requireThat(parts && !parts[1].includes('@') && !parts[1].endsWith(':'), code)
+  const port = parts[1].match(/:(\d+)$/)
+  requireThat(!port || (Number(port[1]) >= 1 && Number(port[1]) <= 65535), code)
+  const prefix = parts[2] || ''
+  requireThat(!prefix.includes('//') && prefix.split('/').every(segment => /^[A-Za-z0-9._~-]*$/.test(segment) && segment !== '.' && segment !== '..'), code)
+  let url
+  try { url = new URL(value) } catch { throw new EndpointError(code) }
+  requireThat(url.protocol === 'https:' && url.hostname && !url.username && !url.password && !url.hostname.endsWith('.invalid'), code)
+}
+
+export function isNativeRuntimeConfig(config) { return config?.schema === 3 }
+export function connectorPackageRoot(config) {
+  return config.programs.connectorPackage ?? (isNativeRuntimeConfig(config) ? path.dirname(path.dirname(path.join(here, catalog.nativeRuntime.entry))) : undefined)
+}
+export function componentRoots(config) {
+  return ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', ...(!isNativeRuntimeConfig(config) ? ['agenvoConfigDir'] : []), 'piConfigDir'].map(key => config[key])
+}
+export function connectorConfigReference(config) {
+  return isNativeRuntimeConfig(config) ? config.connector.enrollmentFile : path.join(config.agenvoConfigDir, 'config.json')
+}
+export function installationReferences(config) {
+  if (config.schema === 1) return pathFields.map(key => config[key])
+  return [...componentRoots(config), ...Object.values(config.programs), ...(config.transfer ? [config.transfer.pluginRoot] : []), ...(isNativeRuntimeConfig(config) ? [connectorConfigReference(config),
+    ...(Object.hasOwn(config, 'transferConfigDir') ? [transferLocations(config).config, transferLocations(config).state] : [])] : [])]
+}
+
 export function validateConfig(config) {
+  if ([2, 3].includes(config?.schema)) {
+    const native = isNativeRuntimeConfig(config)
+    const roots = ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', ...(!native ? ['agenvoConfigDir'] : []), 'piConfigDir']
+    keys(config, ['schema', 'programs', ...roots, 'deviceId', 'runtimeId', 'instanceId', 'session', ...(native ? ['connector'] : [])], ['transfer', ...(native ? ['transferConfigDir', 'transferStateDir'] : [])])
+    if (native) {
+      keys(config.connector, ['kind', 'enrollmentFile'])
+      requireThat(config.connector.kind === 'memoh-runtime', 'connector_kind_unsupported')
+      absolute(config.connector.enrollmentFile)
+    }
+    // Legacy omitted Herdr resolves from its selected official Agenvo instance.
+    // Native mode keeps one explicit official installation reference.
+    keys(config.programs, ['node', 'piPackage', 'piBin', 'gitRoot', ...(native ? ['herdr'] : ['connectorPackage'])], native ? ['connectorPackage'] : ['herdr'])
+    for (const key of roots) absolute(config[key], key === 'sourceRoot')
+    for (const value of Object.values(config.programs)) absolute(value)
+    requireThat(uuidPattern.test(config.deviceId) && uuidPattern.test(config.runtimeId) && idPattern.test(config.instanceId) && idPattern.test(config.session) && config.session !== 'default', 'dedicated_session_required')
+    if (native) requireThat(config.deviceId === config.runtimeId, 'native_runtime_identity_mismatch')
+    requireThat(path.basename(config.herdrConfigRoot) === 'herdr' && path.basename(config.herdrStateRoot) === 'herdr', 'herdr_root_name_required')
+    const programs = programPaths(config)
+    const programEntries = [ ['node', path.dirname(programs.node)], ...(programs.herdr ? [['herdr', path.dirname(programs.herdr)]] : []), ['piPackage', config.programs.piPackage], ['piBin', config.programs.piBin], ['gitRoot', config.programs.gitRoot], ['connector', connectorPackageRoot(config)] ]
+    const programRoots = programEntries.map(([, location]) => location)
+    for (const key of roots) for (const [role, location] of programEntries) {
+      const relative = path.relative(config.piConfigDir, location)
+      const existingPiWithinProfile = native && key === 'piConfigDir' &&
+        ['piPackage', 'piBin'].includes(role) && relative !== '' &&
+        !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`)
+      requireThat(existingPiWithinProfile || !overlaps(config[key], location), 'data_program_overlap')
+    }
+    if (native) {
+      for (const location of [...roots.map(k => config[k]), ...programRoots]) requireThat(!overlaps(config.connector.enrollmentFile, location), 'connector_enrollment_overlap')
+    }
+    for (let i = 0; i < roots.length; i++) for (let j = i + 1; j < roots.length; j++) requireThat(!overlaps(config[roots[i]], config[roots[j]]), 'component_data_overlap')
+    if (config.transfer !== undefined) {
+      keys(config.transfer, ['pluginRoot', 'nasOrigin'])
+      absolute(config.transfer.pluginRoot)
+      validateAPIBase(config.transfer.nasOrigin)
+      for (const root of roots.map(k => config[k])) requireThat(!overlaps(root, config.transfer.pluginRoot), 'data_program_overlap')
+      if (native) requireThat(!overlaps(config.connector.enrollmentFile, config.transfer.pluginRoot), 'connector_enrollment_overlap')
+    }
+    if (native && ['transferConfigDir', 'transferStateDir'].some(key => Object.hasOwn(config, key))) {
+      const locations = transferLocations(config)
+      for (const [directory, ownRoot] of [[locations.config, 'herdrConfigRoot'], [locations.state, 'herdrStateRoot']]) {
+        absolute(directory)
+        for (const program of [...programRoots, locations.root]) requireThat(!overlaps(directory, program), 'data_program_overlap')
+        requireThat(!overlaps(directory, config.connector.enrollmentFile), 'connector_enrollment_overlap')
+        for (const key of roots) {
+          if (key === ownRoot) {
+            // Existing plugin subdirectories may remain under their Herdr root;
+            // never select the entire root or an ancestor containing sessions.
+            const relative = path.relative(config[key], directory)
+            const child = relative !== '' && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`)
+            requireThat(!overlaps(directory, config[key]) || child, 'component_data_overlap')
+          } else requireThat(!overlaps(directory, config[key]), 'component_data_overlap')
+        }
+      }
+      requireThat(!overlaps(locations.config, locations.state), 'component_data_overlap')
+    }
+    return config
+  }
   keys(config, configFields)
   requireThat(config.schema === 1, 'config_version_unsupported')
   for (const field of pathFields) absolute(config[field])
   requireThat(hashPattern.test(config.manifestSha256), 'trusted_manifest_hash_required')
-  let origin
-  try { origin = new URL(config.nasOrigin) } catch { throw new EndpointError('https_origin_required') }
-  requireThat(origin.protocol === 'https:' && origin.origin === config.nasOrigin && !origin.hostname.endsWith('.invalid'), 'https_origin_required')
+  validateAPIBase(config.nasOrigin)
   requireThat(uuidPattern.test(config.deviceId) && uuidPattern.test(config.runtimeId) && idPattern.test(config.instanceId) && idPattern.test(config.session), 'existing_identity_required')
   requireThat(path.basename(config.herdrConfigRoot) === 'herdr' && path.basename(config.herdrStateRoot) === 'herdr', 'herdr_root_name_required')
   requireThat(samePath(config.transferConfigDir, path.join(config.herdrConfigRoot, 'plugins/config/memoh.delivery')), 'herdr_plugin_config_mismatch')
@@ -156,22 +255,22 @@ export async function verifyBundle(root, expectedHash) {
 // Copy to a content-addressed candidate; never switch current binaries or touch data.
 // Incomplete .pending-* directories are inert. Retry creates a new one; no guessing
 // at a stale lock/PID and no destructive recovery. Explicit retention is deliberate.
-export async function stageBundle(source, destination, expectedHash, { checkpoint = async () => {} } = {}) {
+export async function stageBundle(source, destination, expectedHash, { checkpoint = async () => {}, verify = verifyBundle, manifestName = 'bundle.json' } = {}) {
   absolute(destination)
   await canonical(destination)
   requireThat(!overlaps(source, destination), 'stage_root_overlap')
-  const { manifest, totalBytes } = await verifyBundle(source, expectedHash)
+  const { manifest, totalBytes } = await verify(source, expectedHash)
   const target = path.join(destination, expectedHash)
   try {
     await fs.lstat(target)
-    await verifyBundle(target, expectedHash)
+    await verify(target, expectedHash)
     return { state: 'already_staged', manifestSha256: expectedHash }
   } catch (e) { if (e.code !== 'ENOENT') throw e }
   const space = await fs.statfs(destination)
   requireThat(space.bavail * space.bsize >= totalBytes + 64 * 1024 ** 2, 'insufficient_staging_space')
   const pending = path.join(destination, `.pending-${expectedHash}-${randomUUID()}`)
   await fs.mkdir(pending)
-  for (const file of [...manifest.files.map(f => f.path), 'bundle.json']) {
+  for (const file of [...manifest.files.map(f => f.path), manifestName]) {
     const output = path.join(pending, file)
     await fs.mkdir(path.dirname(output), { recursive: true })
     await fs.copyFile(path.join(source, file), output, 1)
@@ -179,75 +278,140 @@ export async function stageBundle(source, destination, expectedHash, { checkpoin
     try { await handle.sync() } finally { await handle.close() }
     await checkpoint('file_copied')
   }
-  await verifyBundle(pending, expectedHash)
+  await verify(pending, expectedHash)
   try { await fs.rename(pending, target) }
   catch (error) {
     if (!['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES'].includes(error.code)) throw error
-    await verifyBundle(target, expectedHash) // competing identical publication only
+    await verify(target, expectedHash) // competing identical publication only
     return { state: 'already_staged', manifestSha256: expectedHash, retainedPending: true }
   }
   return { state: 'staged_review_only', manifestSha256: expectedHash }
 }
 
-export async function configure(from, to) {
+export async function configure(from, to, root, { browseSourceRoot = false, chooseDirectory, packageReferences = null } = {}) {
+  let input = await readJSON(from)
+  if (browseSourceRoot) {
+    requireThat([2, 3].includes(input?.schema), 'directory_picker_reference_configuration_required')
+    const originalInput = JSON.stringify(input)
+    const { pickDirectory } = await import('./directory-selection.mjs')
+    const selection = await pickDirectory({ initialPath: typeof input.sourceRoot === 'string' && path.isAbsolute(input.sourceRoot) ? input.sourceRoot : null },
+      chooseDirectory ? { choose: chooseDirectory } : undefined)
+    if (selection.state === 'cancelled') return selection
+    requireThat(JSON.stringify(await readJSON(from)) === originalInput, 'directory_picker_configuration_changed')
+    input = { ...input, sourceRoot: selection.path }
+  }
+  if (packageReferences) {
+    const { installedProgramReferences } = await import('./deployment.mjs')
+    input = installedProgramReferences(input, packageReferences.source, packageReferences.target)
+  }
+  let config, layout
+  if (root !== undefined) {
+    const { DeploymentError, deploymentLayout, deploymentReferences } = await import('./deployment.mjs')
+    await validateDirectory(root)
+    layout = deploymentLayout(root)
+    requireThat(to === undefined, 'invalid_arguments')
+    to = path.join(layout.config, 'endpoint.json')
+    if (input?.schema === 1) {
+      try { config = deploymentReferences(root, input) }
+      catch (error) { if (error instanceof DeploymentError) throw new EndpointError(error.code); throw error }
+      // A fresh template omits paths. Explicit existing paths must agree; this
+      // command never silently relocates a queue, workspace or selected bundle.
+      for (const field of pathFields) requireThat(!Object.hasOwn(input, field) || samePath(input[field], config[field]), 'host_configuration_root_mismatch')
+    } else config = validateConfig(input)
+  } else config = validateConfig(input)
   absolute(to)
-  const config = validateConfig(await readJSON(from))
   await canonical(path.dirname(to))
-  requireThat(!pathFields.some(f => overlaps(config[f], to)), 'configuration_location_rejected')
+  const locations = installationReferences(config)
+  if (layout && config.schema >= 2) {
+    const { hostReferenceLayout } = await import('./deployment.mjs')
+    requireThat(hostReferenceLayout(root, config).compatible, 'host_reference_overlap')
+  }
+  requireThat(!locations.some(location => overlaps(location, to)), 'configuration_location_rejected')
   // Exclusive creation; upgrading never overwrites the references or credentials.
   const handle = await fs.open(to, 'wx')
   try { await handle.writeFile(`${JSON.stringify(config, null, 2)}\n`); await handle.sync() }
   finally { await handle.close() }
-  return { state: 'references_saved', credentialsRead: false, activation: 'blocked' }
+  return { state: 'references_saved', credentialsRead: false, activation: 'blocked',
+    transferConfiguration: config.schema === 1 || config.transfer ? {
+      directory: transferLocations(config).config,
+      networkPolicyFile: path.join(transferLocations(config).config, 'transfer-network.json'),
+      networkPolicy: 'optional_existing_producer_configuration', validation: 'producer_on_invoke',
+    } : null,
+  }
 }
 
+export function programPaths(config) {
+  if ([2, 3].includes(config.schema)) {
+    const p = config.programs
+    return { node: p.node, herdr: p.herdr, pi: path.join(p.piPackage, 'dist/bundle/cli.js'), connector: path.join(connectorPackageRoot(config), isNativeRuntimeConfig(config) ? 'dist/cli.mjs' : 'dist/cli.js'),
+      git: path.join(p.gitRoot, 'bin/bash.exe'), piBin: p.piBin, gitRoot: p.gitRoot }
+  }
+  const entry = id => path.join(config.bundleRoot, catalog.components[id].entry)
+  return { node: entry('node'), herdr: entry('herdr'), pi: entry('pi'), connector: entry('connector'), git: entry('git'), piBin: path.join(config.bundleRoot, 'node_modules/.bin'), gitRoot: path.join(config.bundleRoot, 'git') }
+}
 export function managedEnvironment(config, inherited = process.env) {
-  const root = config.bundleRoot
   const env = { ...inherited }
   // Keep the caller's ordinary OS environment but remove shell/runtime injection.
   for (const k of Object.keys(env)) {
-    if (/^(PATH|NODE_OPTIONS|NODE_PATH|BASH_ENV|BASH_FUNC_.*|ENV|CDPATH|SHELLOPTS|BASHOPTS|HERDR_.*|XDG_CONFIG_HOME|XDG_STATE_HOME|AGENVO_.*|PI_CODING_AGENT_DIR)$/i.test(k)) delete env[k]
+    if (/^(PATH|NODE_OPTIONS|NODE_PATH|BASH_ENV|BASH_FUNC_.*|ENV|CDPATH|SHELLOPTS|BASHOPTS|HERDR_.*|XDG_CONFIG_HOME|XDG_STATE_HOME|AGENVO_.*|MEMOH_RUNTIME_.*|PI_CODING_AGENT_DIR)$/i.test(k)) delete env[k]
   }
   const system = path.join(inherited.SystemRoot || 'C:\\Windows', 'System32')
-  env.PATH = [path.join(root, 'node'), path.join(root, 'herdr'), path.join(root, 'node_modules/.bin'), path.join(root, 'git/bin'), path.join(root, 'git/usr/bin'), path.join(root, 'git/mingw64/bin'), path.join(root, 'git/cmd'), system, path.join(system, 'WindowsPowerShell/v1.0')].join(path.delimiter)
+  const p = programPaths(config)
+  requireThat(p.herdr, 'herdr_reference_unresolved')
+  env.PATH = [path.dirname(p.node), path.dirname(p.herdr), p.piBin, path.join(p.gitRoot, 'bin'), path.join(p.gitRoot, 'usr/bin'), path.join(p.gitRoot, 'mingw64/bin'), path.join(p.gitRoot, 'cmd'), system, path.join(system, 'WindowsPowerShell/v1.0')].join(path.delimiter)
   env.HERDR_CONFIG_PATH = path.join(config.herdrConfigRoot, 'config.toml')
   env.XDG_CONFIG_HOME = path.dirname(config.herdrConfigRoot)
   env.XDG_STATE_HOME = path.dirname(config.herdrStateRoot)
-  env.AGENVO_CONFIG_DIR = config.agenvoConfigDir
+  if (!isNativeRuntimeConfig(config)) env.AGENVO_CONFIG_DIR = config.agenvoConfigDir
   env.PI_CODING_AGENT_DIR = config.piConfigDir
   return env
 }
 
 // Shared reference checks only. The producer remains responsible for native
 // storage permissions, authorization and queue integrity; never repair ACLs here.
+export function transferLocations(config) {
+  if ([2, 3].includes(config.schema)) {
+    requireThat(config.transfer, 'transfer_reference_required')
+    const explicit = isNativeRuntimeConfig(config) && ['transferConfigDir', 'transferStateDir'].some(key => Object.hasOwn(config, key))
+    if (explicit) requireThat(['transferConfigDir', 'transferStateDir'].every(key => Object.hasOwn(config, key)), 'transfer_directory_pair_required')
+    return { root: config.transfer.pluginRoot,
+      config: explicit ? config.transferConfigDir : path.join(config.herdrConfigRoot, 'plugins/config/memoh.delivery'),
+      state: explicit ? config.transferStateDir : path.join(config.herdrStateRoot, 'plugins/memoh.delivery'), origin: config.transfer.nasOrigin }
+  }
+  return { root: path.join(config.bundleRoot, 'transfer'), config: config.transferConfigDir, state: config.transferStateDir, origin: config.nasOrigin }
+}
 export async function validateTransferConfiguration(config) {
   validateConfig(config)
-  for (const field of ['sourceRoot', 'transferConfigDir', 'transferStateDir']) {
-    await canonical(config[field])
-    requireThat((await fs.stat(config[field])).isDirectory(), 'directory_required')
+  const locations = transferLocations(config)
+  for (const directory of [config.sourceRoot, locations.config, locations.state]) {
+    await canonical(directory, directory === config.sourceRoot)
+    requireThat((await fs.stat(directory)).isDirectory(), 'directory_required')
   }
-  const file = path.join(config.transferConfigDir, 'transfer.json')
+  const file = path.join(locations.config, 'transfer.json')
   const cfg = await readJSON(file, 8192)
   keys(cfg, ['version', 'origin', 'source_root'])
-  requireThat(cfg.version === 1 && cfg.origin === config.nasOrigin && samePath(cfg.source_root, config.sourceRoot), 'transfer_configuration_mismatch')
-  try { requireThat((await regular(path.join(config.transferConfigDir, 'device.credential'))).size > 0, 'transfer_credential_missing') }
+  // Exact configured spelling is intentional: even equivalent URLs must not
+  // silently change the producer's existing raw-byte binding or queue owner.
+  requireThat(cfg.version === 1 && cfg.origin === locations.origin && samePath(cfg.source_root, config.sourceRoot), 'transfer_configuration_mismatch')
+  try { requireThat((await regular(path.join(locations.config, 'device.credential'))).size > 0, 'transfer_credential_missing') }
   catch (error) { if (error.code === 'ENOENT') throw new EndpointError('transfer_credential_missing'); throw error }
 }
 
 export function transferEnvironment(config, inherited = process.env) {
+  const locations = transferLocations(config)
   return { ...managedEnvironment(config, inherited),
-    HERDR_PLUGIN_CONFIG_DIR: config.transferConfigDir,
-    HERDR_PLUGIN_STATE_DIR: config.transferStateDir }
+    HERDR_PLUGIN_CONFIG_DIR: locations.config,
+    HERDR_PLUGIN_STATE_DIR: locations.state }
 }
 export function launchPlan(config) {
-  const entry = id => path.join(config.bundleRoot, catalog.components[id].entry)
+  const entry = id => programPaths(config)[id]
   return {
     activation: 'blocked', reason: 'compatibility_qualification_pending',
     commands: [
       { component: 'herdr', file: entry('herdr'), args: ['--session', config.session, 'server'] },
-      { component: 'connector', file: entry('node'), args: [entry('connector'), 'run'] },
+      { component: 'connector', file: entry('node'), args: [entry('connector'), 'run', ...(isNativeRuntimeConfig(config) ? ['--config', connectorConfigReference(config)] : [])] },
     ],
-    environment: { PATH: managedEnvironment(config).PATH, HERDR_CONFIG_PATH: path.join(config.herdrConfigRoot, 'config.toml'), XDG_CONFIG_HOME: path.dirname(config.herdrConfigRoot), XDG_STATE_HOME: path.dirname(config.herdrStateRoot), AGENVO_CONFIG_DIR: config.agenvoConfigDir, PI_CODING_AGENT_DIR: config.piConfigDir },
+    environment: { PATH: managedEnvironment(config).PATH, HERDR_CONFIG_PATH: path.join(config.herdrConfigRoot, 'config.toml'), XDG_CONFIG_HOME: path.dirname(config.herdrConfigRoot), XDG_STATE_HOME: path.dirname(config.herdrStateRoot), ...(!isNativeRuntimeConfig(config) ? { AGENVO_CONFIG_DIR: config.agenvoConfigDir } : {}), PI_CODING_AGENT_DIR: config.piConfigDir },
     transfer: { owner: 'existing Herdr memoh.delivery actions', scheduler: 'existing task/result flow' },
   }
 }
@@ -259,6 +423,10 @@ function probe(file, args, env) {
 
 export async function doctor(config, run = probe) {
   validateConfig(config)
+  if ([2, 3].includes(config.schema)) {
+    const { installedDoctor } = await import('./installed.mjs')
+    return installedDoctor(config)
+  }
   const checks = []
   async function check(name, action) {
     try { await action(); checks.push({ check: name, state: 'passed' }); return true }
@@ -349,6 +517,22 @@ export async function verifyToolchain(config, gitVersion, run = probe) {
 
 export async function main(args) {
   const [command, ...rest] = args
+  if (command === 'installation') {
+    const { installationMain } = await import('./product-installation.mjs')
+    try { return await installationMain(rest) }
+    catch (error) { if (/^(installation|candidate|deployment|setup)_/.test(error.code)) throw new EndpointError(error.code); throw error }
+  }
+  if (command === 'setup') {
+    const { setupMain, SetupError } = await import('./setup.mjs')
+    try { return await setupMain(rest) }
+    catch (error) { if (error instanceof SetupError || /^(candidate|deployment)_/.test(error.code)) throw new EndpointError(error.code); throw error }
+  }
+  if (command === 'deploy') {
+    const { programDeploymentMain } = await import('./program-deployment.mjs')
+    const { DeploymentError } = await import('./deployment.mjs')
+    try { return await programDeploymentMain(rest) }
+    catch (error) { if (error instanceof DeploymentError || /^(candidate|deployment)_/.test(error.code)) throw new EndpointError(error.code); throw error }
+  }
   if (command === 'host') {
     const { hostMain, HostError } = await import('./host.mjs')
     try { return { hostExitCode: await hostMain(rest) } }
@@ -356,18 +540,44 @@ export async function main(args) {
   }
   const options = {}
   for (let i = 0; i < rest.length; i += 2) {
-    requireThat(/^--[a-z-]+$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'invalid_arguments')
+    requireThat(/^--[a-z][a-z0-9-]*$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'invalid_arguments')
     options[rest[i]] = rest[i + 1]
   }
-  if (command === 'help' || !command) return { commands: ['configure --from FILE --config FILE', 'doctor --config FILE', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR'], status: 'host control available; component start/activate/update/rollback/uninstall blocked pending qualification' }
+  if (command === 'help' || !command) return { commands: ['installation install|dependencies|migration-plan (see WindowsEndpoint.ps1)', 'setup --from FILE --root DIR --source DIR --manifest-sha256 SHA256 --transfer disabled|existing-queue [--browse-source-root native]', 'configure --from FILE --root DIR [--browse-source-root native]', 'directory-pick [--config FILE]', 'configure --from FILE --config FILE', 'doctor --config FILE', 'layout --config FILE --root DIR', 'plan --config FILE', 'stage --source DIR --destination DIR --manifest-sha256 SHA256', 'host run --root DIR', 'host status --root DIR', 'host recover --root DIR --expected-run UUID --expected-state-sha256 SHA256 --expected-configuration-sha256 SHA256', 'host handoff-status --root DIR --request-id UUID', 'deploy install|update --root DIR --source DIR --manifest-sha256 SHA256', 'deploy rollback --root DIR --manifest-sha256 SHA256', 'deploy run|recover|status --root DIR', 'deploy prepare-profile --root DIR --request-id UUID --profile DIR --configuration-sha256 SHA256 --lifecycle-sha256 SHA256 --continuation-sha256 SHA256 --attempts-sha256 SHA256', 'deploy archive-profile --root DIR --request-id UUID', 'deploy commit-profile|rollback-profile --root DIR --request-id UUID'], status: 'portable program deployment and foreground review available; production release and active-task handoff remain unqualified' }
   if (['start', 'activate', 'update', 'rollback', 'uninstall'].includes(command)) throw new EndpointError('qualification_required_no_runtime_or_data_changed')
-  if (command === 'configure') { keys(options, ['--from', '--config']); return configure(options['--from'], options['--config']) }
+  if (command === 'layout') {
+    keys(options, ['--config', '--root'])
+    const { hostReferenceLayout } = await import('./deployment.mjs')
+    const result = hostReferenceLayout(options['--root'], validateConfig(await readJSON(options['--config'])))
+    return { ...result, state: result.compatible ? 'layout_references_valid' : 'deferred',
+      ...(result.compatible ? {} : { reason: 'host_reference_overlap' }), capabilitiesVerified: false }
+  }
+  if (command === 'directory-pick') {
+    keys(options, [], ['--config'])
+    const { pickDirectory } = await import('./directory-selection.mjs')
+    const initialPath = options['--config'] ? validateConfig(await readJSON(options['--config'])).sourceRoot : null
+    return pickDirectory({ initialPath })
+  }
+  if (command === 'configure') {
+    keys(options, ['--from'], ['--config', '--root', '--browse-source-root'])
+    requireThat(Object.hasOwn(options, '--config') !== Object.hasOwn(options, '--root'), 'invalid_arguments')
+    requireThat(options['--browse-source-root'] === undefined || options['--browse-source-root'] === 'native', 'invalid_arguments')
+    return configure(options['--from'], options['--config'], options['--root'], { browseSourceRoot: options['--browse-source-root'] === 'native' })
+  }
   if (command === 'stage') { keys(options, ['--source', '--destination', '--manifest-sha256']); return stageBundle(options['--source'], options['--destination'], options['--manifest-sha256']) }
   requireThat(['doctor', 'plan'].includes(command), 'unknown_command')
-  keys(options, ['--config'])
+  keys(options, ['--config'], command === 'doctor' ? ['--target'] : [])
   const config = validateConfig(await readJSON(options['--config']))
+  if ([2, 3].includes(config.schema) && command === 'doctor') {
+    const { installedDoctor } = await import('./installed.mjs')
+    return installedDoctor(config, options['--target'] ? await readJSON(options['--target']) : null)
+  }
+  requireThat(!options['--target'], 'existing_installation_config_required')
   if (command === 'doctor') return doctor(config)
-  await verifyBundle(config.bundleRoot, config.manifestSha256)
+  if ([2, 3].includes(config.schema)) {
+    const { inspectInstalled } = await import('./installed.mjs')
+    return launchPlan((await inspectInstalled(config)).config)
+  } else await verifyBundle(config.bundleRoot, config.manifestSha256)
   return launchPlan(config)
 }
 
@@ -377,10 +587,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   main(process.argv.slice(2)).then(result => {
     if (Object.hasOwn(result, 'hostExitCode')) { process.exitCode = result.hostExitCode; return }
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
-    if (result.ready === false) process.exitCode = 2
+    if (result.ready === false || result.state === 'deferred') process.exitCode = 2
   }).catch(e => {
     // Do not echo input, paths, native stdout/stderr, config or credentials.
-    process.stderr.write(`${JSON.stringify({ error: e instanceof EndpointError ? e.code : 'operation_failed' })}\n`)
+    process.stderr.write(`${JSON.stringify({ error: e instanceof EndpointError || /^directory_picker_[a-z_]+$/.test(e.code) ? e.code : 'operation_failed' })}\n`)
     process.exitCode = 2
   })
 }

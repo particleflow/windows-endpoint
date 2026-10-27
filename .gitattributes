@@ -1,0 +1,2 @@
+# Shared producer test vectors must retain the upstream blob bytes on Windows.
+test-support/api-base-v1.json text eol=lf

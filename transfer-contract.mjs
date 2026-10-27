@@ -36,7 +36,7 @@ function decision(value, now) {
   if (value.state === 'waiting') requireContract(dueAt !== null && dueAt > now)
   else requireContract(dueAt === null)
   if (['idle', 'due'].includes(value.state)) requireContract(value.error_class === 'none')
-  if (value.state === 'waiting') requireContract(['none', 'transient', 'busy'].includes(value.error_class))
+  if (value.state === 'waiting') requireContract(['none', 'transient', 'busy', 'capacity'].includes(value.error_class))
   if (['transient', 'busy'].includes(value.error_class)) requireContract(['waiting', 'unknown'].includes(value.state))
   return Object.freeze({ schema: value.schema, state: value.state, next_due_at: value.next_due_at, error_class: value.error_class })
 }
@@ -54,12 +54,15 @@ export function parseAdvanceDecision(raw, now = Date.now()) {
   const value = object(raw)
   const result = decision(value, now)
   const required = ['schema', 'state', 'next_due_at', 'error_class', 'delivery_id', 'phase', 'offset', 'admitted', 'associated']
-  const optional = ['feedback_status', 'source_collection', 'payload_state', 'association_state', 'error_code', 'reference']
+  const optional = ['feedback_status', 'source_collection', 'payload_state', 'association_state', 'error_code', 'reference', 'registered']
   requireContract(required.every(k => Object.hasOwn(value, k)) && Object.keys(value).every(k => [...required, ...optional].includes(k)))
-  for (const k of ['delivery_id', 'phase', ...optional.filter(k => k !== 'reference')]) {
+  for (const k of ['delivery_id', 'phase', ...optional.filter(k => !['reference', 'registered'].includes(k))]) {
     if (Object.hasOwn(value, k)) requireContract(typeof value[k] === 'string' && value[k].length <= 256 && !/[\x00-\x1f]/.test(value[k]))
   }
   requireContract(Number.isSafeInteger(value.offset) && value.offset >= 0 && typeof value.admitted === 'boolean' && typeof value.associated === 'boolean')
+  // Plugin 0.9 adds metadata registration; older envelopes omit the field.
+  // Neither registration nor admission establishes delivery/business completion.
+  if (Object.hasOwn(value, 'registered')) requireContract(typeof value.registered === 'boolean')
   if (Object.hasOwn(value, 'reference')) {
     const ref = value.reference
     requireContract(ref && typeof ref === 'object' && !Array.isArray(ref))
@@ -67,5 +70,42 @@ export function parseAdvanceDecision(raw, now = Date.now()) {
     for (const k of ['bot_id', 'delivery_id', 'operation_id', 'mime']) requireContract(typeof ref[k] === 'string' && ref[k].length > 0 && ref[k].length <= 256 && !/[\x00-\x1f]/.test(ref[k]))
     requireContract(ref.delivery_id === value.delivery_id && /^[a-f0-9]{64}$/.test(ref.content_hash) && Number.isSafeInteger(ref.size_bytes) && ref.size_bytes >= 0)
   }
+  requireContract(Object.hasOwn(value, 'feedback_status') && value.feedback_status !== '', 'transfer_feedback_unknown')
+  // Producer 0.10.1 derives not_applicable only from a durable download's
+  // direction. It bypasses this outbound advisory gate, never other checks.
+  requireContract(['recorded', 'not_applicable', 'unavailable'].includes(value.feedback_status))
+  requireContract(value.feedback_status !== 'unavailable', 'transfer_feedback_unavailable')
   return result
+}
+
+// Fixed 62d27ed CLI capability, not a general lifecycle/feedback envelope.
+// Its idle means no due retained upload, never an empty or healthy full queue.
+export function parseSnapshotAdvance(raw, status) {
+  const value = object(raw)
+  requireContract(value.advance_scope === 'retained_upload_snapshots', 'transfer_snapshot_scope_missing')
+  requireContract([0, 1].includes(status), 'transfer_command_outcome_unknown')
+  if (value.state === 'idle') {
+    requireContract(status === 0 && Object.keys(value).sort().join(',') === 'advance_scope,state')
+    return Object.freeze({ state: 'idle', advance_scope: value.advance_scope })
+  }
+  const required = ['advance_scope', 'delivery_id', 'phase', 'offset', 'admitted', 'registered', 'associated']
+  const optional = ['payload_state', 'association_state', 'error_code', 'reference', 'error_class']
+  requireContract(required.every(k => Object.hasOwn(value, k)) && Object.keys(value).every(k => [...required, ...optional].includes(k)))
+  for (const k of ['delivery_id', 'phase', 'payload_state', 'association_state', 'error_code']) {
+    if (Object.hasOwn(value, k)) requireContract(typeof value[k] === 'string' && value[k].length <= 256 && !/[\x00-\x1f]/.test(value[k]))
+  }
+  requireContract(Number.isSafeInteger(value.offset) && value.offset >= 0 && ['admitted', 'registered', 'associated'].every(k => typeof value[k] === 'boolean'))
+  if (status !== 0) {
+    requireContract(['transient', 'busy', 'authentication', 'permission', 'configuration', 'capacity', 'unknown'].includes(value.error_class))
+    return Object.freeze({ state: 'failed', advance_scope: value.advance_scope, error_class: value.error_class })
+  }
+  requireContract(value.delivery_id.length > 0 && value.phase.length > 0 && value.admitted && !value.registered && !Object.hasOwn(value, 'error_class'))
+  if (value.associated) requireContract(Object.hasOwn(value, 'reference'))
+  if (Object.hasOwn(value, 'reference')) {
+    const ref = value.reference
+    requireContract(ref && typeof ref === 'object' && !Array.isArray(ref) && Object.keys(ref).sort().join(',') === 'bot_id,content_hash,delivery_id,mime,operation_id,size_bytes')
+    for (const k of ['bot_id', 'delivery_id', 'operation_id', 'mime']) requireContract(typeof ref[k] === 'string' && ref[k].length > 0 && ref[k].length <= 256 && !/[\x00-\x1f]/.test(ref[k]))
+    requireContract(ref.delivery_id === value.delivery_id && /^[a-f0-9]{64}$/.test(ref.content_hash) && Number.isSafeInteger(ref.size_bytes) && ref.size_bytes >= 0)
+  }
+  return Object.freeze({ state: 'advanced', advance_scope: value.advance_scope })
 }

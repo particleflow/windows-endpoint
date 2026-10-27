@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseLifecycleSummary, parseAdvanceDecision, deadlineMilliseconds } from './transfer-contract.mjs'
+import { parseLifecycleSummary, parseAdvanceDecision, parseSnapshotAdvance, deadlineMilliseconds } from './transfer-contract.mjs'
 
 const now = Date.parse('2026-10-22T18:00:00Z')
 const summary = overrides => ({ schema: 'memoh.delivery.lifecycle.v1', state: 'idle', next_due_at: null, error_class: 'none', ...overrides })
@@ -68,7 +68,7 @@ test('Go RFC3339Nano is retained exactly and rounded up for consumer wakes', () 
 })
 
 test('actual PR56 advance envelope projects decisions without claiming reference association', () => {
-  const value = { ...summary(), delivery_id: 'existing-delivery', phase: 'ready', offset: 7, admitted: true, associated: false,
+  const value = { ...summary(), delivery_id: 'existing-delivery', phase: 'ready', offset: 7, admitted: true, associated: false, feedback_status: 'recorded',
     reference: { delivery_id: 'existing-delivery', operation_id: 'existing-operation', bot_id: 'existing-bot', content_hash: 'a'.repeat(64), size_bytes: 7, mime: 'text/plain' } }
   assert.deepEqual(parseAdvanceDecision(JSON.stringify(value), now), summary())
   assert.throws(() => parseLifecycleSummary(JSON.stringify(value), now))
@@ -77,3 +77,60 @@ test('actual PR56 advance envelope projects decisions without claiming reference
   }
   assert.throws(() => parseAdvanceDecision(JSON.stringify(summary()), now))
 })
+
+test('metadata registration is a boolean envelope field, not a delivery or scheduling state', () => {
+  const value = { ...summary({ state: 'due' }), delivery_id: 'original-delivery', phase: 'queued', offset: 0, registered: true, admitted: false, associated: false, feedback_status: 'recorded' }
+  assert.deepEqual(parseAdvanceDecision(JSON.stringify(value), now), summary({ state: 'due' }))
+  assert.deepEqual(parseAdvanceDecision(JSON.stringify({ ...value, registered: false, admitted: true }), now), summary({ state: 'due' }))
+  const { registered, ...legacy } = value
+  assert.deepEqual(parseAdvanceDecision(JSON.stringify(legacy), now), summary({ state: 'due' }))
+  for (const registered of [null, 'true', 1, {}]) assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, registered }), now))
+  assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, state: 'registered' }), now))
+  assert.throws(() => parseLifecycleSummary(JSON.stringify({ ...summary(), registered: true }), now))
+})
+
+test('disk capacity wait requires the producer deadline without weakening other failure classes', () => {
+  const waiting = summary({ state: 'waiting', error_class: 'capacity', next_due_at: '2026-10-22T18:05:00Z' })
+  assert.deepEqual(parse(waiting), waiting)
+  assert.deepEqual(parseAdvanceDecision(JSON.stringify({ ...waiting, delivery_id: 'original-download', phase: 'queued', offset: 8388608, admitted: true, associated: false, feedback_status: 'recorded' }), now), waiting)
+  for (const next_due_at of [null, '2026-10-22T18:00:00Z']) assert.throws(() => parse({ ...waiting, next_due_at }))
+  for (const error_class of ['authentication', 'permission', 'configuration', 'unknown']) assert.throws(() => parse({ ...waiting, error_class }))
+})
+
+test('missing legacy feedback is unknown and cannot imply recorded or not-applicable', () => {
+  const value = { ...summary({ state: 'due' }), delivery_id: 'original', phase: 'queued', offset: 0, admitted: true, associated: false }
+  for (const patch of [{}, { feedback_status: '' }]) assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, ...patch }), now), { code: 'transfer_feedback_unknown' })
+  assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, feedback_status: 'unavailable' }), now), { code: 'transfer_feedback_unavailable' })
+  assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, feedback_status: 'unknown' }), now), { code: 'transfer_lifecycle_contract_invalid' })
+})
+
+test('pinned inbound not-applicable bypasses only feedback and preserves lifecycle and identity checks', () => {
+  const waiting = summary({ state: 'waiting', error_class: 'transient', next_due_at: '2026-10-22T18:05:00Z' })
+  const value = { ...waiting, delivery_id: 'original-download', phase: 'queued', offset: 0, admitted: true, associated: false, feedback_status: 'not_applicable' }
+  assert.deepEqual(parseAdvanceDecision(JSON.stringify(value), now), waiting)
+  for (const patch of [{ next_due_at: null }, { offset: -1 }, { associated: 'true' }, { reference: { delivery_id: 'another' } }]) {
+    assert.throws(() => parseAdvanceDecision(JSON.stringify({ ...value, ...patch }), now))
+  }
+})
+
+const snapshotEnvelope = overrides => ({ advance_scope: 'retained_upload_snapshots', delivery_id: 'original-delivery', phase: 'uploading', offset: 3, admitted: true, registered: false, associated: false, ...overrides })
+test('62d snapshot-only envelopes are separate from lifecycle and advisory feedback', () => {
+  const idle = { state: 'idle', advance_scope: 'retained_upload_snapshots' }
+  assert.equal(parseSnapshotAdvance(JSON.stringify(idle), 0).state, 'idle')
+  assert.equal(parseSnapshotAdvance(JSON.stringify(snapshotEnvelope()), 0).state, 'advanced')
+  assert.equal(parseSnapshotAdvance(JSON.stringify(snapshotEnvelope({ error_class: 'authentication' })), 1).error_class, 'authentication')
+  assert.throws(() => parseAdvanceDecision(JSON.stringify(snapshotEnvelope())), /contract/)
+  assert.throws(() => parseLifecycleSummary(JSON.stringify(idle)), /contract/)
+})
+for (const [name, value, status] of [
+  ['wrong scope', snapshotEnvelope({ advance_scope: 'all' }), 0],
+  ['missing scope', { delivery_id: 'original' }, 0],
+  ['registered source', snapshotEnvelope({ registered: true }), 0],
+  ['unadmitted source', snapshotEnvelope({ admitted: false }), 0],
+  ['unexpected feedback', snapshotEnvelope({ feedback_status: 'recorded' }), 0],
+  ['association without reference', snapshotEnvelope({ associated: true }), 0],
+  ['mismatched reference', snapshotEnvelope({ associated: true, reference: { bot_id: 'bot', operation_id: 'operation', delivery_id: 'other', content_hash: 'a'.repeat(64), size_bytes: 3, mime: 'text/plain' } }), 0],
+  ['idle with nonzero exit', { state: 'idle', advance_scope: 'retained_upload_snapshots' }, 1],
+  ['error with zero exit', snapshotEnvelope({ error_class: 'permission' }), 0],
+  ['unsupported old executable', snapshotEnvelope(), 2],
+]) test(`snapshot envelope refuses ${name}`, () => assert.throws(() => parseSnapshotAdvance(JSON.stringify(value), status)))

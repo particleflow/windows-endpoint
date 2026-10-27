@@ -49,3 +49,31 @@ report their own Windows CI evidence. Official Herdr/Pi/Agenvo source is not pat
 
 No full installer, real Agent pending-tool, automatic transfer, update/rollback,
 real UI, capacity or physical power-loss acceptance is established by these tests.
+
+The explicit runtime CI additionally builds the public Memoh source at
+[`40f0a69fd4b7e34dfcf36ec8a44a9805403e7be8`](https://github.com/particleflow/Memoh/commit/40f0a69fd4b7e34dfcf36ec8a44a9805403e7be8)
+using that commit's unchanged build script. Its plugin version is 0.7.0. No Go
+implementation is imported, no old denied artifact is fetched, and no binary is
+redistributed by this repository. See [scope and limits](explicit-runtime.md).
+
+`test-support/api-base-v1.json` is the byte-identical shared syntax-vector file
+from Memoh `internal/transferclient/testdata/api-base-v1.json` at
+[`91149ad7ab5c0d24a57f10e7d9ff1df4b71cf51c`](https://github.com/particleflow/Memoh/commit/91149ad7ab5c0d24a57f10e7d9ff1df4b71cf51c),
+Git blob `67cc407e6b914dd52ce7a244a82a580c72ad2ec1`, under the retained AGPL-3.0
+license. Only those 30 data vectors are imported; no Go implementation is copied.
+They retain the same blob at the current producer pin. The source-built test
+executable runs its original contract test against all 30 cases in that checkout.
+It separately runs both task API-base boundary tests and requires all 13 cases.
+The current producer fix validates the original base's 2048-byte limit before
+appending the fixed task namespace and validated IDs; it preserves TLS, ID and
+authentication checks without changing configuration or queue bytes.
+
+Compared with the preceding `4c880e07` component, the transfer build closure
+changes only `internal/transferclient/api_base.go`, `api_base_test.go`,
+`client.go` and that vector file. CLI JSON/actions, queue and publication code,
+`deliverymeta`, raw-byte `HostBinding`, plugin 0.7.0, module dependencies and the
+seven-payload build script are unchanged. Herdr/Pi/Agenvo pins are unchanged.
+Previously ambiguous direct-CLI API bases now fail validation; no configuration
+bytes, queue identities or stored records are normalized or migrated. A source
+pin update alone does not establish a safe live component upgrade or production
+qualification.

@@ -2,10 +2,11 @@
 
 This is a runnable local host entry in the existing endpoint, not an installed
 Windows service or a qualified product bundle. It owns a single foreground
-process, observes configuration and writes bounded diagnostics. Real component
-activation remains unavailable pending complete qualification and connection
-authorization. The public CLI cannot enable synthetic components or override
-qualification with a config flag, environment variable or command argument.
+process, observes configuration and writes bounded diagnostics. The default
+remains observation-only; [explicit runtime review](explicit-runtime.md) adds
+inventory-verified official component startup and an existing-queue consumer.
+Release qualification and production connection authorization remain separate.
+The public CLI cannot enable synthetic components or override verification.
 
 ## Run and observe
 
@@ -34,7 +35,28 @@ is one JSON line:
 {"action":"stop"}
 ```
 
-Only these two actions are accepted. Unknown fields/actions or a buffered input
+For a host built with the observation-recheck entry, the same open stdin also
+accepts `{"action":"recheck-herdr"}`. This explicitly rechecks only a latched
+`herdr_observation_unknown`: the host must still own both live components and
+the same Herdr PID/marker generation and verified pipe peer (read-only ping),
+verified programs and unchanged endpoint
+and runtime configuration. The native status must report the expected version,
+`running:true` and `endpoint_compatible:true`; connector authentication and file
+consumer attention must remain clear. The existing journal is compared again
+before publication. Success changes only the observation phase/attention; it
+does not start/stop components, attach an external server, issue a transfer call
+or replay a task. The subsequent ordinary tick may resume the finite consumer.
+An ownership, configuration, journal or persistence uncertainty keeps it fenced.
+A failed read-only recheck can be retried through that still-open stdin after
+its cause is resolved; EOF leaves no stdin retry path.
+
+The installed `57ae131` host accepts only `status` and `stop`. **Do not send
+`recheck-herdr` to that version**: its invalid-input handler requests a stop.
+An external successful status query alone cannot unlock its attention. Updating
+that host requires the existing controlled stop/update flow and its task gates;
+this new command neither retrofits a running old host nor grants stop authority.
+
+Unknown fields/actions or a buffered input
 over 1 KiB cause a controlled stop without echoing input. EOF, SIGINT and SIGTERM
 also request a drain. Windows forced process termination does not promise signal
 handlers or cleanup; the controlled stdin command is the tested graceful path.
@@ -56,12 +78,20 @@ Even a fresh snapshot always has `ready:false`, `desktop:unavailable`,
 older schema-1 snapshots report `unverified`. Like the phase/PID, this cached field
 does not prove that a control channel is still reachable.
 
+Use the existing `endpoint.ps1` in a visible foreground PowerShell session and
+keep that session open. It inherits stdin/stdout/stderr and returns the actual
+Node exit code; it does not detach a process or install a service. After it returns,
+retain `$LASTEXITCODE` in that same session. A temporary caller that closes its
+pipes or discards its process result can still lose its own exit evidence.
+Do not pipe a one-shot input into a host intended to remain running: EOF is a
+graceful stop request. The stdin actions are versioned as described above.
+
 ## One root and explicit unavailable states
 
 The host creates only its data/log directories; it never creates credentials or
 fills in identity/configuration values. It reads `config/endpoint.json` and checks
-the same schema as the existing delivery CLI. The mutable paths must agree with
-`deployment-layout.json`, resolved under this root:
+the same schema as the existing delivery CLI. In schema 1 (bundle review), the
+mutable paths must agree with `deployment-layout.json`, resolved under this root:
 
 | Location | Purpose |
 | --- | --- |
@@ -74,25 +104,45 @@ the same schema as the existing delivery CLI. The mutable paths must agree with
 | `data/endpoint/host-status.json` | Atomic, schema-checked host observation |
 | `logs/endpoint-host/<run-id>.jsonl` | Bounded state-change log for one run |
 
-`deploymentReferences(root, existingReferences)` produces these references in code;
-it does not generate credentials or approve a bundle. The older delivery example
-with separate roots is not a host configuration. The offline package selection is
+Fill the non-path placeholders in `endpoint.example.json`, then use
+`node endpoint.mjs configure --from FILE --root DIR`. The existing root and its
+`config` directory must already exist. This writes `config/endpoint.json`
+exclusively, using `deploymentReferences` and `deployment-layout.json` for every
+schema-1 component path. The example is an input template, not a runtime config.
+Explicit paths in an existing input must match the selected root or configuration
+is refused; choosing another root does not relocate any existing state. The
+command does not generate credentials, create component directories or approve
+a bundle. The legacy `--config FILE` form still saves fully specified references.
+The offline package selection is
 not consumed by this host. Bundle verification is read-only and does not establish
 the missing component qualification.
+
+In schema 2 ([existing official installations](existing-installations-plan.md)),
+only the endpoint's own configuration, lifecycle/status journal and host logs use
+this root. Official programs, Herdr/Pi/Agenvo configuration, source exports and
+the existing transfer journal remain at their explicitly referenced locations.
+Those references must not overlap the host's config/data/log directories; the
+component data/program separation checks also remain in force. Do not copy user
+configuration or historical sessions into the schema-1 layout to use this mode.
+Reference acceptance does not grant ownership of an external process or permission
+to resume a historical task.
+The same `configure --from FILE --root DIR` command accepts full schema-2
+references, saves their existing paths unchanged and checks that they do not
+overlap the host-owned config/data/log directories.
 
 Missing config is `host_configuration_missing`; invalid config and changed config
 are distinct attention states. A config edit requires stop/restart and never hot
 reloads identities or component roots. Missing/invalid bundles remain unavailable;
-a valid inventory still remains `unavailable_unqualified`. Missing credential
+a valid inventory without an explicit request remains `unavailable_unqualified`. Missing credential
 metadata or a fresh matching 401/403 observation is `authorization_required`,
 not machine offline. Credential contents are not read. Existing credential
 metadata alone is only `authorization_unverified`, not authorization success.
 
 The status `phase` describes this host process. A running host with missing config
 is useful for diagnosis, not PC capability readiness. `componentLifecycle`, when
-present in tests, separately describes the reused coordinator. Public production
-status reports `host_process_only` evidence and
-`transfer:not_included_pending_qualification`.
+present, separately describes the reused coordinator. The observation-only mode
+reports `host_process_only` evidence and `transfer:not_included_pending_qualification`;
+the explicit native mode and its narrower readiness states are described separately.
 
 Snapshots and log events exclude configured addresses, identities, paths, credential
 contents, arbitrary component output and task payloads. State-change logs stop at
@@ -100,6 +150,29 @@ contents, arbitrary component output and task payloads. State-change logs stop a
 cleanup, so cumulative retention requires a future owned-file policy. Unknown or
 linked status files are preserved and cause failure. Leftover atomic-write temporary
 files are retained. This is not a physical power-loss durability guarantee.
+
+The same run log now records `stopTrigger` (command, EOF, signal, invalid input,
+observer failure or lifecycle/observation failure). A `foreground_result` records
+the controlled return code before closing the log, separately from the launcher's
+actual OS exit code. An unexpected JavaScript process exit while the log is open
+records `process_exit`, its exit code and an allowlisted exception type/origin.
+This observer does not intercept the exception, release ownership or restart work.
+The last 2 KiB of the existing 64-KiB per-run cap is reserved for terminal evidence.
+
+Owned component diagnostics contain PID, observed exit code/signal, process-error
+flag, stderr byte count and a fixed classification where supported. One previous
+generation per component is retained so replacement cannot erase its exit summary.
+Herdr/legacy stderr is deliberately `unclassified_stderr`: arbitrary child text,
+error messages/stacks, arguments, environment, addresses and credentials are not
+copied to the host log. These summaries are diagnostic evidence, never stop or
+replay authority. Windows TerminateProcess, SIGKILL, power loss and an unwritable
+log cannot guarantee a final record. Missing final evidence remains unknown;
+this patch cannot reconstruct an earlier launcher's discarded output/ExitCode.
+Logs and status remain in the existing host root, created by the foreground
+account under that root's current permissions. Read them using the same authorized
+identity; the endpoint does not impersonate another user, change ACLs or provide an
+alternate privileged reader. An OS access denial still blocks that observation
+and cannot be treated as permission to restart, clear the journal or take ownership.
 
 ## Drain and restart boundaries
 
@@ -176,9 +249,134 @@ are unchanged; no lock deletion, serial test mode, skipped cases or weaker owner
 assertions are used. Synthetic identity generation is not production registration.
 
 The existing official Windows dependency/lifecycle job remains separate. Its
-coverage does not make this new host a qualified real-component launcher. Needed
-before activation: complete supported artifact handoff and qualification, approved
-official runtime paths, connection authorization and real executable integration.
+coverage alone does not qualify the public host. The new explicit runtime job
+covers that entry with native components; it still requires approved official
+runtime paths, existing credentials and local inventory verification, and does
+not confer release qualification or production connection authorization.
 Agent pending-tool recovery, automatic transfer wakes, active updates/rollback,
 desktop GUI/session behavior and physical power-loss/capacity acceptance remain
 unimplemented or unverified. No service, production PC or NAS is used by these tests.
+
+## Explicit recheck after an observed coordinator failure
+
+`host recover --root ROOT --expected-run UUID --expected-state-sha256 HASH
+--expected-configuration-sha256 HASH` is a finite **native Windows** infrastructure
+recheck, not a task resume, process stop or journal reset. The exact
+`needs_attention/herdr_observation_unknown` case is eligible, as is a stale
+`running` journal with null attention after the original host has disappeared;
+both reject any handoff. The running case additionally requires that same run's
+cached status still names the original running/null-attention observation and
+its matching first `starting` event. A later rejected launch, a missing PID alone,
+unreadable evidence or another attention reason cannot authorize this transition.
+Use the original reviewed configuration and run; do not infer identity from a
+label, a missing PID or an idle queue. The configuration hash is SHA256 of UTF-8
+`JSON.stringify([rawEndpointJson, rawRuntimeJson])`; the state hash covers the exact
+original lifecycle bytes. The original normal Windows identity is used to inspect the configuration,
+runtime request, lifecycle and status files. File-owner principals follow the
+fixed official Runtime's Windows policy (current user, SYSTEM, Administrators,
+TrustedInstaller); untrusted file writers are rejected. Permission failures
+remain failures; this command changes no ACL and does not bypass a denied read.
+
+The command holds the existing host/component/deployment leases, rechecks official
+program/configuration inventory, requires the cached original host PID to be
+absent, rejects referenced Herdr/Runtime/Pi processes, and requires the official
+Herdr status command to return `running:false`. Unknown process visibility fails
+closed. Ordinary shell snapshot bytes may be retained; managed Agent/launch
+history still requires handoff. No old workspace is claimed to be alive.
+
+Before publication it rechecks the exact configuration/status/journal bytes,
+ordinary snapshot and original attempt-file hashes. It fsyncs a byte-identical
+`data/endpoint/lifecycle-before-recheck-<original-sha256>.json` backup, then uses the
+existing atomic journal publication. The journal records the original reason,
+run/configuration/attempt hashes and `businessReplayed:false`. A lost result is
+checked by repeating the same expected evidence; `already_rechecked` performs no
+second state transition. Write failures can have unknown publication outcomes;
+inspect that same record before any next action. Original unknown tasks, receipt,
+Pi session, queue and source files are not edited, moved or replayed. There is no
+automatic rollback/reset command; the retained original bytes support diagnosis
+without granting permission to erase later work.
+
+For the running case, `infrastructureRecovery` records the truthful prior
+`running`/null-attention pair and retains the exact original journal backup. The
+cached status is not rewritten to fabricate a normal exit. A compatible program
+switch can consume this verified recheck without restarting the old program:
+it verifies that same run and exact backup, then repeats the existing native
+absence and immutable-data checks. Candidates advertise `native_running_recovery`;
+selection refuses an older reader that cannot preserve this record. No Agent
+continuation, process adoption or business replay follows the recheck.
+
+Success means **infrastructure rechecked, no process started**. Explicit foreground
+start remains separate, through the existing selected program and same HostRoot.
+When an old host's controlled stop retained `herdr_observation_unknown`, the same
+offline recovery also accepts that exact `stopped` journal and matching stopped
+status/run. It still requires the original configured processes absent, ordinary
+session evidence, immutable attempts and all publication-time comparisons. It
+archives the original stopped/attention bytes without changing the old status or
+unknown tasks. A program update can consume this bounded recovery without first
+restarting the old host. The target must advertise
+`native_stopped_observation_recovery`; incompatible older readers are refused.
+This is not permission to stop a running task or use offline recovery against a
+live Herdr. The installed old recovery command does not gain this behavior; use
+the reviewed new program's entry only after the controlled stop and evidence readback.
+Original attempts still require the existing retained-history checks; mismatches
+retain `task_handoff_unverified`. This acknowledgement does not authorize an
+active-task upgrade or stop. Business
+continuation uses the original NAS operation/attempt and its authenticated resume
+entry, after the original Runtime connection is restored. The CLI never calls it.
+
+### Shared programs are not shared ownership
+
+A different Herdr/Pi process is not a conflict solely because it uses the same
+installation. The recheck decodes the actual Windows argument vector, records
+PID/parent-PID/creation-time generations from one CIM snapshot, and uses the
+first `starting` event of the original `logs/endpoint-host/<runId>.jsonl` as the
+host's pre-component boundary. The log must name that exact run and remain
+unchanged through publication. At least one real parent link, with monotonically
+ordered creation times, must reach an ancestor older than that boundary without
+crossing the original host PID. PID reuse, gaps and cycles remain unknown.
+
+Exclusion also requires the original Windows session and distinct supported
+scope: canonical Herdr server arguments selecting another session; Pi with an
+explicit outside task root or independent interactive invocation; or Runtime
+with another explicit enrollment. Any original HostRoot, task-root or enrollment
+reference remains a conflict. An unreadable command line, an unsupported form,
+a session label alone or an earlier PID alone cannot exclude a process. Shared
+Pi configuration/history is not read or imported. The original official Herdr
+`running:false` query, leases, history checks, journal backup/CAS and no-replay
+rules still apply. The command emits bounded PID/role/reason diagnostics and
+successful exclusions; it never prints arguments, private paths or credentials.
+
+For a live unrelated process the minimum additional onsite readback is its
+PID/parent-PID/creation time, Windows session and recognized scope,
+plus the first original-run event's runId/time. Traverse only until a verified
+older ancestor is reached. If non-admin CIM returns an empty command line, keep
+identity unknown; use the existing legitimately authorized context for that
+specific read rather than change permissions, read process memory or infer scope
+from an old label. Recovery does not stop an excluded or unknown process.
+
+The unrelated process account SID is neither queried nor asserted. Its exclusion
+is proved by the observed creation graph and distinct scope, not by its account
+name, PID age alone or a label. This does not grant ownership or stop authority.
+The caller's original file trust, exact identity/configuration binding, leases and
+official original-session absence checks remain unchanged. A live ancestor older
+than the run can also be established by a verified edge from the recovery invoker;
+its own subsequently exited parent is not guessed or reconstructed.
+
+
+### Pre-run generic script with an exited parent
+
+The process check is not a machine-wide business drain. A readable concrete Node
+JS entry outside the configured component and original project/session references,
+created before this run's first starting event, is not a managed component of
+that run. Its missing historical parent does not alone block infrastructure
+recheck. No process names or PID allowlists are configured. Pi/Runtime entries,
+original references (including --flag=PATH forms), an observed original ancestor,
+and unreadable or post-start ambiguous invocations keep their existing fences.
+
+Such an exclusion is reported as
+`preexisting_generic_entry_not_managed_component` with
+`businessRelationship:not_inferred`. It does not assert that the script's working
+directory or business is unrelated, that an old task finished, or that any process
+may be stopped. Original attempts, unknown receipts, ordinary-history admission,
+CAS/backup and `task_handoff_unverified` remain unchanged. This permits coordinator
+recovery without requiring ownership histories for unrelated older Node tools.

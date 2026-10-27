@@ -6,7 +6,10 @@ import { fileURLToPath } from 'node:url'
 import { spawn, spawnSync, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { catalog, managedEnvironment } from './endpoint.mjs'
+import { catalog, managedEnvironment, programPaths, transferLocations, isNativeRuntimeConfig, connectorConfigReference } from './endpoint.mjs'
+import { NativeRuntimeConnector } from './native-connector.mjs'
+import { handoffPayload, validHandoffRecord, handoffObservation } from './handoff.mjs'
+import { validSessionContinuation, captureSessionContinuation } from './session-continuation.mjs'
 
 // Internal foreground lifecycle. No business dispatch, transfer implementation,
 // network service, OS startup registration, credential editing or second watchdog.
@@ -15,6 +18,9 @@ export class LifecycleError extends Error {
 }
 function demand(ok, code) { if (!ok) throw new LifecycleError(code) }
 function code(error) { return error instanceof LifecycleError ? error.code : 'lifecycle_operation_failed' }
+function connectorFailure(error) {
+  return new LifecycleError(typeof error?.code === 'string' && /^(native_connector|connector)_[a-z_]+$/.test(error.code) ? error.code : 'connector_operation_failed')
+}
 async function readFile(file, limit = 262144) {
   const s = await fs.lstat(file)
   demand(s.isFile() && !s.isSymbolicLink() && s.nlink === 1 && s.size <= limit, 'unsafe_lifecycle_input')
@@ -25,6 +31,8 @@ export function connectorAttention(snapshot) {
   if (['handshake_401', 'handshake_403'].includes(snapshot?.lastError)) return 'connector_authentication_required'
   if (snapshot?.lastError === 'handshake_426') return 'connector_protocol_upgrade_required'
   if (snapshot?.lastError === 'config_changed_restart_required') return 'connector_configuration_changed'
+  if (snapshot?.lastError === 'native_configuration_invalid') return 'connector_configuration_invalid'
+  if (snapshot?.lastError === 'native_tls_verification_failed') return 'connector_tls_verification_failed'
   if (snapshot?.state === 'needs_attention') return 'connector_needs_attention'
   // Official connector also stops when its credential file is removed.
   // A published clean stop is not proof of an accidental process crash.
@@ -56,63 +64,201 @@ export async function acquireLeases(keys, directory) {
 }
 
 export class StateStore {
-  constructor(directory, identity) { this.directory = directory; this.identity = identity; this.file = path.join(directory, 'lifecycle.json') }
+  constructor(directory, identity, { io = fs, checkpoint = async () => {} } = {}) {
+    this.directory = directory; this.identity = identity; this.file = path.join(directory, 'lifecycle.json')
+    this.io = io; this.checkpoint = checkpoint; this.writes = Promise.resolve()
+  }
+  serialize(operation) {
+    const pending = this.writes.then(operation)
+    this.writes = pending.catch(() => {})
+    return pending
+  }
   async load() {
     demand(path.isAbsolute(this.directory) && await fs.realpath(this.directory) === this.directory, 'canonical_state_root_required')
-    let data
-    try { data = await readJSON(this.file) } catch (e) { if (e.code !== 'ENOENT') throw new LifecycleError('lifecycle_state_unreadable') }
-    if (!data) return { schema: 1, identity: this.identity, phase: 'stopped', restarts: [], attention: null }
-    demand(data.schema === 1 && data.identity === this.identity && Array.isArray(data.restarts) && data.restarts.length <= 100 && data.restarts.every(t => Number.isSafeInteger(t) && t >= 0), 'lifecycle_state_mismatch')
+    let data, missing = false
+    try { data = await readJSON(this.file) } catch (e) { if (e.code !== 'ENOENT') throw new LifecycleError('lifecycle_state_unreadable'); missing = true }
+    if (missing) return { schema: 1, identity: this.identity, phase: 'stopped', restarts: [], attention: null }
+    demand(data && typeof data === 'object' && !Array.isArray(data), 'lifecycle_state_mismatch')
+    demand([1, 2].includes(data.schema) && data.identity === this.identity && Array.isArray(data.restarts) && data.restarts.length <= 100 && data.restarts.every(t => Number.isSafeInteger(t) && t >= 0), 'lifecycle_state_mismatch')
     demand(['stopped', 'starting', 'running', 'stopping', 'needs_attention'].includes(data.phase) && (data.attention === null || /^[a-z_]{1,80}$/.test(data.attention)), 'lifecycle_state_mismatch')
+    demand(data.sessionContinuation === undefined || validSessionContinuation(data.sessionContinuation), 'lifecycle_state_mismatch')
+    if (data.infrastructureRecovery !== undefined) {
+      const r = data.infrastructureRecovery
+      demand(r && Object.keys(r).sort().join(',') === 'attempts,businessReplayed,configuration,fromState,previousAttention,previousPhase,run,schema' &&
+        r.schema === 1 && ['attempts','configuration','fromState'].every(k => /^[a-f0-9]{64}$/.test(r[k])) && /^[a-f0-9-]{36}$/.test(r.run) &&
+        (['needs_attention', 'stopped'].includes(r.previousPhase) && r.previousAttention === 'herdr_observation_unknown' || r.previousPhase === 'running' && r.previousAttention === null) &&
+        r.businessReplayed === false, 'lifecycle_recovery_mismatch')
+    }
+    demand(data.schema === 1 ? data.handoff === undefined : validHandoffRecord(data.handoff) && data.handoff.payload.native.device_id === this.identity, 'lifecycle_handoff_mismatch')
     return data
   }
-  async save(data) {
-    // Only this coordinator's small journal; never official session/queue files.
-    try { await readFile(this.file) } catch (e) { if (e.code !== 'ENOENT') throw e }
-    const temporary = path.join(this.directory, `.lifecycle-${randomUUID()}.tmp`)
-    const h = await fs.open(temporary, 'wx')
-    try { await h.writeFile(`${JSON.stringify(data)}\n`); await h.sync() } finally { await h.close() }
-    await fs.rename(temporary, this.file)
+  save(data) {
+    const snapshot = structuredClone(data)
+    return this.serialize(async () => {
+      const current = await this.load()
+      // Ordinary lifecycle saves cannot erase or regress an ack written while
+      // their state snapshot was in flight. Only the methods below mutate it.
+      if (current.handoff) { snapshot.schema = 2; snapshot.handoff = current.handoff }
+      else demand(snapshot.handoff === undefined && snapshot.schema === 1, 'lifecycle_handoff_write_required')
+      await this.write(snapshot)
+    })
   }
+  recheckObservation(expected, next) {
+    return this.serialize(async () => {
+      demand(expected.phase === 'needs_attention' && expected.attention === 'herdr_observation_unknown' && !expected.handoff &&
+        JSON.stringify(next) === JSON.stringify({ ...expected, phase: 'running', attention: null }), 'herdr_recheck_not_eligible')
+      demand(JSON.stringify(await this.load()) === JSON.stringify(expected), 'herdr_recheck_state_changed')
+      await this.write(next, expected)
+    })
+  }
+  async write(data, expected = null) {
+    // Existing journal and publication mechanism; no second task/request ledger.
+    const raw = `${JSON.stringify(data)}\n`
+    demand(Buffer.byteLength(raw) <= 262144, 'lifecycle_state_too_large')
+    try { await readFile(this.file) } catch (e) { if (e.code !== 'ENOENT') throw e }
+    await this.checkpoint('before_write')
+    const temporary = path.join(this.directory, `.lifecycle-${randomUUID()}.tmp`)
+    const h = await this.io.open(temporary, 'wx')
+    try { await h.writeFile(raw); await h.sync() } finally { await h.close() }
+    await this.checkpoint('file_synced')
+    if (expected !== null && JSON.stringify(await this.load()) !== JSON.stringify(expected)) {
+      await this.io.unlink(temporary)
+      throw new LifecycleError('herdr_recheck_state_changed')
+    }
+    await this.io.rename(temporary, this.file)
+    await this.checkpoint('published')
+  }
+  async handoffStatus(requestId) {
+    return handoffObservation((await this.load()).handoff, requestId)
+  }
+  async recordHandoff(value) {
+    // Internal journal operation, called only by its existing lease owner.
+    // No CLI/stdin mutation route is exposed until caller identity is resolved.
+    const checked = handoffPayload(value)
+    return this.serialize(async () => {
+      const current = await this.load(), requestId = checked.payload.request_id
+      demand(checked.payload.native.device_id === this.identity, 'handoff_identity_mismatch')
+      if (current.handoff) {
+        demand(current.handoff.request_id === requestId, 'handoff_request_pending')
+        demand(current.handoff.payload_sha256 === checked.sha256, 'handoff_content_conflict')
+        return handoffObservation(current.handoff, requestId)
+      }
+      const record = { schema: 1, request_id: requestId, payload_sha256: checked.sha256, payload: checked.payload, state: 'recorded_unverified' }
+      try { await this.write({ ...current, schema: 2, handoff: record }) }
+      catch (cause) { throw Object.assign(new LifecycleError('handoff_persistence_unknown'), { cause }) }
+      return handoffObservation(record, requestId)
+    })
+  }
+  markHandoffUnknown(requestId, payloadHash) {
+    return this.serialize(async () => {
+      const current = await this.load(), record = current.handoff
+      demand(record && record.request_id === requestId && record.payload_sha256 === payloadHash, 'handoff_content_conflict')
+      if (record.state !== 'outcome_unknown') {
+        const next = { ...record, state: 'outcome_unknown' }
+        try { await this.write({ ...current, handoff: next }) }
+        catch (cause) { throw Object.assign(new LifecycleError('handoff_persistence_unknown'), { cause }) }
+        return handoffObservation(next, requestId)
+      }
+      return handoffObservation(record, requestId)
+    })
+  }
+
 }
 
 export class NativeDriver {
-  constructor(config, { qualify, inheritedEnvironment = process.env } = {}) {
+  constructor(config, { qualify, inheritedEnvironment = process.env, checkPrograms = null } = {}) {
     this.config = config
     this.qualify = qualify
+    this.checkPrograms = checkPrograms
+    this.herdrVersion = catalog.components.herdr.version
     // Environment is fully cleaned by the shared product function, not the plan
     // overlay. Extra environment injection is not exposed to product callers.
     this.env = managedEnvironment(config, inheritedEnvironment)
     this.children = new Map()
-    this.node = path.join(config.bundleRoot, catalog.components.node.entry)
-    this.herdr = path.join(config.bundleRoot, catalog.components.herdr.entry)
-    this.connector = path.join(config.bundleRoot, catalog.components.connector.entry)
+    this.previousChildren = new Map() // At most one previous owned generation per component, diagnostics only.
+    const programs = programPaths(config)
+    this.node = programs.node
+    this.herdr = programs.herdr
+    this.connector = programs.connector
+    this.nativeConnector = isNativeRuntimeConfig(config) ? new NativeRuntimeConnector({ node: this.node, entry: this.connector,
+      enrollmentFile: connectorConfigReference(config), cwd: config.sourceRoot, env: this.env,
+      deviceId: config.deviceId, runtimeId: config.runtimeId, version: catalog.nativeRuntime.version }) : null
     this.fingerprint = null
     this.marker = config.session === 'default' ? path.join(config.herdrConfigRoot, 'herdr.sock') : path.join(config.herdrConfigRoot, 'sessions', config.session, 'herdr.sock')
   }
-  async validate() {
+  async validate(state) {
     demand(process.platform === 'win32' && process.arch === 'x64' && typeof this.qualify === 'function', 'qualified_windows_driver_required')
-    demand(await this.qualify() === true, 'component_qualification_failed')
+    demand(await this.qualify(state) === true, 'component_qualification_failed')
     let credentials
-    try { credentials = await fs.lstat(path.join(this.config.agenvoConfigDir, 'credentials.json')) }
+    try { credentials = await fs.lstat(this.nativeConnector ? connectorConfigReference(this.config) : path.join(this.config.agenvoConfigDir, 'credentials.json')) }
     catch (e) { throw new LifecycleError(e.code === 'ENOENT' ? 'connector_authentication_required' : 'connector_credentials_unreadable') }
     demand(credentials.isFile() && !credentials.isSymbolicLink() && credentials.nlink === 1, 'connector_credentials_unreadable')
     const host = await readFile(path.join(this.config.herdrConfigRoot, 'config.toml'))
-    const connector = await readFile(path.join(this.config.agenvoConfigDir, 'config.json'))
+    const connector = await readFile(connectorConfigReference(this.config))
     const sum = createHash('sha256').update(host).update('\0').update(connector).digest('hex')
     demand(!this.fingerprint || this.fingerprint === sum, 'official_configuration_changed')
     this.fingerprint = sum
   }
+  diagnostics() {
+    const project = (component, c) => c ? { component, pid: c.process.pid || null,
+      exitObserved: c.exitObserved, exitCode: c.exitCode ?? null, signal: c.signal ?? null,
+      processError: c.error, stderrBytes: c.stderrBytes || 0, stderrCode: c.stderrBytes ? 'unclassified_stderr' : null } : null
+    const records = [...this.children].map(([component, c]) => ({ ...project(component, c), previousExit: project(component, this.previousChildren.get(component)) }))
+    const native = this.nativeConnector?.diagnostics()
+    if (native) records.push(native)
+    if (this.statusObservation) records.push(this.statusObservation)
+    return records
+  }
+  recordStatusFailure(outcome, result = {}) {
+    const stderr = String(result.stderr || '').slice(0, 4096)
+    const stderrClass = /permission\s*denied|access (?:is )?denied|os error 5\b|For an elevated server, use an administrator terminal\./i.test(stderr) ? 'permission_denied' :
+      /unexpected argument|unrecognized (?:option|argument)|unknown (?:option|argument)|bad option|invalid session/i.test(stderr) ? 'arguments_rejected' :
+      /connection refused|pipe.*(?:not found|busy)|server_not_running/i.test(stderr) ? 'endpoint_unavailable' : stderr ? 'unclassified' : 'absent'
+    this.statusObservation = { component: 'herdr_observation', outcome,
+      exitCode: Number.isInteger(result.code) ? result.code : null,
+      errorCode: ['ENOENT','EACCES','EPERM','ETIMEDOUT','ERR_CHILD_PROCESS_STDIO_MAXBUFFER'].includes(result.code) ? result.code : null,
+      signal: typeof result.signal === 'string' && /^SIG[A-Z]+$/.test(result.signal) ? result.signal : null,
+      stdoutBytes: Math.min(16385, Buffer.byteLength(String(result.stdout || ''))), stderrBytes: Math.min(16385, Buffer.byteLength(String(result.stderr || ''))), stderrClass }
+  }
+  statusFailure(outcome, result) {
+    this.recordStatusFailure(outcome, result)
+    return new LifecycleError(this.statusObservation.stderrClass === 'permission_denied' || ['EACCES','EPERM'].includes(result?.code) ? 'herdr_observation_permission_denied' : 'herdr_observation_unknown')
+  }
   command(file, args, timeout = 10000) {
+    this.checkPrograms?.()
     const r = spawnSync(file, args, { env: this.env, cwd: this.config.sourceRoot, encoding: 'utf8', timeout, maxBuffer: 16384, windowsHide: true, shell: false })
+    if (file === this.herdr && args.join('\0') === ['--session', this.config.session, 'status', 'server', '--json'].join('\0') && (r.error || r.status !== 0)) {
+      throw this.statusFailure(r.error?.code === 'ETIMEDOUT' ? 'deadline' : r.error ? 'process_error' : 'nonzero_exit', { stdout: r.stdout, stderr: r.stderr, code: r.error?.code || r.status, signal: r.signal })
+    }
     demand(!r.error && r.status === 0, 'official_command_failed')
     return r.stdout
   }
   hostStatus() {
+    this.checkPrograms?.()
     let value
     try { value = JSON.parse(this.command(this.herdr, ['--session', this.config.session, 'status', 'server', '--json'], 3000)) }
-    catch { throw new LifecycleError('herdr_observation_unknown') }
+    catch (error) { if (error.code === 'herdr_observation_permission_denied') throw error; throw new LifecycleError('herdr_observation_unknown') }
     demand(typeof value.running === 'boolean', 'herdr_observation_unknown')
+    return value
+  }
+  async observeHostStatus() {
+    this.checkPrograms?.()
+    // A runtime observation must let the event loop record an owned child's
+    // exit while the status CLI is running. spawnSync in this path held that
+    // evidence back and converted a concurrent known crash into permanent
+    // herdr_observation_unknown attention before recovery could run.
+    let value, result
+    try {
+      result = await promisify(execFile)(this.herdr, ['--session', this.config.session, 'status', 'server', '--json'], {
+        env: this.env, cwd: this.config.sourceRoot, timeout: 3000, maxBuffer: 16384, windowsHide: true, shell: false,
+      })
+    } catch (error) {
+      throw this.statusFailure(error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 'output_limit' : error.killed ? 'deadline' : Number.isInteger(error.code) ? 'nonzero_exit' : 'process_error', error)
+    }
+    try { value = JSON.parse(result.stdout) }
+    catch { this.recordStatusFailure('invalid_json', { ...result, code: 0 }); throw new LifecycleError('herdr_observation_unknown') }
+    if (typeof value?.running !== 'boolean') { this.recordStatusFailure('invalid_shape', { ...result, code: 0 }); throw new LifecycleError('herdr_observation_unknown') }
+    this.statusObservation = null
     return value
   }
   async ownedGeneration(capture = false) {
@@ -136,20 +282,38 @@ export class NativeDriver {
     } catch (error) {
       let reason
       try { reason = JSON.parse(error.stdout).error } catch { /* Bounded diagnostics only. */ }
-      throw new LifecycleError(/^herdr_(owner_mismatch|generation_changed|ownership_unverified|request_(rejected|timeout|incomplete|oversized|failed))$/.test(reason) ? reason : 'herdr_ownership_unverified')
+      const failure = new LifecycleError(/^herdr_(owner_mismatch|generation_changed|ownership_unverified|request_(rejected|timeout|incomplete|oversized|failed))$/.test(reason) ? reason : 'herdr_ownership_unverified')
+      // Keep authority fail-closed, but retain bounded process evidence for a
+      // caller's diagnostics. Never attach command text, environment or output.
+      const stage = String(error.stderr || '').match(/(?:^|\n)owned_helper_stage=(bootstrap|module_loaded|compiled|pipe_connected|peer_verified)(?=\r?\n|$)/g)?.at(-1)?.trim().split('=')[1] || 'not_observed'
+      failure.helper = { outcome: error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 'output_limit' : error.killed ? 'deadline' : Number.isInteger(error.code) ? 'nonzero_exit' : 'process_error', exitCode: Number.isInteger(error.code) ? error.code : null, response: typeof reason === 'string' ? 'error_response' : error.stdout ? 'unrecognized_output' : 'absent', stage }
+      throw failure
     }
     demand(response.id === 'endpoint-owned' && response.result && !response.error, 'herdr_request_failed')
     return response.result
   }
   async ownedHostStatus() {
     await this.ownedGeneration()
-    const status = this.hostStatus() // read-only; generation checked on both sides
+    const status = await this.observeHostStatus() // read-only; generation checked on both sides
     await this.ownedGeneration()
     return status
   }
-  alive(component) { const c = this.children.get(component); return Boolean(c && !c.exited && !c.error) }
+  // An error can mean a failed kill, not a failed spawn. Until exit is observed
+  // an allocated child still owns its slot and must remain eligible for cleanup.
+  alive(component) { if (component === 'connector' && this.nativeConnector) return this.nativeConnector.alive(); const c = this.children.get(component); return Boolean(c && !c.exited) }
+  confirmedExit(component) {
+    if (component === 'connector' && this.nativeConnector) return this.nativeConnector.confirmedExit()
+    const c = this.children.get(component)
+    // Only an exit event on the same retained child record after a verified
+    // generation qualifies. A kill request, spawn error or missing PID does not.
+    return Boolean(c && c.exitObserved === true && c.exited && !c.error && /^\d+:\d+$/.test(c.generation) && c.generation.split(':')[0] === String(c.process.pid))
+  }
   async start(component) {
+    this.checkPrograms?.()
     demand(!this.alive(component), 'component_already_owned')
+    if (component === 'connector' && this.nativeConnector) {
+      try { await this.nativeConnector.start(); return } catch (error) { throw connectorFailure(error) }
+    }
     if (component === 'herdr') demand(!this.hostStatus().running, 'existing_herdr_requires_handoff')
     if (component === 'connector') {
       try { await fs.lstat(path.join(this.config.agenvoConfigDir, 'run.lock')); throw new LifecycleError('connector_lock_requires_owner') }
@@ -158,16 +322,24 @@ export class NativeDriver {
     const file = component === 'herdr' ? this.herdr : this.node
     const args = component === 'herdr' ? ['--session', this.config.session, 'server'] : [this.connector, 'run']
     const processHandle = spawn(file, args, { env: this.env, cwd: this.config.sourceRoot, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], shell: false })
-    const c = { process: processHandle, startedAt: Date.now(), exited: false, error: false, lock: null }
+    const c = { process: processHandle, startedAt: Date.now(), exited: false, exitObserved: false, error: false, lock: null, exitCode: null, signal: null, stderrBytes: 0 }
     c.done = new Promise(resolve => {
-      processHandle.once('exit', () => { c.exited = true; resolve() })
-      processHandle.once('error', () => { c.error = true; c.exited = true; resolve() })
+      processHandle.once('exit', (exitCode, signal) => { c.exitObserved = true; c.exited = true; c.exitCode = exitCode; c.signal = signal; resolve() })
+      processHandle.on('error', () => {
+        c.error = true
+        // Failed spawn has no PID and no later exit event. A post-spawn error
+        // must not resolve done or discard the still-owned process handle.
+        if (processHandle.pid === undefined) { c.exited = true; resolve() }
+      })
     })
     processHandle.stdout.resume()
-    processHandle.stderr.resume()
-    this.children.set(component, c)
+    // Drain without retaining arbitrary child text (which can contain keys or
+    // task content). Persist only byte count and actual exit metadata via host.
+    processHandle.stderr.on('data', chunk => { c.stderrBytes = Math.min(Number.MAX_SAFE_INTEGER, c.stderrBytes + chunk.length) })
+    this.previousChildren.set(component, this.children.get(component)); this.children.set(component, c)
   }
   async connectorStatus() {
+    if (this.nativeConnector) return this.nativeConnector.status()
     const c = this.children.get('connector')
     if (!c) return null
     let s
@@ -185,14 +357,22 @@ export class NativeDriver {
   async waitReady(component, timeout = 30000) {
     const deadline = Date.now() + timeout
     while (Date.now() < deadline) {
+      // A fast secure-loader/handshake failure may already have exited. Keep
+      // its classified reason instead of reducing it to process disappearance.
+      if (component === 'connector' && this.nativeConnector) {
+        const attention = connectorAttention(await this.connectorStatus())
+        demand(!attention, attention)
+      }
       demand(this.alive(component), `${component}_startup_exited`)
+      const owned = component === 'connector' && this.nativeConnector ? this.nativeConnector.record : this.children.get(component)
+      demand(!owned?.error, `${component}_process_error`)
       if (component === 'herdr') {
         try {
           const s = this.hostStatus()
-          if (s.running && s.version === '0.9.5' && s.endpoint_compatible === true) {
+          if (s.running && s.version === this.herdrVersion && s.endpoint_compatible === true) {
             await this.ownedGeneration(true)
             const owned = await this.ownedHostRequest('ping')
-            demand(owned.type === 'pong' && owned.version === '0.9.5', 'herdr_ownership_unverified')
+            demand(owned.type === 'pong' && owned.version === this.herdrVersion, 'herdr_ownership_unverified')
             return
           }
         } catch (error) {
@@ -210,11 +390,19 @@ export class NativeDriver {
     throw new LifecycleError(`${component}_startup_timeout`)
   }
   async recoverConnectorLock() {
+    if (this.nativeConnector) {
+      // Official Runtime has no Agenvo run.lock. Only this exact closed child
+      // can be restarted; no PID guessing or external daemon recovery.
+      try { await this.nativeConnector.stop() } catch (error) { throw connectorFailure(error) }
+      demand(this.nativeConnector.confirmedExit(), 'connector_stop_unknown')
+      return
+    }
     const c = this.children.get('connector')
     let lock
     try { lock = await readJSON(path.join(this.config.agenvoConfigDir, 'run.lock')) }
     catch (e) { if (e.code === 'ENOENT') return; throw new LifecycleError('connector_lock_requires_owner') }
     demand(c?.exited && c.lock && lock.pid === c.process.pid && lock.nonce === c.lock.nonce, 'connector_lock_requires_owner')
+    this.checkPrograms?.('connector')
     // Official recovery only after this exact owned process has exited and the
     // saved lock nonce still matches. No direct unlink or PID-based termination.
     try { await promisify(execFile)(this.node, [this.connector, 'doctor', '--recover-lock'], { env: this.env, cwd: this.config.sourceRoot, timeout: 12000, maxBuffer: 16384, windowsHide: true, shell: false }) }
@@ -223,6 +411,9 @@ export class NativeDriver {
     catch (e) { if (e.code !== 'ENOENT') throw e }
   }
   async stop(component) {
+    if (component === 'connector' && this.nativeConnector) {
+      try { await this.nativeConnector.stop(); return } catch (error) { throw connectorFailure(error) }
+    }
     const c = this.children.get(component)
     if (!c) return
     if (this.alive(component)) {
@@ -231,14 +422,25 @@ export class NativeDriver {
       } else {
         // Windows Node kill terminates this owned child; it does not guarantee
         // POSIX SIGTERM callbacks. Recover only its proven stale official lock.
-        c.process.kill()
+        demand(c.process.kill() || c.exitObserved, 'connector_stop_unknown')
       }
       const timer = new AbortController()
       try {
         await Promise.race([c.done, sleep(10000, undefined, { signal: timer.signal }).then(() => { throw new LifecycleError(`${component}_stop_unknown`) })])
       } finally { timer.abort() }
+      if (component === 'herdr' && [2, 3].includes(this.config.schema)) {
+        // Capture once at the confirmed owned exit, not on a later stop retry
+        // when another process might have changed the official snapshot.
+        try { c.sessionContinuation = await captureSessionContinuation(this.config) }
+        catch { c.continuationUnavailable = true }
+      }
     }
     if (component === 'connector') await this.recoverConnectorLock()
+  }
+  async captureContinuation() {
+    const owned = this.children.get('herdr')
+    demand(!owned?.continuationUnavailable, 'session_continuation_unavailable')
+    return owned?.sessionContinuation || null
   }
 }
 
@@ -293,9 +495,10 @@ export class EndpointLifecycle {
       if (this.state.attention && !acknowledgeAttention) throw new LifecycleError(this.state.attention)
       this.state.attention = null
       demand(!this.stopping, 'startup_cancelled')
-      await this.driver.validate()
+      await this.driver.validate(this.state)
       demand(!this.driver.hostStatus().running, 'existing_herdr_requires_handoff')
       demand(!this.stopping, 'startup_cancelled')
+      delete this.state.sessionContinuation // consume before any component start
       this.state.phase = 'starting'; await this.save()
       await this.driver.start('herdr'); await this.driver.waitReady('herdr')
       demand(!this.stopping, 'startup_cancelled')
@@ -352,8 +555,19 @@ export class EndpointLifecycle {
   async tick() {
     if (this.active) return this.active
     this.active = (async () => {
-      if (this.stopping || this.state?.phase !== 'running') return this.snapshot()
+      const snapshotsOnly = this.state?.phase === 'needs_attention' && this.state.attention === 'herdr_observation_unknown' &&
+        this.release && this.transfer && !this.state.handoff && !this.journalError && !this.cleanupError
+      if (this.stopping || this.state?.phase !== 'running' && !snapshotsOnly) return this.snapshot()
       try {
+        this.driver.checkPrograms?.()
+        if (snapshotsOnly) {
+          // The reviewed CLI alone selects already-admitted private bytes.
+          // No source collection, normal advance, control recovery or task start.
+          demand(JSON.stringify(await this.store.load()) === JSON.stringify(this.state), 'transfer_snapshot_host_state_changed')
+          const transfer = await this.transfer.tick({ snapshotsOnly: true })
+          if (transfer.attention) await this.attention(transfer.attention)
+          return this.snapshot()
+        }
         const previousConnection = this.observedConnection
         const s = await this.driver.connectorStatus()
         this.observedConnection = s?.state === 'online' ? 'online_snapshot' : s?.state || 'unverified'
@@ -363,8 +577,17 @@ export class EndpointLifecycle {
         if (!this.driver.alive('herdr')) await this.recover('herdr')
         else if (!this.driver.alive('connector')) await this.recover('connector')
         else {
-          const host = await this.driver.ownedHostStatus()
-          demand(host.running && host.version === '0.9.5' && host.endpoint_compatible === true, 'herdr_observation_unknown')
+          try {
+            const host = await this.driver.ownedHostStatus()
+            demand(host.running && host.version === (this.driver.herdrVersion || '0.9.5') && host.endpoint_compatible === true, 'herdr_observation_unknown')
+          } catch (error) {
+            // The owner may exit AFTER the alive check. Classify only that
+            // proven transition; identity/generation/ownership errors remain
+            // terminal even if the original child has since exited.
+            const exited = error instanceof LifecycleError && ['herdr_observation_unknown', 'herdr_owner_exited'].includes(error.code) && this.driver.confirmedExit?.('herdr') === true
+            if (!exited) throw error
+            if (!this.stopping) await this.recover('herdr')
+          }
         }
         if (!this.stopping && this.state.phase === 'running' && this.transfer) {
           const transfer = await this.transfer.tick()
@@ -374,6 +597,33 @@ export class EndpointLifecycle {
         try { await this.attention(code(error)) } catch { throw error }
       }
       return this.snapshot()
+    })()
+    try { return await this.active } finally { this.active = null }
+  }
+  async recheckHerdr({ validateConfiguration = async () => {} } = {}) {
+    demand(!this.active && !this.starting && !this.stopping && this.release, 'herdr_recheck_busy')
+    this.active = (async () => {
+      const expected = structuredClone(this.state)
+      demand(expected?.phase === 'needs_attention' && expected.attention === 'herdr_observation_unknown' && !expected.handoff && !this.journalError && !this.cleanupError,
+        'herdr_recheck_not_eligible')
+      demand(!this.transfer?.snapshot().attention && this.driver.alive('herdr') && this.driver.alive('connector') && typeof this.driver.ownedGeneration === 'function' && typeof this.driver.ownedHostRequest === 'function', 'herdr_recheck_not_eligible')
+      this.driver.checkPrograms?.()
+      const generation = await this.driver.ownedGeneration()
+      const host = await this.driver.ownedHostStatus()
+      demand(host.running === true && host.version === (this.driver.herdrVersion || '0.9.5') && host.endpoint_compatible === true, 'herdr_observation_unknown')
+      const peer = await this.driver.ownedHostRequest('ping')
+      demand(peer.type === 'pong' && peer.version === (this.driver.herdrVersion || '0.9.5'), 'herdr_ownership_unverified')
+      demand(!connectorAttention(await this.driver.connectorStatus()), 'herdr_recheck_connector_unverified')
+      demand(await this.driver.ownedGeneration() === generation && this.driver.alive('connector') && !this.stopping, 'herdr_recheck_owner_changed')
+      this.driver.checkPrograms?.()
+      await validateConfiguration()
+      demand(!this.stopping, 'herdr_recheck_owner_changed')
+      demand(JSON.stringify(this.state) === JSON.stringify(expected), 'herdr_recheck_state_changed')
+      const next = { ...expected, phase: 'running', attention: null }
+      try { await this.store.recheckObservation(expected, next) }
+      catch (error) { this.journalError = error; throw new LifecycleError(error.code === 'herdr_recheck_state_changed' ? error.code : 'herdr_recheck_persistence_unknown') }
+      this.state = next
+      return this.snapshot() // Normal later tick, not this command, may advance files.
     })()
     try { return await this.active } finally { this.active = null }
   }
@@ -409,6 +659,12 @@ export class EndpointLifecycle {
     } else {
       this.observedConnection = 'stopped'
       if (this.state) {
+        if (!firstError && this.driver.captureContinuation) {
+          try {
+            const checkpoint = await this.driver.captureContinuation()
+            if (checkpoint) this.state.sessionContinuation = checkpoint
+          } catch { firstError = new LifecycleError('session_continuation_unavailable') }
+        }
         this.state.phase = 'stopped'
         if (firstError) this.state.attention = code(firstError)
         try { await this.save() } catch (error) { firstError ??= error; this.state.attention = code(firstError) }
@@ -434,6 +690,6 @@ export class EndpointLifecycle {
 }
 
 export function leaseKeys(config) {
-  return [`device:${config.deviceId}`, `herdr:${config.herdrConfigRoot}:${config.session}`, `connector:${config.agenvoConfigDir}`,
-    ...(config.transferStateDir ? [`transfer:${config.transferStateDir}`] : [])]
+  return [`device:${config.deviceId}`, `herdr:${config.herdrConfigRoot}:${config.session}`, `connector:${isNativeRuntimeConfig(config) ? connectorConfigReference(config) : config.agenvoConfigDir}`,
+    ...(config.transferStateDir || [2, 3].includes(config.schema) && config.transfer ? [`transfer:${[2, 3].includes(config.schema) ? transferLocations(config).state : config.transferStateDir}`] : [])]
 }

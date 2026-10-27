@@ -1,21 +1,20 @@
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { catalog, transferEnvironment, validateTransferConfiguration } from './endpoint.mjs'
-import { TransferContractError, parseLifecycleSummary, parseAdvanceDecision, deadlineMilliseconds } from './transfer-contract.mjs'
+import { transferLocations, transferEnvironment, validateTransferConfiguration } from './endpoint.mjs'
+import { TransferContractError, parseLifecycleSummary, parseAdvanceDecision, parseSnapshotAdvance, deadlineMilliseconds } from './transfer-contract.mjs'
 
 export class TransferError extends Error {
   constructor(code) { super(code); this.code = code }
 }
 
 export function transferCommand(config, action) {
-  if (!['lifecycle-summary', 'advance-results'].includes(action)) throw new TransferError('transfer_action_rejected')
-  return { file: path.join(config.bundleRoot, catalog.components.transfer.entry), args: ['-action', action] }
+  if (!['lifecycle-summary', 'advance-results', 'advance-snapshots'].includes(action)) throw new TransferError('transfer_action_rejected')
+  return { file: path.join(transferLocations(config).root, 'transferqueue.exe'), args: ['-action', action] }
 }
 
-// Internal adapter, not activated by the public CLI. Qualification must validate
-// the exact executable/plugin inventory AND the implemented lifecycle contract.
-// The old pinned artifact and the unreviewed PR56 source do not qualify.
+// Activated only through the explicit runtime request and verified inventory.
+// This finite command adapter never creates a queue or replays an Agent task.
 export class NativeTransferDriver {
   constructor(config, { qualify, inheritedEnvironment = process.env } = {}) {
     this.config = structuredClone(config)
@@ -72,7 +71,7 @@ export class TransferLifecycle {
   snapshot() {
     return { state: this.state, attention: this.attention,
       decision: this.decision, nextCheckAt: this.nextCheck === null ? null : new Date(this.nextCheck).toISOString(),
-      active: Boolean(this.active), businessCompletion: 'not_inferred', evidence: 'consumer_unit_boundary' }
+      active: Boolean(this.active), businessCompletion: 'not_inferred', evidence: this.driver instanceof NativeTransferDriver ? 'native_cli_decisions' : 'consumer_unit_boundary' }
   }
   suspend(reason) {
     this.attention = reason; this.state = 'needs_attention'; this.nextCheck = null
@@ -85,7 +84,9 @@ export class TransferLifecycle {
     if (![0, 1].includes(status) || (status !== 0 && ['due', 'idle'].includes(decision.state))) {
       this.suspend('transfer_command_outcome_unknown'); return
     }
-    if (['authentication', 'permission', 'configuration', 'capacity'].includes(decision.error_class)) {
+    // Real disk pressure can carry a persisted producer wake. Capacity without
+    // that waiting deadline still requires attention; never invent a retry.
+    if (['authentication', 'permission', 'configuration'].includes(decision.error_class) || decision.error_class === 'capacity' && decision.state !== 'waiting') {
       this.suspend(`transfer_${decision.error_class}`); return
     }
     if (decision.state === 'unknown' && ['transient', 'busy'].includes(decision.error_class) && !this.retryUsed) {
@@ -109,18 +110,37 @@ export class TransferLifecycle {
     this.accept(parse(result.stdout, observedAt), result.status)
     return this.decision
   }
-  async tick() {
+  async readSnapshots() {
+    const result = await this.driver.invoke('advance-snapshots', () => !this.stopping)
+    if (!result || result.signal || result.error || result.timedOut || !Number.isInteger(result.status)) throw new TransferError('transfer_command_outcome_unknown')
+    const observed = parseSnapshotAdvance(result.stdout, result.status)
+    if (observed.state === 'failed') {
+      // No deadline is supplied by this action. Preserve the existing one-shot
+      // host hint floor; the producer remains authoritative for due selection.
+      this.decision = null
+      if (['transient', 'busy'].includes(observed.error_class) && !this.retryUsed) {
+        this.retryUsed = true; this.state = 'retry_hint'; this.nextCheck = this.clock() + 30000
+      } else this.suspend(`transfer_${observed.error_class}`)
+      return
+    }
+    // Do not project this scoped result as a global lifecycle decision or idle.
+    this.decision = null; this.state = 'unverified'
+    this.nextCheck = this.clock() + (observed.state === 'idle' ? 30000 : 1000)
+  }
+  async tick({ snapshotsOnly = false } = {}) {
+    if (typeof snapshotsOnly !== 'boolean') throw new TransferError('transfer_action_rejected')
     if (this.active) return this.active
-    this.active = this.tickOnce()
+    this.active = this.tickOnce(snapshotsOnly)
     try { return await this.active } finally { this.active = null }
   }
-  async tickOnce() {
+  async tickOnce(snapshotsOnly) {
     if (this.stopping || this.attention || (!this.pendingHint && this.clock() < this.nextCheck)) return this.snapshot()
-    if (this.state === 'retry_hint' && this.clock() < this.nextCheck) return this.snapshot()
+    if ((this.state === 'retry_hint' || this.state === 'waiting' && this.decision?.error_class === 'capacity') && this.clock() < this.nextCheck) return this.snapshot()
     // Coalesce hints already received. Hints arriving during a finite invocation
     // stay pending for the next endpoint tick, never start a parallel command.
     if (this.pendingHint) { this.pendingHint = false; this.retryUsed = false }
     try {
+      if (snapshotsOnly) { await this.readSnapshots(); return this.snapshot() }
       await this.read('lifecycle-summary')
       if (!this.stopping && !this.attention && this.state === 'due' && this.clock() >= this.nextAdvance) {
         this.nextAdvance = this.clock() + 1000

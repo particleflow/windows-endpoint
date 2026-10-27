@@ -1,5 +1,18 @@
 # Offline deployment transactions: first verifiable batch
 
+The sections below describe the original all-component selector and its test
+boundaries. The portable **endpoint-program-only** adapter is now implemented in
+`program-deployment.mjs`; its executable commands and limits are documented in
+[the candidate instructions](../packaging/README.md). It uses this same journal,
+staging, leases and recovery, with a candidate verifier and own-state format
+profile. `deploy run` consumes the selection while transferring the host lease
+to the existing foreground host in the same process. It leaves official programs,
+plugin registrations and all external data unchanged. It does not supply the
+missing global task admission barrier described below: active/unknown attempt or
+history evidence defers program switching instead of claiming business quiescence.
+Real component upgrade, active Pi handoff and physical installation qualification
+remain unimplemented/unverified.
+
 This branch builds on reviewed PR2 head
 `5f06399329de31a3fc28f384b0bace5c6eeff814` without changing that branch.
 It adds an internal **candidate-selection transaction**, not an installer that

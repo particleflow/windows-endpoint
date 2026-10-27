@@ -8,13 +8,16 @@ const [root, scenario] = process.argv.slice(2)
 const notify = value => { if (process.connected) process.send({ fixture: value }) }
 let driver, releaseAdvance, releaseReady, releaseConfig
 let failStop = scenario === 'stop-failure'
+let failObservation = scenario === 'observation-recheck'
 const control = message => {
+  if (scenario === 'fatal-error' && message.fixture === 'uncaught_exception') throw new TypeError('SYNTHETIC-SECRET-MUST-NOT-ENTER-HOST-LOG')
   if (message.fixture === 'crash_connector') driver?.children.get('connector')?.child.send({ action: 'crash' })
   if (message.fixture === 'authentication_failure') driver?.children.get('connector')?.child.send({ action: 'auth_failure' })
   if (message.fixture === 'release_advance') releaseAdvance?.()
   if (message.fixture === 'release_ready') releaseReady?.()
   if (message.fixture === 'release_config') releaseConfig?.()
   if (message.fixture === 'allow_stop') failStop = false
+  if (message.fixture === 'allow_observation') { failObservation = false; notify({ event: 'observation_available' }) }
 }
 process.on('message', control)
 
@@ -35,7 +38,18 @@ const code = await runForeground({ root, tickMs: 100, createTestRuntime: async (
     validate: async () => {},
     alive: component => Boolean(children.get(component) && !children.get(component).exited),
     hostStatus: () => ({ running: driver.alive('herdr'), version: '0.9.5', endpoint_compatible: true }),
-    ownedHostStatus: async () => driver.hostStatus(),
+    ownedHostStatus: async () => {
+      if (failObservation) throw new LifecycleError('herdr_observation_unknown')
+      return driver.hostStatus()
+    },
+    ownedGeneration: async () => {
+      if (!driver.alive('herdr')) throw new LifecycleError('herdr_owner_exited')
+      return `${children.get('herdr').child.pid}:123`
+    },
+    ownedHostRequest: async action => {
+      if (action !== 'ping') throw new LifecycleError('herdr_request_rejected')
+      return { type: 'pong', version: '0.9.5' } // Synthetic peer; real Windows helper is not exercised here.
+    },
     connectorStatus: async () => driver.status,
     start: async component => {
       const child = fork(fileURLToPath(new URL('./host-component.mjs', import.meta.url)), [], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], execArgv: [] })
@@ -65,13 +79,14 @@ const code = await runForeground({ root, tickMs: 100, createTestRuntime: async (
   }
   const transfer = new TransferLifecycle({ driver: { invoke: async action => {
     notify({ event: 'transfer_action', action })
+    if (action === 'advance-snapshots') return { status: 0, stdout: JSON.stringify({ state: 'idle', advance_scope: 'retained_upload_snapshots' }) }
     const result = { schema: 'memoh.delivery.lifecycle.v1', state: 'idle', next_due_at: null, error_class: 'none' }
     if (scenario === 'unknown-transfer') { result.state = 'unknown'; result.error_class = 'unknown' }
     if (scenario === 'drain-failure') {
       result.state = 'due'
       if (action === 'advance-results') {
         await new Promise(resolve => { releaseAdvance = resolve; notify({ event: 'advance_waiting' }) })
-        return { status: 1, stdout: JSON.stringify({ ...result, delivery_id: 'original-delivery', phase: 'uploading', offset: 3, admitted: true, associated: false }) }
+        return { status: 1, stdout: JSON.stringify({ ...result, delivery_id: 'original-delivery', phase: 'uploading', offset: 3, admitted: true, associated: false, feedback_status: 'recorded' }) }
       }
     }
     return { status: 0, stdout: JSON.stringify(result) }

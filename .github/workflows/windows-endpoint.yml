@@ -21,9 +21,31 @@ jobs:
         with:
           node-version: '24.14.0'
       - name: Verify delivery boundary and recovery fixtures
-        run: node --test --test-timeout=30000 endpoint.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs host.test.mjs
+        run: node --test --test-timeout=30000 endpoint.test.mjs pi-catalog-sync.test.mjs pi-catalog-lifecycle.test.mjs pi-magpie-catalog.test.mjs directory-selection.test.mjs handoff.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs program-deployment.test.mjs product-installation.test.mjs host-layout.test.mjs host.test.mjs host-recovery.test.mjs runtime.test.mjs installed.test.mjs setup.test.mjs native-connector.test.mjs session-diagnostics.test.mjs session-continuation.test.mjs official-smoke/native-runtime-peer.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs official-smoke/pi-model-fixture.test.mjs official-smoke/owner-control-fixture.test.mjs
+      - uses: actions/checkout@v4
+        if: runner.os == 'Linux'
+        with:
+          repository: particleflow/Memoh
+          ref: 0894a6eb8ff69c8796e2da5450fa172d4cd5ef81
+          path: producer-source
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        if: runner.os == 'Linux'
+        with:
+          go-version-file: producer-source/go.mod
+          cache: false
+      - name: Verify fixed producer LAN routes and TLS/auth refusal boundaries on Linux
+        if: runner.os == 'Linux'
+        working-directory: producer-source
+        run: go test -v -race -count=1 -timeout=90s -run 'Test(HostNetwork|ConfiguredLAN)' ./internal/transferclient
       - name: Validate transfer fixture JavaScript syntax
-        run: node --check official-smoke/transfer.mjs
+        run: |
+          node --check official-smoke/transfer.mjs
+          node --check official-smoke/feedback-fixture.mjs
+          node --check official-smoke/host.mjs
+          node --check official-smoke/native-runtime.mjs
+      - name: Verify portable candidate packaging and extracted entry
+        run: python -m unittest discover -s packaging -p 'test_*.py' -v
       - name: Validate transfer fixture PowerShell syntax
         if: runner.os == 'Windows'
         shell: powershell
@@ -32,10 +54,21 @@ jobs:
           $errors = $null
           $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./official-smoke/prepare-transfer.ps1), [ref]$tokens, [ref]$errors)
           if ($errors.Count -ne 0) { throw 'Transfer fixture PowerShell parse failed' }
+          foreach ($file in @('host-tls.ps1','fixture-process.ps1','fixture-trust.ps1','private-fixture.ps1')) {
+            $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path (Join-Path ./official-smoke $file)), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -ne 0) { throw 'TLS fixture PowerShell parse failed' }
+          }
+          Add-Type -Path ./official-smoke/fixture-job.cs
+          node ./official-smoke/private-fixture-encoding.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Private fixture Unicode roundtrip failed' }
       - name: Verify native PowerShell bootstrap and hash rejection
         if: runner.os == 'Windows'
         shell: powershell
         run: |
+          node --test --test-timeout=30000 directory-selection.windows.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Windows directory dialog assembly probe failed' }
+          node --test --test-timeout=30000 product-entry.windows.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Installed product foreground entry failed' }
           $node = (Get-Command node.exe).Source
           $hash = (Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash.ToLowerInvariant()
           & ./endpoint.ps1 -NodePath $node -NodeSha256 $hash help
@@ -64,3 +97,122 @@ jobs:
         run: |
           & '${{ runner.temp }}/endpoint official Unicode 空格/node/node.exe' ./official-smoke/lifecycle.mjs '${{ runner.temp }}/endpoint official Unicode 空格'
           if ($LASTEXITCODE -ne 0) { throw 'Official lifecycle smoke failed' }
+      - name: Exercise references to existing official installations
+        shell: pwsh
+        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint official Unicode 空格' -Root '${{ runner.temp }}/endpoint existing installation references' -UntrustedOnly -ExistingInstallations
+  explicit-runtime:
+    name: Explicit Windows host with source-built transfer CLI
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/checkout@v4
+        with:
+          repository: particleflow/Memoh
+          ref: 0894a6eb8ff69c8796e2da5450fa172d4cd5ef81
+          path: producer-source
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: producer-source/go.mod
+          cache: false
+      - name: Build exact public producer source with its unchanged build script
+        shell: pwsh
+        working-directory: producer-source
+        run: |
+          if ((git rev-parse HEAD) -ne '0894a6eb8ff69c8796e2da5450fa172d4cd5ef81') { throw 'Wrong producer source' }
+          python scripts/build-transferqueue-bundle.py --output '${{ runner.temp }}/endpoint-transfer-source-build'
+          if ($LASTEXITCODE -ne 0) { throw 'Producer source build failed' }
+      - uses: actions/checkout@v4
+        with:
+          repository: particleflow/Memoh
+          ref: 9601ac062a3b65477db8db76bcaa521265ba7ee2
+          path: runtime-source
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.27.0
+          run_install: false
+      - name: Build unchanged official Runtime from fixed source and lockfile
+        shell: pwsh
+        working-directory: runtime-source
+        run: |
+          if ((git rev-parse HEAD) -ne '9601ac062a3b65477db8db76bcaa521265ba7ee2') { throw 'Wrong Runtime source' }
+          pnpm install --frozen-lockfile --ignore-scripts --filter @memohai/runtime --filter @memohai/monorepo
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime locked dependency install failed' }
+          pnpm --filter @memohai/runtime build
+          if ($LASTEXITCODE -ne 0) { throw 'Official Runtime build failed' }
+          node ../packaging/build_runtime_host.mjs .
+          if ($LASTEXITCODE -ne 0) { throw 'Endpoint Runtime session-factory entry build failed' }
+          # Read-only diagnosis uses unchanged source, outside the product package.
+          pnpm --filter @memohai/runtime exec esbuild src/secure-files.ts --bundle --platform=node --format=esm --outfile='${{ runner.temp }}/endpoint-runtime-file-probe.mjs'
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime file probe build failed' }
+      - name: Inventory fixed Runtime build without enrolling or starting it
+        shell: pwsh
+        run: |
+          python packaging/collect_runtime.py --source runtime-source --commit 9601ac062a3b65477db8db76bcaa521265ba7ee2 --output '${{ runner.temp }}/endpoint-runtime-source-build'
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime build inventory failed' }
+      - name: Package exact-source portable review candidate
+        shell: pwsh
+        env:
+          ENDPOINT_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $output = '${{ runner.temp }}/endpoint-candidate-output'
+          python ./packaging/build_candidate.py --commit $env:ENDPOINT_SOURCE_COMMIT --producer '${{ runner.temp }}/endpoint-transfer-source-build' --producer-source ./producer-source --native-runtime '${{ runner.temp }}/endpoint-runtime-source-build' --output $output
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate packaging failed' }
+          $summary = Get-Content -Raw -LiteralPath (Join-Path $output 'candidate-summary.json') | ConvertFrom-Json
+          $archive = Join-Path $output $summary.archive
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $summary.sha256) { throw 'Candidate archive hash mismatch' }
+          Expand-Archive -LiteralPath $archive -DestinationPath '${{ runner.temp }}/endpoint extracted candidate Unicode 空格'
+          node ./packaging/verify_candidate.mjs '${{ runner.temp }}/endpoint extracted candidate Unicode 空格' (Join-Path $output 'candidate-summary.json') | Tee-Object -FilePath (Join-Path $output 'package-smoke.json')
+          if ($LASTEXITCODE -ne 0) { throw 'Extracted candidate checks failed' }
+      - name: Assemble fixed component inventory for explicit host review
+        shell: pwsh
+        run: |
+          $root = '${{ runner.temp }}/endpoint explicit components'
+          ./official-smoke/prepare.ps1 -Root $root
+          Move-Item -LiteralPath (Join-Path $root 'build-cache') -Destination '${{ runner.temp }}/endpoint-explicit-npm-cache'
+          Copy-Item -LiteralPath '${{ runner.temp }}/endpoint-transfer-source-build' -Destination (Join-Path $root 'transfer') -Recurse
+          & (Join-Path $root 'node/node.exe') ./official-smoke/inventory.mjs $root
+          if ($LASTEXITCODE -ne 0) { throw 'Explicit component inventory failed' }
+      - name: Exercise packaged native Runtime and independent owned Herdr across reconnect
+        shell: pwsh
+        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint native Runtime host' -UntrustedOnly -NativeRuntime -RuntimePackage '${{ runner.temp }}/endpoint extracted candidate Unicode 空格/runtime-connector' -RuntimeFileProbe '${{ runner.temp }}/endpoint-runtime-file-probe.mjs' -CandidateRoot '${{ runner.temp }}/endpoint extracted candidate Unicode 空格' | Tee-Object -FilePath '${{ runner.temp }}/endpoint-candidate-output/native-runtime-host.log'
+      - name: Verify producer native fixtures (test dispatcher has fixture-only CA injection)
+        shell: pwsh
+        run: |
+          node ./official-smoke/producer-fixtures.mjs '${{ runner.temp }}/endpoint-transfer-source-build' ./producer-source
+          if ($LASTEXITCODE -ne 0) { throw 'Producer native fixtures failed' }
+      - name: Exercise public host and production CLI with isolated configuration
+        shell: pwsh
+        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint untrusted TLS' -UntrustedOnly
+      - name: Exercise extracted candidate with existing official installations and transfer CLI
+        shell: pwsh
+        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint referenced transfer' -UntrustedOnly -ReferencedTransfer -CandidateRoot '${{ runner.temp }}/endpoint extracted candidate Unicode 空格' | Tee-Object -FilePath '${{ runner.temp }}/endpoint-candidate-output/candidate-host.log'
+      - name: Prepare original-task workload with real Herdr and Pi plus fixed producer projection
+        shell: pwsh
+        run: ./official-smoke/host-tls.ps1 -BundleRoot '${{ runner.temp }}/endpoint explicit components' -Root '${{ runner.temp }}/endpoint native Pi workload' -UntrustedOnly -PiWorkload -ProducerSource ./producer-source
+      - name: Retain verified portable candidate for review only
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-endpoint-review-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/endpoint-candidate-output/*.zip
+            ${{ runner.temp }}/endpoint-candidate-output/candidate-summary.json
+            ${{ runner.temp }}/endpoint-candidate-output/package-smoke.json
+            ${{ runner.temp }}/endpoint-candidate-output/candidate-host.log
+            ${{ runner.temp }}/endpoint-candidate-output/native-runtime-host.log
+          if-no-files-found: error
+          retention-days: 7
+      - name: Verify production CLI trusted TLS with disposable CurrentUser test root
+        shell: pwsh
+        # Keep a real failing prerequisite; never repeat the rejected import
+        # merely because independent component-reference development was pushed.
+        run: |
+          throw 'Positive TLS blocked: CurrentUser Root import returned UI is not allowed in this operation in run 39911092750. No new import attempted; positive assertions remain unverified.'
