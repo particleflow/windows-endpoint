@@ -29,7 +29,7 @@ function Require-RegularPath([string]$Path) {
 function Read-SmallJson([string]$Path) {
     $item = Require-RegularPath $Path
     if ($item.Length -gt 262144) { throw 'installation_metadata_oversized' }
-    return (Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json)
+    return (Get-Content -Raw -Encoding UTF8 -LiteralPath $Path | ConvertFrom-Json)
 }
 function Verify-Package([string]$Directory, [string]$ExpectedHash) {
     if ($ExpectedHash -notmatch '^[a-f0-9]{64}$') { throw 'installation_manifest_hash_required' }

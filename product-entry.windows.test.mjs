@@ -14,9 +14,14 @@ import { installProduct } from './product-installation.mjs'
 
 assert.equal(process.platform,'win32','this differential entry test requires actual Windows')
 const powershell=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe')
-async function fixture(t){
+async function fixture(t,unicodeNode=false){
   const f=await nativeInstalledFixture(t),root=path.join(f.base,'persistent product')
   f.config.programs.node=await fs.realpath(process.execPath)
+  if(unicodeNode){
+    const copy=path.join(f.base,'programs/node Unicode 空格/node.exe')
+    await fs.mkdir(path.dirname(copy),{recursive:true});await fs.copyFile(f.config.programs.node,copy)
+    f.config.programs.node=copy
+  }
   const source=await programPackage(path.join(f.base,'disposable extraction'),'product-entry',{native:true})
   const from=path.join(f.base,'references.json');await fs.writeFile(from,JSON.stringify(f.config))
   const result=await installProduct({from,root,source:source.directory,manifestSha256:source.hash,review:true,transfer:'disabled'},
@@ -49,16 +54,20 @@ test('actual installer process refuses unqualified default and reports unverifie
   assert.equal(await fs.readFile(f.config.connector.enrollmentFile,'utf8'),'SYNTHETIC UNREAD ENROLLMENT')
 })
 test('installed stable PowerShell entry runs and stops the real foreground observer after extraction is removed',async t=>{
-  const f=await fixture(t),child=spawn(powershell,[...args(f),'-Action','Run'],{stdio:['pipe','pipe','pipe'],windowsHide:true})
+  const f=await fixture(t,true),child=spawn(powershell,[...args(f),'-Action','Run'],{stdio:['pipe','pipe','pipe'],windowsHide:true})
   let output='',stderr='',closed=false
+  child.stdin.on('error',()=>{})
   child.stdout.on('data',c=>{output+=c});child.stderr.on('data',c=>{stderr+=c})
   const done=new Promise(resolve=>child.once('close',code=>{closed=true;resolve(code)}))
   t.after(async()=>{if(!closed){child.stdin.end('{"action":"stop"}\n');const ok=await Promise.race([done.then(()=>true),delay(8000,false)]);if(!ok)child.kill()}})
   const deadline=Date.now()+15000
   while(Date.now()<deadline&&!output.includes('"phase":"running"')&&!closed)await delay(25)
   assert.ok(output.includes('"phase":"running"'),'installed entry must expose the live foreground observer')
-  child.stdin.end('{"action":"stop"}\n')
+  await delay(150)
+  assert.equal(closed,false,'launcher must not substitute immediate EOF for a live foreground control channel')
+  child.stdin.write('{"action":"stop"}\n')
   assert.equal(await Promise.race([done,delay(10000,'deadline')]),0)
+  child.stdin.end()
   assert.equal(stderr,'');assert.ok(output.includes('"phase":"stopped"'))
   assert.equal(await fs.readFile(f.config.connector.enrollmentFile,'utf8'),'SYNTHETIC UNREAD ENROLLMENT')
 })
