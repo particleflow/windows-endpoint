@@ -5,7 +5,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { PassThrough } from 'node:stream'
-import { programDeployment, programDeploymentMain, runSelectedProgram, prepareProfileSwitch, archiveProfileSwitch } from './program-deployment.mjs'
+import { programDeployment, programDeploymentMain, runSelectedProgram, prepareProfileSwitch, archiveProfileSwitch, commitProfileSwitch } from './program-deployment.mjs'
 import { verifyCandidate } from './candidate.mjs'
 import { digest } from './endpoint.mjs'
 import { StateStore, acquireLeases } from './lifecycle.mjs'
@@ -33,6 +33,46 @@ async function fixture(t, { native = false } = {}) {
 const apply = (f, pkg, mode = 'install') => programDeploymentMain([mode, '--root', f.root, '--source', pkg.directory, '--manifest-sha256', pkg.hash])
 async function preserve(f) { assert.deepEqual(await Promise.all(f.originalFiles.map(p => fs.readFile(p))), f.originals) }
 
+test('offline local profile commit resumes after both publications without replaying original unknown', async t => {
+  const f = await fixture(t, { native: true }), store = f.manager.lifecycleStore
+  await apply(f, f.a)
+  const attempt = path.join(f.config.sourceRoot, '.memoh-computer/attempts/original/receipt.json')
+  await fs.mkdir(path.dirname(attempt), { recursive: true }); await fs.writeFile(attempt, 'SYNTHETIC UNKNOWN RECEIPT')
+  const continuation = await captureSessionContinuation(f.config)
+  await store.save({ ...(await store.load()), sessionContinuation: continuation })
+  const configRaw = await fs.readFile(f.manager.configFile), stateRaw = await fs.readFile(store.file)
+  const profile = path.join(f.base, 'new Pi profile'); await fs.mkdir(profile)
+  const sha = value => createHash('sha256').update(value).digest('hex')
+  const options = { root: f.root, requestId: randomUUID(), profile, configurationSha256: sha(configRaw), lifecycleSha256: sha(stateRaw),
+    continuationSha256: sha(JSON.stringify(continuation)), attemptsSha256: await attemptEvidence(f.config) }
+  await fs.writeFile(path.join(f.manager.lifecycleDirectory, 'host-status.json'), JSON.stringify({ schema: 1, owner: 'windows-endpoint-host', phase: 'stopped', attention: null, pid: 4242, runId: randomUUID(), updatedAt: Date.now() }))
+  await prepareProfileSwitch(options); await archiveProfileSwitch(options)
+  const inspect = async config => ({ config, assertUnchanged() {} })
+  const observe = async () => ({ ownerVerified: true, oldHostAbsent: true, referencedProcessesAbsent: true, herdrAbsent: true })
+  await assert.rejects(commitProfileSwitch(options, { inspect, observe: async () => ({ ownerVerified: true, oldHostAbsent: true, referencedProcessesAbsent: true, herdrAbsent: false }) }), { code: 'deployment_profile_switch_host_unverified' })
+  await assert.rejects(commitProfileSwitch(options, { inspect, observe, checkpoint: async p => { if (p === 'configuration_file_synced') await fs.appendFile(f.manager.configFile, ' ') } }), { code: 'deployment_profile_switch_evidence_changed' })
+  assert.deepEqual(await fs.readFile(store.file), stateRaw)
+  await fs.writeFile(f.manager.configFile, configRaw)
+  await assert.rejects(commitProfileSwitch(options, { inspect, observe, checkpoint: async p => { if (p === 'configuration_published') throw new Error('synthetic crash') } }))
+  assert.equal(JSON.parse(await fs.readFile(f.manager.configFile)).piConfigDir, profile)
+  assert.deepEqual(await fs.readFile(store.file), stateRaw)
+  await assert.rejects(commitProfileSwitch(options, { inspect, observe, checkpoint: async p => { if (p === 'lifecycle_published') throw new Error('synthetic crash') } }))
+  assert.equal((await commitProfileSwitch(options, { inspect, observe })).state, 'local_profile_prepared')
+  assert.equal((await commitProfileSwitch(options, { inspect, observe })).state, 'local_profile_prepared')
+  const history = path.join(f.manager.lifecycleDirectory, 'profile-switch-history')
+  assert.deepEqual(await fs.readFile(path.join(history, `${options.requestId}.configuration.json`)), configRaw)
+  assert.deepEqual(await fs.readFile(path.join(history, `${options.requestId}.lifecycle.json`)), stateRaw)
+  assert.equal(await fs.readFile(attempt, 'utf8'), 'SYNTHETIC UNKNOWN RECEIPT')
+  assert.notEqual(JSON.parse(await fs.readFile(store.file)).sessionContinuation.binding, continuation.binding)
+  await assert.rejects(runSelectedProgram(f.root), { code: 'deployment_profile_switch_recovery_required' })
+  await assert.rejects(commitProfileSwitch({ ...options, rollback: true }, { inspect, observe, checkpoint: async p => { if (p === 'lifecycle_published') throw new Error('synthetic rollback interruption') } }))
+  assert.equal((await commitProfileSwitch({ ...options, rollback: true }, { inspect, observe })).state, 'local_profile_rolled_back')
+  assert.deepEqual(await fs.readFile(f.manager.configFile), configRaw)
+  assert.deepEqual(await fs.readFile(store.file), stateRaw)
+  assert.equal(await fs.readFile(attempt, 'utf8'), 'SYNTHETIC UNKNOWN RECEIPT')
+  await assert.rejects(runSelectedProgram(f.root), { code: 'deployment_profile_switch_recovery_required' })
+})
+
 test('profile preparation fixes original hashes, is reentrant, and blocks host startup without changing unknown history', async t => {
   const f = await fixture(t, { native: true }), store = f.manager.lifecycleStore
   await apply(f, f.a)
@@ -55,7 +95,8 @@ test('profile preparation fixes original hashes, is reentrant, and blocks host s
   assert.equal((await prepareProfileSwitch(options)).state, 'already_prepared')
   await assert.rejects(prepareProfileSwitch({ ...options, requestId: randomUUID() }), { code: 'deployment_profile_switch_pending_conflict' })
   const marker = await fs.readFile(pending)
-  await assert.rejects(archiveProfileSwitch(options, { checkpoint: async phase => { if (phase === 'archived_configuration') throw new Error('synthetic interruption') } }))
+  await assert.rejects(archiveProfileSwitch(options, { checkpoint: async phase => { if (phase === 'linked_configuration') throw new Error('synthetic link interruption') } }))
+  await assert.rejects(archiveProfileSwitch(options, { checkpoint: async phase => { if (phase === 'archived_lifecycle') throw new Error('synthetic interruption') } }))
   assert.equal((await archiveProfileSwitch(options)).state, 'old_files_archived')
   const archive = path.join(f.manager.lifecycleDirectory, 'profile-switch-history')
   assert.deepEqual(await fs.readFile(path.join(archive, `${options.requestId}.configuration.json`)), configRaw)
