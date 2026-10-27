@@ -8,6 +8,7 @@ import { deploymentLayout, deploymentReferences, hostReferenceLayout } from './d
 import { acquireLeases, connectorAttention, LifecycleError, StateStore } from './lifecycle.mjs'
 import { createExplicitRuntime, validateRuntimeRequest, RuntimeError } from './runtime.mjs'
 import { PiCatalogLifecycle } from './pi-catalog-lifecycle.mjs'
+import { magpieCatalogBinding } from './pi-magpie-catalog.mjs'
 
 export class HostError extends Error {
   constructor(code) { super(code); this.code = code }
@@ -31,6 +32,8 @@ function validatedStatus(value) {
   // Earlier schema-1 observations lack control availability. Accept that exact
   // older shape as unknown, without inferring an open channel from a live PID.
   if (value && Object.hasOwn(value, 'control')) fields.push('control')
+  if (value && Object.hasOwn(value, 'piCatalog')) fields.push('piCatalog')
+  if (value && Object.hasOwn(value, 'piCatalogDeferred')) fields.push('piCatalogDeferred')
   const code = item => item === null || typeof item === 'string' && /^[a-z_]{1,80}$/.test(item)
   const objectFields = (item, names) => item && typeof item === 'object' && Object.keys(item).sort().join(',') === names.sort().join(',')
   const invalid = () => { throw new HostError('host_status_invalid') }
@@ -39,6 +42,8 @@ function validatedStatus(value) {
   if (!['unverified', 'missing', 'loaded', 'invalid', 'changed_restart_required'].includes(value.configuration) || !['unavailable_unqualified', 'unavailable_missing', 'unavailable_invalid', 'synthetic_fixture', 'verified_local'].includes(value.components) || !['unverified', 'authorization_unverified', 'authorization_required', 'online_snapshot', 'offline', 'connecting', 'authenticating', 'stopped', 'needs_attention', 'recovering'].includes(value.connection)) invalid()
   if (!['host_process_only', 'synthetic_components', 'native_components'].includes(value.evidence) || value.desktop !== 'unavailable' || value.agent !== 'unavailable_unqualified' || !['unverified', 'recording', 'capacity_reached'].includes(value.log)) invalid()
   if (Object.hasOwn(value, 'control') && !['unverified', 'stdin_open', 'stdin_closed'].includes(value.control)) invalid()
+  if (Object.hasOwn(value, 'piCatalog') && !['unverified', 'updated', 'unchanged', 'unavailable', 'cancelled', 'conflict'].includes(value.piCatalog)) invalid()
+  if (Object.hasOwn(value, 'piCatalogDeferred') && (!Number.isSafeInteger(value.piCatalogDeferred) || value.piCatalogDeferred < 0)) invalid()
   if (value.componentLifecycle !== null) {
     const c = value.componentLifecycle
     if (!objectFields(c, ['phase', 'attention', 'cleanupAttention', 'journal', 'restartsInWindow']) || !['stopped', 'starting', 'running', 'stopping', 'needs_attention'].includes(c.phase) || !code(c.attention) || !code(c.cleanupAttention) || !['unavailable', 'observed', 'unverified'].includes(c.journal) || !Number.isSafeInteger(c.restartsInWindow) || c.restartsInWindow < 0 || c.restartsInWindow > 100) invalid()
@@ -109,7 +114,8 @@ export class ForegroundHost {
       componentLifecycle: runtime ? { phase: runtime.phase, attention: runtime.attention, cleanupAttention: runtime.cleanupAttention, journal: runtime.journal, restartsInWindow: runtime.restartsInWindow } : null,
       transfer: runtime?.transfer && typeof runtime.transfer === 'object' ? { state: runtime.transfer.state, attention: runtime.transfer.attention, active: runtime.transfer.active } : 'not_included_pending_qualification',
       evidence: this.createTestRuntime ? 'synthetic_components' : this.components === 'verified_local' ? 'native_components' : 'host_process_only',
-      ready: false, desktop: 'unavailable', agent: 'unavailable_unqualified', transferAutomaticRecovery: false, log: this.logState }
+      ready: false, desktop: 'unavailable', agent: 'unavailable_unqualified', transferAutomaticRecovery: false, log: this.logState,
+      ...(this.piCatalog ? { piCatalog: this.piCatalog.lastResult, piCatalogDeferred: this.piCatalog.discover.gaps?.length ?? 0 } : {}) }
   }
   async configRaw(file = this.configFile) {
     try {
@@ -131,7 +137,7 @@ export class ForegroundHost {
       await fs.rename(temporary, this.statusFile)
       const event = JSON.stringify({ phase: snapshot.phase, control: snapshot.control, health: snapshot.health, attention: snapshot.attention, configuration: snapshot.configuration, components: snapshot.components, connection: snapshot.connection,
         componentPhase: snapshot.componentLifecycle?.phase || null, restarts: snapshot.componentLifecycle?.restartsInWindow || 0, transferState: snapshot.transfer?.state || null,
-        stopTrigger: this.stopTrigger, componentDiagnostics: this.componentDiagnostics() })
+        stopTrigger: this.stopTrigger, componentDiagnostics: this.componentDiagnostics(), ...(snapshot.piCatalog ? { piCatalog: snapshot.piCatalog, piCatalogDeferred: snapshot.piCatalogDeferred } : {}) })
       if (event !== this.lastEvent) {
         await this.logEvent(JSON.parse(event))
         this.lastEvent = event
@@ -208,7 +214,8 @@ export class ForegroundHost {
           }
         }
         if (this.runtime && !this.stopRequested && !this.attention && this.piCatalogBinding) {
-          this.piCatalog = new PiCatalogLifecycle({ ...this.piCatalogBinding, config })
+          const binding = typeof this.piCatalogBinding === 'function' ? this.piCatalogBinding(config) : this.piCatalogBinding
+          this.piCatalog = new PiCatalogLifecycle({ ...binding, config })
           void this.piCatalog.tick()
         }
       }
@@ -399,8 +406,9 @@ export async function hostMain(args) {
     try { process.stdout.write(`${JSON.stringify(await readHostHandoff(root, extra[1]))}\n`); return 0 }
     catch (error) { throw new HostError(error.code?.startsWith('handoff_') ? error.code : safeCode(error)) }
   }
-  if (!['run', 'status'].includes(command) || option !== '--root' || typeof root !== 'string' || extra.length) throw new HostError('host_arguments_invalid')
-  if (command === 'run') return runForeground({ root })
+  const catalogOption = command === 'run' && extra.length === 2 && extra[0] === '--pi-catalog-provider' && /^[A-Za-z0-9_.-]{1,100}$/.test(extra[1])
+  if (!['run', 'status'].includes(command) || option !== '--root' || typeof root !== 'string' || extra.length && !catalogOption) throw new HostError('host_arguments_invalid')
+  if (command === 'run') return runForeground({ root, piCatalogBinding: catalogOption ? magpieCatalogBinding(extra[1]) : null })
   process.stdout.write(`${JSON.stringify(await readHostStatus(root))}\n`)
   return 0
 }

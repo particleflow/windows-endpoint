@@ -6,9 +6,9 @@ import { syncPiCatalogOnce } from './pi-catalog-sync.mjs'
 // inference call, or profile selection is owned here. Discovery must honor abort
 // and return verified Pi metadata for the one approved provider only.
 export class PiCatalogLifecycle {
-  constructor({ config, providerId, discover, intervalMs = 60000, now = Date.now }) {
+  constructor({ config, providerId, discover, intervalMs = 60000, now = Date.now, store = null }) {
     if (!providerId || typeof discover !== 'function' || !Number.isSafeInteger(intervalMs) || intervalMs < 1000) throw Error('invalid_catalog_binding')
-    this.store = createPiCatalogStore(path.join(config.piConfigDir, 'models.json'))
+    this.store = store ?? createPiCatalogStore(path.join(config.piConfigDir, 'models.json'))
     this.providerId = providerId; this.discover = discover
     this.intervalMs = intervalMs; this.now = now
     this.controller = new AbortController(); this.active = null; this.due = 0
@@ -19,7 +19,7 @@ export class PiCatalogLifecycle {
     if (this.controller.signal.aborted || this.now() < this.due) return Promise.resolve(this.lastResult)
     this.due = this.now() + this.intervalMs
     this.active = syncPiCatalogOnce({ ...this.store, providerId: this.providerId, discover: this.discover, signal: this.controller.signal })
-      .then(result => { this.lastResult = result; return result })
+      .then(result => { this.lastResult = result; if (result === 'conflict') this.controller.abort(); return result })
       .finally(() => { this.active = null })
     return this.active
   }

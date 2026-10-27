@@ -1,11 +1,8 @@
-param([string]$Target, [string]$Temporary, [string]$ExpectedHash)
+param([string]$Target, [string]$Temporary, [string]$Backup)
 $ErrorActionPreference = 'Stop'
 try {
-  # The Node caller compares content and metadata immediately before invoking us.
-  # Recheck content across process startup. Do not ignore ACL merge
-  # errors, create a backup, print paths/content, or copy a credential file.
+  # Keep the actual displaced file; do not restore automatically or ignore ACL errors.
   $info = Get-Item -LiteralPath $Target
   if ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) { exit 3 }
-  if ((Get-FileHash -LiteralPath $Target -Algorithm SHA256).Hash -ine $ExpectedHash) { exit 3 }
-  [IO.File]::Replace($Temporary, $Target, $null, $false)
+  [IO.File]::Replace($Temporary, $Target, $Backup, $false)
 } catch { exit 2 }
