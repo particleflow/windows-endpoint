@@ -7,6 +7,7 @@ import { EndpointError, validateConfig, validateDirectory, verifyBundle, isNativ
 import { deploymentLayout, deploymentReferences, hostReferenceLayout } from './deployment.mjs'
 import { acquireLeases, LifecycleError, StateStore } from './lifecycle.mjs'
 import { createExplicitRuntime, validateRuntimeRequest, RuntimeError } from './runtime.mjs'
+import { PiCatalogLifecycle } from './pi-catalog-lifecycle.mjs'
 
 export class HostError extends Error {
   constructor(code) { super(code); this.code = code }
@@ -47,7 +48,7 @@ function validatedStatus(value) {
 }
 
 export class ForegroundHost {
-  constructor({ root, emit = () => {}, createTestRuntime = null, inheritedHostLease = null }) {
+  constructor({ root, emit = () => {}, createTestRuntime = null, inheritedHostLease = null, piCatalogBinding = null }) {
     this.root = root; this.layout = deploymentLayout(root)
     this.stateDirectory = path.join(this.layout.data, 'endpoint')
     this.statusFile = path.join(this.stateDirectory, 'host-status.json')
@@ -56,6 +57,7 @@ export class ForegroundHost {
     this.runtimeFile = path.join(this.layout.config, 'runtime.json')
     this.emit = emit; this.createTestRuntime = createTestRuntime
     this.inheritedHostLease = inheritedHostLease
+    this.piCatalogBinding = piCatalogBinding; this.piCatalog = null
     this.runId = randomUUID(); this.phase = 'starting'; this.attention = null
     this.stopReason = null; this.control = 'unverified'
     this.stopTrigger = null; this.fatalOrigin = null; this.fatalType = null
@@ -80,6 +82,7 @@ export class ForegroundHost {
       try { if (['TypeError', 'RangeError', 'SyntaxError', 'ReferenceError'].includes(_error?.name)) this.fatalType = _error.name } catch { /* Inspecting a thrown value must not replace the original failure. */ }
     }
     this.onProcessExit = exitCode => {
+      this.piCatalog?.controller.abort()
       // Observation only: no catch/restart, lease release or component stop.
       // TerminateProcess/SIGKILL/power loss cannot run this hook.
       try {
@@ -197,6 +200,10 @@ export class ForegroundHost {
             if (!this.stopRequested) this.components = 'verified_local'
           }
         }
+        if (this.runtime && !this.stopRequested && !this.attention && this.piCatalogBinding) {
+          this.piCatalog = new PiCatalogLifecycle({ ...this.piCatalogBinding, config })
+          void this.piCatalog.tick()
+        }
       }
     } catch (error) {
       if (!(this.stopRequested && error instanceof LifecycleError && error.code === 'startup_cancelled')) this.attention = safeCode(error)
@@ -223,16 +230,20 @@ export class ForegroundHost {
         this.configuration = 'changed_restart_required'; this.attention = 'host_configuration_changed'
         if (this.runtime?.state && !this.runtime.state.attention) await this.runtime.attention('host_configuration_changed')
       }
-      if (this.configuration === 'loaded' && !this.attention && this.runtime) await this.runtime.tick()
+      if (this.configuration === 'loaded' && !this.attention && this.runtime) {
+        await this.runtime.tick()
+        if (this.piCatalog) void this.piCatalog.tick()
+      } else if (this.piCatalog) await this.piCatalog.stop()
     })()
     try { await this.active } finally { this.active = null }
   }
   async stop(reason = null) {
     this.stopRequested = true
+    const catalogStop = this.piCatalog?.stop()
     if (reason) this.stopReason ||= reason
     if (this.closing) return this.closing
     this.closing = this.stopOwned()
-    try { return await this.closing } finally { this.closing = null }
+    try { await catalogStop; return await this.closing } finally { this.closing = null }
   }
   async stopOwned() {
     this.phase = 'stopping'
@@ -280,14 +291,14 @@ export async function readHostStatus(root) {
   return { ...value, control: value.control ?? 'unverified', observation: age < 0 || age > 5000 ? 'stale_unknown' : 'cached', ready: false, transferAutomaticRecovery: false }
 }
 
-export async function runForeground({ root, input = process.stdin, output = process.stdout, createTestRuntime = null, inheritedHostLease = null, tickMs = 1000 }) {
+export async function runForeground({ root, input = process.stdin, output = process.stdout, createTestRuntime = null, inheritedHostLease = null, piCatalogBinding = null, tickMs = 1000 }) {
   let resolveDone, stopping = false, timer, buffer = '', commandBusy = false
   const done = new Promise(resolve => { resolveDone = resolve })
   const emit = value => {
     if (output.writableLength > 65536) { if (!host.stopRequested) void stop('host_observer_backpressure', 'observer_backpressure'); return }
     if (!output.destroyed && output.writable) output.write(`${JSON.stringify(value)}\n`)
   }
-  const host = new ForegroundHost({ root, emit, createTestRuntime, inheritedHostLease })
+  const host = new ForegroundHost({ root, emit, createTestRuntime, inheritedHostLease, piCatalogBinding })
   host.control = input.readableEnded || input.destroyed ? 'stdin_closed' : 'stdin_open'
   const stop = async (reason, trigger = 'stop_command') => {
     host.stopTrigger ||= trigger
