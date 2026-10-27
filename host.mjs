@@ -9,6 +9,7 @@ import { acquireLeases, connectorAttention, LifecycleError, StateStore } from '.
 import { createExplicitRuntime, validateRuntimeRequest, RuntimeError } from './runtime.mjs'
 import { PiCatalogLifecycle } from './pi-catalog-lifecycle.mjs'
 import { magpieCatalogBinding } from './pi-magpie-catalog.mjs'
+export const piCatalogBindingVersion = 1
 
 export class HostError extends Error {
   constructor(code) { super(code); this.code = code }

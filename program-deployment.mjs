@@ -13,6 +13,7 @@ import { validateRuntimeRequest } from './runtime.mjs'
 import { verifyCandidate, stageCandidate, programProfileHash } from './candidate.mjs'
 import { attemptEvidence, nativeRecoveryEvidence, recoveryConfigurationHash } from './host-recovery.mjs'
 import { inspectInstalled } from './installed.mjs'
+import { magpieCatalogBinding } from './pi-magpie-catalog.mjs'
 
 const demand = (ok, code) => { if (!ok) throw new DeploymentError(code) }
 const sha256 = value => createHash('sha256').update(value).digest('hex')
@@ -542,7 +543,7 @@ export async function programDeployment(root, { prepare = false, io = fs, checkp
   return manager
 }
 
-export async function runSelectedProgram(root, { input = process.stdin, output = process.stdout } = {}) {
+export async function runSelectedProgram(root, { input = process.stdin, output = process.stdout, piCatalogBinding = null } = {}) {
   const manager = await programDeployment(root)
   // Carry one host lease through verification, import and the existing host's
   // full lifetime. Never leave a selection/start race or launch a second daemon.
@@ -560,8 +561,9 @@ export async function runSelectedProgram(root, { input = process.stdin, output =
     demand(owned.profile === programProfileHash, 'deployment_state_profile_changed')
     await manager.unchanged()
     const target = path.join(manager.layout.packages, state.current, 'host.mjs')
-    const { runForeground } = await import(pathToFileURL(target))
-    return await runForeground({ root, input, output, inheritedHostLease: release })
+    const { runForeground, piCatalogBindingVersion } = await import(pathToFileURL(target))
+    if (piCatalogBinding !== null) demand(piCatalogBindingVersion === 1, 'deployment_pi_catalog_unsupported')
+    return await runForeground({ root, input, output, inheritedHostLease: release, piCatalogBinding })
   } finally { await release() }
 }
 
@@ -572,13 +574,17 @@ export async function programDeploymentMain(args) {
     options[rest[i]] = rest[i + 1]
   }
   const fields = ['install', 'update'].includes(action) ? ['--root', '--source', '--manifest-sha256'] : action === 'rollback' ? ['--root', '--manifest-sha256'] : action === 'prepare-profile' ? ['--root', '--request-id', '--profile', '--configuration-sha256', '--lifecycle-sha256', '--continuation-sha256', '--attempts-sha256'] : ['archive-profile','commit-profile','rollback-profile'].includes(action) ? ['--root', '--request-id'] : ['--root']
+  if (action === 'run' && Object.hasOwn(options, '--pi-catalog-provider')) {
+    demand(/^[A-Za-z0-9_.-]{1,100}$/.test(options['--pi-catalog-provider']), 'deployment_arguments_invalid')
+    fields.push('--pi-catalog-provider')
+  }
   demand(['install', 'update', 'rollback', 'recover', 'status', 'run', 'prepare-profile', 'archive-profile', 'commit-profile', 'rollback-profile'].includes(action) && Object.keys(options).sort().join(',') === fields.sort().join(','), 'deployment_arguments_invalid')
   const root = options['--root'], target = options['--manifest-sha256']
   if (action === 'prepare-profile') return prepareProfileSwitch({ root, requestId: options['--request-id'], profile: options['--profile'], configurationSha256: options['--configuration-sha256'], lifecycleSha256: options['--lifecycle-sha256'], continuationSha256: options['--continuation-sha256'], attemptsSha256: options['--attempts-sha256'] })
   if (action === 'archive-profile') return archiveProfileSwitch({ root, requestId: options['--request-id'] })
   if (action === 'commit-profile') return commitProfileSwitch({ root, requestId: options['--request-id'] })
   if (action === 'rollback-profile') return commitProfileSwitch({ root, requestId: options['--request-id'], rollback: true })
-  if (action === 'run') return { hostExitCode: await runSelectedProgram(root) }
+  if (action === 'run') return { hostExitCode: await runSelectedProgram(root, { piCatalogBinding: options['--pi-catalog-provider'] ? magpieCatalogBinding(options['--pi-catalog-provider']) : null }) }
   const manager = await programDeployment(root, { prepare: action === 'install' })
   if (action === 'status') return describe(await manager.inventory())
   if (action === 'recover') return describe(await manager.recover(), manager.retained)

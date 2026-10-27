@@ -13,7 +13,12 @@ and returns only verified Pi metadata (`id`, `contextWindow`, `maxTokens`,
 `reasoning`, `input`). It must never log credential material or send inference.
 There is deliberately no default provider, URL, key, model ID or capability.
 `pi-magpie-catalog.mjs` provides the production binding. Enable explicitly with
-`node endpoint.mjs host run --root DIR --pi-catalog-provider EXISTING_PROVIDER_ID`.
+`node endpoint.mjs deploy run --root DIR --pi-catalog-provider EXISTING_PROVIDER_ID`.
+The stable installed entry accepts the same selection as
+`control/WindowsEndpoint.ps1 -Action Run -PiCatalogProvider EXISTING_PROVIDER_ID`.
+The selected package must advertise binding protocol 1; an older selected host
+is rejected with `deployment_pi_catalog_unsupported` instead of silently ignoring
+the binding. Profile-switch pending and selection/lease checks run first.
 This authorizes only the existing named provider in the profile already selected
 by endpoint configuration; it does not create a provider or change profile paths.
 The option alone does not start a missing/unauthorized runtime. Existing callers
