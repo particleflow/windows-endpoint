@@ -7,8 +7,10 @@ import { EndpointError, validateConfig, validateDirectory, verifyBundle, isNativ
 import { deploymentLayout, deploymentReferences, hostReferenceLayout } from './deployment.mjs'
 import { acquireLeases, LifecycleError, StateStore } from './lifecycle.mjs'
 import { createExplicitRuntime, validateRuntimeRequest, RuntimeError } from './runtime.mjs'
-import { PiCatalogLifecycle } from './pi-catalog-lifecycle.mjs'
-import { magpieCatalogBinding } from './pi-magpie-catalog.mjs'
+import { nativePiCatalogHostOptions } from './pi-native-catalog-profile.mjs'
+import { nativeCatalogPendingName } from './pi-native-catalog-transaction.mjs'
+
+export const piNativeCatalogBindingVersion=1
 
 export class HostError extends Error {
   constructor(code) { super(code); this.code = code }
@@ -53,7 +55,8 @@ function validatedStatus(value) {
 }
 
 export class ForegroundHost {
-  constructor({ root, emit = () => {}, createTestRuntime = null, inheritedHostLease = null, piCatalogBinding = null }) {
+  constructor({ root, emit = () => {}, createTestRuntime = null, inheritedHostLease = null, piCatalogBinding = null, piNativeCatalog=null, requestedPiCatalogProvider=null }) {
+    if(piCatalogBinding!==null)throw new HostError('host_pi_catalog_file_sync_retired')
     this.root = root; this.layout = deploymentLayout(root)
     this.stateDirectory = path.join(this.layout.data, 'endpoint')
     this.statusFile = path.join(this.stateDirectory, 'host-status.json')
@@ -62,7 +65,7 @@ export class ForegroundHost {
     this.runtimeFile = path.join(this.layout.config, 'runtime.json')
     this.emit = emit; this.createTestRuntime = createTestRuntime
     this.inheritedHostLease = inheritedHostLease
-    this.piCatalogBinding = piCatalogBinding; this.piCatalog = null
+    this.piNativeCatalog=piNativeCatalog;this.requestedPiCatalogProvider=requestedPiCatalogProvider
     this.runId = randomUUID(); this.phase = 'starting'; this.attention = null
     this.stopReason = null; this.control = 'unverified'
     this.stopTrigger = null; this.fatalOrigin = null; this.fatalType = null
@@ -87,7 +90,6 @@ export class ForegroundHost {
       try { if (['TypeError', 'RangeError', 'SyntaxError', 'ReferenceError'].includes(_error?.name)) this.fatalType = _error.name } catch { /* Inspecting a thrown value must not replace the original failure. */ }
     }
     this.onProcessExit = exitCode => {
-      this.piCatalog?.controller.abort()
       // Observation only: no catch/restart, lease release or component stop.
       // TerminateProcess/SIGKILL/power loss cannot run this hook.
       try {
@@ -115,7 +117,7 @@ export class ForegroundHost {
       transfer: runtime?.transfer && typeof runtime.transfer === 'object' ? { state: runtime.transfer.state, attention: runtime.transfer.attention, active: runtime.transfer.active } : 'not_included_pending_qualification',
       evidence: this.createTestRuntime ? 'synthetic_components' : this.components === 'verified_local' ? 'native_components' : 'host_process_only',
       ready: false, desktop: 'unavailable', agent: 'unavailable_unqualified', transferAutomaticRecovery: false, log: this.logState,
-      ...(this.piCatalog ? { piCatalog: this.piCatalog.lastResult, piCatalogDeferred: this.piCatalog.discover.gaps?.length ?? 0 } : {}) }
+      ...(this.piNativeCatalog ? { piCatalog:'unverified', piCatalogDeferred:0 } : {}) }
   }
   async configRaw(file = this.configFile) {
     try {
@@ -157,6 +159,11 @@ export class ForegroundHost {
     await ensureDirectory(this.layout.data); await ensureDirectory(this.stateDirectory)
     await ensureDirectory(this.layout.logs); await ensureDirectory(this.logDirectory)
     this.release = this.inheritedHostLease || await acquireLeases([`host:${this.root}`], this.stateDirectory)
+    try {
+      for(const [name,code] of [['profile-switch-pending.json','host_profile_switch_recovery_required'],[nativeCatalogPendingName,'host_pi_catalog_recovery_required']]) {
+        try{await fs.lstat(path.join(this.stateDirectory,name));throw new HostError(code)}catch(error){if(error.code!=='ENOENT')throw error}
+      }
+    }catch(error){await this.release();this.release=null;throw error}
     this.logHandle = await fs.open(path.join(this.logDirectory, `${this.runId}.jsonl`), 'ax')
     this.attachProcessDiagnostics()
     this.logState = 'recording'; this.initialized = true
@@ -177,6 +184,14 @@ export class ForegroundHost {
           if (!hostReferenceLayout(this.root, config).compatible) throw new HostError('host_reference_overlap')
         }
         this.configuration = 'loaded'
+        const packageRoot=path.dirname(fileURLToPath(import.meta.url))
+        let manifest
+        try{manifest=JSON.parse(await regular(path.join(packageRoot,'candidate.json'),262144))}catch(error){if(error.code!=='ENOENT')throw error}
+        let nativeOptions
+        try{nativeOptions=await nativePiCatalogHostOptions({config,packageRoot,manifest,requestedProviderId:this.requestedPiCatalogProvider})}
+        catch(error){throw new HostError(/^catalog_[a-z_]+$/.test(error.message)?error.message:'host_pi_native_catalog_invalid')}
+        if(this.piNativeCatalog&&JSON.stringify(this.piNativeCatalog)!==JSON.stringify(nativeOptions.piNativeCatalog))throw new HostError('host_pi_native_catalog_binding_changed')
+        this.piNativeCatalog=nativeOptions.piNativeCatalog
         const runtimeRaw = await this.configRaw(this.runtimeFile)
         this.runtimeStamp = stamp(runtimeRaw)
         let request = null
@@ -196,7 +211,7 @@ export class ForegroundHost {
         }
         // Test injection remains confined to the separate source fixture.
         if (this.createTestRuntime && !this.stopRequested && !this.attention) {
-          this.runtime = await this.createTestRuntime({ config, stateDirectory: this.stateDirectory })
+          this.runtime = await this.createTestRuntime({ config, stateDirectory: this.stateDirectory, piNativeCatalog:this.piNativeCatalog })
           if (!this.stopRequested) { await this.runtime.start(); this.components = 'synthetic_fixture' }
         } else if (request && !this.stopRequested && !this.attention) {
           this.runtime = await createExplicitRuntime({ config, stateDirectory: this.stateDirectory, request })
@@ -205,11 +220,6 @@ export class ForegroundHost {
             await this.runtime.start({ acknowledgeAttention: recheckInstallation })
             if (!this.stopRequested) this.components = 'verified_local'
           }
-        }
-        if (this.runtime && !this.stopRequested && !this.attention && this.piCatalogBinding) {
-          const binding = typeof this.piCatalogBinding === 'function' ? this.piCatalogBinding(config) : this.piCatalogBinding
-          this.piCatalog = new PiCatalogLifecycle({ ...binding, config })
-          void this.piCatalog.tick()
         }
       }
     } catch (error) {
@@ -239,18 +249,16 @@ export class ForegroundHost {
       }
       if (this.configuration === 'loaded' && !this.attention && this.runtime) {
         await this.runtime.tick()
-        if (this.piCatalog) void this.piCatalog.tick()
-      } else if (this.piCatalog) await this.piCatalog.stop()
+      }
     })()
     try { await this.active } finally { this.active = null }
   }
   async stop(reason = null) {
     this.stopRequested = true
-    const catalogStop = this.piCatalog?.stop()
     if (reason) this.stopReason ||= reason
     if (this.closing) return this.closing
     this.closing = this.stopOwned()
-    try { await catalogStop; return await this.closing } finally { this.closing = null }
+    try { return await this.closing } finally { this.closing = null }
   }
   async stopOwned() {
     this.phase = 'stopping'
@@ -298,14 +306,14 @@ export async function readHostStatus(root) {
   return { ...value, control: value.control ?? 'unverified', observation: age < 0 || age > 5000 ? 'stale_unknown' : 'cached', ready: false, transferAutomaticRecovery: false }
 }
 
-export async function runForeground({ root, input = process.stdin, output = process.stdout, createTestRuntime = null, inheritedHostLease = null, piCatalogBinding = null, tickMs = 1000 }) {
+export async function runForeground({ root, input = process.stdin, output = process.stdout, createTestRuntime = null, inheritedHostLease = null, piCatalogBinding = null, piNativeCatalog=null, requestedPiCatalogProvider=null, tickMs = 1000 }) {
   let resolveDone, stopping = false, timer, buffer = '', commandBusy = false
   const done = new Promise(resolve => { resolveDone = resolve })
   const emit = value => {
     if (output.writableLength > 65536) { if (!host.stopRequested) void stop('host_observer_backpressure', 'observer_backpressure'); return }
     if (!output.destroyed && output.writable) output.write(`${JSON.stringify(value)}\n`)
   }
-  const host = new ForegroundHost({ root, emit, createTestRuntime, inheritedHostLease, piCatalogBinding })
+  const host = new ForegroundHost({ root, emit, createTestRuntime, inheritedHostLease, piCatalogBinding, piNativeCatalog, requestedPiCatalogProvider })
   host.control = input.readableEnded || input.destroyed ? 'stdin_closed' : 'stdin_open'
   const stop = async (reason, trigger = 'stop_command') => {
     host.stopTrigger ||= trigger
@@ -384,7 +392,7 @@ export async function hostMain(args) {
   }
   const catalogOption = command === 'run' && extra.length === 2 && extra[0] === '--pi-catalog-provider' && /^[A-Za-z0-9_.-]{1,100}$/.test(extra[1])
   if (!['run', 'status'].includes(command) || option !== '--root' || typeof root !== 'string' || extra.length && !catalogOption) throw new HostError('host_arguments_invalid')
-  if (command === 'run') return runForeground({ root, piCatalogBinding: catalogOption ? magpieCatalogBinding(extra[1]) : null })
+  if (command === 'run') return runForeground({ root, requestedPiCatalogProvider:catalogOption?extra[1]:null })
   process.stdout.write(`${JSON.stringify(await readHostStatus(root))}\n`)
   return 0
 }

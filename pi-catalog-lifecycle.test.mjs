@@ -10,7 +10,6 @@ import { assertCatalogAclPreserved, aclChildProcessOptions } from './test-suppor
 import { createPiCatalogStore, replacePiCatalogFile } from './pi-catalog-store.mjs'
 import { PiCatalogLifecycle } from './pi-catalog-lifecycle.mjs'
 import { ForegroundHost } from './host.mjs'
-import { installedFixture } from './test-support/installed-fixture.mjs'
 
 const original = { providers: { approved: { apiKey: '$EXISTING_AUTH_REFERENCE', models: [{ id: 'old', custom: true }], modelOverrides: { old: { maxTokens: 42 } } } } }
 const addition = { id: 'from-catalog', contextWindow: 1000, maxTokens: 100, reasoning: false, input: ['text'] }
@@ -84,21 +83,8 @@ test('embedded credentials are never staged and links are rejected', async t => 
   await assert.rejects(store.read(), /catalog_file_unsafe/)
   assert.equal(await fs.readFile(f.file, 'utf8'), before)
 })
-test('foreground host starts discovery on selected profile and drains cancellation on stop', async t => {
-  const f = await installedFixture(t), root = path.join(f.base, 'catalog-host')
-  await fs.mkdir(path.join(root, 'config'), { recursive: true })
-  await fs.writeFile(path.join(root, 'config/endpoint.json'), JSON.stringify(f.config))
-  await fs.writeFile(path.join(f.config.piConfigDir, 'models.json'), JSON.stringify(original))
-  let entered, aborted = false
-  const started = new Promise(resolve => { entered = resolve })
-  const host = new ForegroundHost({ root, createTestRuntime: async () => ({
-    async start() {}, async stop() {}, async tick() {}, snapshot: () => null,
-  }), piCatalogBinding: { providerId: 'approved', discover: ({ signal }) => new Promise(resolve => {
-    entered(); signal.addEventListener('abort', () => { aborted = true; resolve([addition]) }, { once: true })
-  }) } })
-  await host.start(); assert.equal(host.attention, null); await started
-  assert.equal(await host.stop(), true); assert.equal(aborted, true)
-  assert.equal(await fs.readFile(path.join(f.config.piConfigDir, 'models.json'), 'utf8'), JSON.stringify(original))
+test('foreground host refuses the retired file-sync binding before discovery or startup', () => {
+  assert.throws(()=>new ForegroundHost({root:path.resolve('unused-fixture'),piCatalogBinding:{providerId:'approved',discover(){throw Error('must not run')}}}),{code:'host_pi_catalog_file_sync_retired'})
 })
 test('stop completes even when discovery ignores abort, and late data cannot write', async t => {
   const f = await disk(t); let complete

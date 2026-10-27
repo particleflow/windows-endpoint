@@ -55,6 +55,7 @@ export default function (pi, options = {}) {
     if (!/^[A-Za-z0-9_.-]{1,100}$/.test(providerId) || options.providerId && options.providerId !== providerId || !profile || !path.isAbsolute(profile) || !Number.isSafeInteger(intervalMs) || intervalMs < 1000) {
       report('configuration_required'); return
     }
+    if(options.profileDir && (process.platform==='win32'?path.resolve(profile).toLowerCase()!==path.resolve(options.profileDir).toLowerCase():path.resolve(profile)!==path.resolve(options.profileDir))){report('configuration_required');return}
     controller = new AbortController()
     try { await readProvider() } catch { report('configuration_required'); return }
     const binding = magpieCatalogBinding(providerId,{resolveAuth:args => resolvePiCatalogAuth({...args,loadSDK:async () => ({readStoredCredential})})})({piConfigDir:profile})

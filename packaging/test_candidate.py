@@ -93,9 +93,11 @@ class CandidateTests(unittest.TestCase):
             self.assertEqual(manifest['native_pi_catalog'], {
                 'schema': 1, 'mode': 'pi-in-process', 'piVersion': '1.4.0',
                 'entry': 'pi-magpie-native-profile-entry.mjs',
-                'settingsKey': 'windowsEndpointPiCatalog', 'legacyFileSync': False})
+                'settingsKey': 'windowsEndpointPiCatalog', 'legacyFileSync': False,
+                'bindingVersion': 1, 'profileReference': 'extensions/windows-endpoint-magpie.js'})
             for resource in ('pi-magpie-native-profile-entry.mjs', 'pi-magpie-native-extension.mjs',
-                             'pi-native-catalog-profile.mjs', 'pi-magpie-catalog.mjs', 'pi-catalog-sync.mjs'):
+                             'pi-native-catalog-profile.mjs', 'pi-magpie-catalog.mjs', 'pi-catalog-sync.mjs',
+                             'pi-native-catalog-transaction.mjs'):
                 self.assertIn(resource, names)
             self.assertIn('runtime-connector/dist/cli.mjs', names)
             self.assertEqual(set(names), {f['path'] for f in manifest['files']} | {'candidate.json'})

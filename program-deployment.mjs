@@ -13,8 +13,51 @@ import { validateRuntimeRequest } from './runtime.mjs'
 import { verifyCandidate, stageCandidate, programProfileHash } from './candidate.mjs'
 import { attemptEvidence, nativeRecoveryEvidence, recoveryConfigurationHash } from './host-recovery.mjs'
 import { inspectInstalled } from './installed.mjs'
+import { nativePiCatalogHostOptions, prepareNativePiCatalogReference } from './pi-native-catalog-profile.mjs'
+import { nativeCatalogPendingName, publishNativeCatalogReference } from './pi-native-catalog-transaction.mjs'
 
 const demand = (ok, code) => { if (!ok) throw new DeploymentError(code) }
+const piCatalogDigest = value => createHash('sha256').update(value).digest('hex')
+
+// Explicit stopped transaction: install only a nonsecret native resource
+// reference in the ALREADY selected profile. Never repair/start/replace a Pi.
+export async function prepareNativePiCatalog({root,requestId,providerId,intervalMs=60000}, {checkpoint=async()=>{},...options}={}) {
+  demand(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(requestId||'') &&
+    /^[A-Za-z0-9_.-]{1,100}$/.test(providerId||'') && Number.isSafeInteger(intervalMs) && intervalMs>=1000,'deployment_pi_catalog_arguments_invalid')
+  const manager=await programDeployment(root,options)
+  return manager.locked(async()=>{
+    try {
+      await manager.unchanged()
+      demand(!await exists(path.join(manager.lifecycleDirectory,'profile-switch-pending.json')),'deployment_profile_switch_recovery_required')
+      const state=await manager.read()
+      demand(state.pending===null&&state.current!==null,'deployment_recovery_required')
+      const owned=await manager.owned(state,state.current)
+      demand(owned.profile===programProfileHash,'deployment_state_profile_changed')
+      const reason=await manager.work(programProfileHash)
+      if(reason)return {state:'deferred',reason,activation:'blocked',businessReplayed:false}
+      const packageRoot=path.join(manager.layout.packages,state.current)
+      const verified=await manager.verify(packageRoot,state.current)
+      const settingsFile=path.join(manager.config.piConfigDir,'settings.json'),modelsFile=path.join(manager.config.piConfigDir,'models.json')
+      const settingsOriginal=await optional(settingsFile,262144),modelsRaw=await optional(modelsFile,1048576)
+      demand(modelsRaw!==null,'catalog_existing_provider_required')
+      const plan=await prepareNativePiCatalogReference({profileDir:manager.config.piConfigDir,packageRoot,manifest:verified.manifest,
+        settingsRaw:settingsOriginal??'{}',modelsRaw,providerId,intervalMs})
+      const selectionRaw=await boundedRead(manager.file,262144),lifecycleRaw=await optional(manager.lifecycleStore.file,262144)
+      const record={requestId,selected:state.current,profileDir:manager.config.piConfigDir,providerId,intervalMs,
+        settingsSha256:settingsOriginal===null?null:piCatalogDigest(settingsOriginal),modelsSha256:piCatalogDigest(modelsRaw),
+        configurationSha256:piCatalogDigest(manager.configRaw),lifecycleSha256:lifecycleRaw===null?null:piCatalogDigest(lifecycleRaw),selectionSha256:piCatalogDigest(selectionRaw)}
+      const assertUnchanged=async()=>{
+        await manager.unchanged();await manager.workBaseline?.();await manager.retained?.reobserve()
+        demand(!await exists(path.join(manager.lifecycleDirectory,'profile-switch-pending.json')),'deployment_profile_switch_recovery_required')
+        demand(await boundedRead(manager.file,262144)===selectionRaw&&await optional(manager.lifecycleStore.file,262144)===lifecycleRaw&&
+          await optional(settingsFile,262144)===settingsOriginal&&await boundedRead(modelsFile,1048576)===modelsRaw,'catalog_native_preparation_changed')
+        await manager.verify(packageRoot,state.current)
+      }
+      const result=await publishNativeCatalogReference({lifecycleDirectory:manager.lifecycleDirectory,plan,record,assertUnchanged,checkpoint})
+      return {state:result,providerId,profile:manager.config.piConfigDir,activation:'future_pi_invocations_only',processStarted:false,businessReplayed:false}
+    }catch(error){if(/^catalog_[a-z_]+$/.test(error.code??error.message))throw new DeploymentError(error.code??error.message);throw error}
+  })
+}
 async function optional(file, limit = 65536) {
   try { return await boundedRead(file, limit) } catch (error) { if (error.code === 'ENOENT') return null; throw error }
 }
@@ -224,7 +267,8 @@ export async function programDeployment(root, { prepare = false, io = fs, checkp
   return manager
 }
 
-export async function runSelectedProgram(root, { input = process.stdin, output = process.stdout } = {}) {
+export async function runSelectedProgram(root, { input = process.stdin, output = process.stdout, requestedPiCatalogProvider=null, piCatalogBinding=null } = {}) {
+  demand(piCatalogBinding===null,'deployment_pi_catalog_file_sync_retired')
   const manager = await programDeployment(root)
   // Carry one host lease through verification, import and the existing host's
   // full lifetime. Never leave a selection/start race or launch a second daemon.
@@ -233,6 +277,8 @@ export async function runSelectedProgram(root, { input = process.stdin, output =
   const release = async () => { if (!released) { await acquired(); released = true } }
   try {
     await manager.unchanged()
+    demand(!await exists(path.join(manager.lifecycleDirectory,'profile-switch-pending.json')),'deployment_profile_switch_recovery_required')
+    demand(!await exists(path.join(manager.lifecycleDirectory,nativeCatalogPendingName)),'deployment_pi_catalog_recovery_required')
     const state = await manager.read()
     demand(state.pending === null, 'deployment_recovery_required')
     demand(state.current !== null, 'deployment_not_installed')
@@ -240,9 +286,16 @@ export async function runSelectedProgram(root, { input = process.stdin, output =
     await manager.projectRoot(state.current)
     demand(owned.profile === programProfileHash, 'deployment_state_profile_changed')
     await manager.unchanged()
-    const target = path.join(manager.layout.packages, state.current, 'host.mjs')
-    const { runForeground } = await import(pathToFileURL(target))
-    return await runForeground({ root, input, output, inheritedHostLease: release })
+    const packageRoot=path.join(manager.layout.packages,state.current)
+    const verified=await manager.verify(packageRoot,state.current)
+    let catalogOptions
+    try { catalogOptions=await nativePiCatalogHostOptions({config:manager.config,packageRoot,manifest:verified.manifest,requestedProviderId:requestedPiCatalogProvider}) }
+    catch(error){throw new DeploymentError(/^catalog_[a-z_]+$/.test(error.message)?error.message:'deployment_pi_catalog_invalid')}
+    const { runForeground, piNativeCatalogBindingVersion } = await import(pathToFileURL(path.join(packageRoot,'host.mjs')))
+    if(catalogOptions.piNativeCatalog)demand(piNativeCatalogBindingVersion===1,'deployment_pi_native_catalog_unsupported')
+    await manager.unchanged()
+    return await runForeground({ root, input, output, inheritedHostLease: release,
+      piNativeCatalog:catalogOptions.piNativeCatalog,requestedPiCatalogProvider })
   } finally { await release() }
 }
 
@@ -252,10 +305,16 @@ export async function programDeploymentMain(args) {
     demand(/^--[a-z][a-z0-9-]*$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'deployment_arguments_invalid')
     options[rest[i]] = rest[i + 1]
   }
-  const fields = ['install', 'update'].includes(action) ? ['--root', '--source', '--manifest-sha256'] : action === 'rollback' ? ['--root', '--manifest-sha256'] : ['--root']
-  demand(['install', 'update', 'rollback', 'recover', 'status', 'run'].includes(action) && Object.keys(options).sort().join(',') === fields.sort().join(','), 'deployment_arguments_invalid')
+  const fields = ['install', 'update'].includes(action) ? ['--root', '--source', '--manifest-sha256'] : action === 'rollback' ? ['--root', '--manifest-sha256'] : action==='prepare-pi-catalog'?['--root','--request-id','--provider']:['--root']
+  if(action==='run'&&Object.hasOwn(options,'--pi-catalog-provider')) {
+    demand(/^[A-Za-z0-9_.-]{1,100}$/.test(options['--pi-catalog-provider']),'deployment_arguments_invalid')
+    fields.push('--pi-catalog-provider')
+  }
+  if(action==='prepare-pi-catalog'&&Object.hasOwn(options,'--interval-ms'))fields.push('--interval-ms')
+  demand(['install', 'update', 'rollback', 'recover', 'status', 'run','prepare-pi-catalog'].includes(action) && Object.keys(options).sort().join(',') === fields.sort().join(','), 'deployment_arguments_invalid')
   const root = options['--root'], target = options['--manifest-sha256']
-  if (action === 'run') return { hostExitCode: await runSelectedProgram(root) }
+  if(action==='prepare-pi-catalog')return prepareNativePiCatalog({root,requestId:options['--request-id'],providerId:options['--provider'],intervalMs:options['--interval-ms']===undefined?60000:Number(options['--interval-ms'])})
+  if (action === 'run') return { hostExitCode: await runSelectedProgram(root,{requestedPiCatalogProvider:options['--pi-catalog-provider']??null}) }
   if (action === 'status') {
     const config = validateConfig(JSON.parse(await boundedRead(path.join(deploymentLayout(root).config, 'endpoint.json'), 65536)))
     if (!isNativeRuntimeConfig(config)) {
