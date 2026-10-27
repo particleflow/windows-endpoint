@@ -59,3 +59,19 @@ Expect both selected tests to pass on Windows, with both inherited/protected
 subcases and original/backup checks executed. Run on both the failing CI image
 and the owner's isolated Windows directory; do not relabel Linux or historical
 onsite results as this new Windows result. No model endpoint is contacted.
+
+## Combination and Windows module environment
+
+The parent supplied an actual Windows 2/2, zero-skip checkpoint for the exact
+`f85e65cebfdedb4b69908deff3c8a81d816620b4` sources. Its first attempt could not
+autoload Get-Acl under inherited PSModulePath; that failure is retained. The
+operator's bounded test subprocess used the native Windows PowerShell module
+directory and restored its prior environment. No real Pi/profile/service ACL
+was touched. This is delegated checkpoint evidence, not this cloud tree's run.
+
+For combined CI, fixtureAcl passes the native Desktop module directory only in
+the inspection subprocess environment, removing case variants from its local
+copy. It does not change process.env, global settings, TEMP/TMP or product ACL
+code. The exact ordered-ACE/owner/group/protection checks and synthetic-only
+current-user test remain intact. Actual combined Windows execution is still
+required; the original failed CI is not overwritten by the older checkpoint.

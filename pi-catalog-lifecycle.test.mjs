@@ -100,9 +100,15 @@ test('stop completes even when discovery ignores abort, and late data cannot wri
   assert.equal(await fs.readFile(f.file, 'utf8'), f.raw)
 })
 async function fixtureAcl(file, mode = 'read') {
-  const result = await promisify(execFile)(path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+  const shellRoot = path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0')
+  // PowerShell Core's inherited module path may hide Get-Acl from Desktop 5.1.
+  // Bound only this synthetic inspection child; never mutate the parent/global environment.
+  const env = { ...process.env }
+  for (const key of Object.keys(env)) if (key.toLowerCase() === 'psmodulepath') delete env[key]
+  env.PSModulePath = path.join(shellRoot, 'Modules')
+  const result = await promisify(execFile)(path.join(shellRoot, 'powershell.exe'),
     ['-NoLogo','-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./test-support/pi-catalog-acl.ps1', import.meta.url)),file,mode],
-    { windowsHide: true, timeout: 10000, maxBuffer: 16384 })
+    { env, windowsHide: true, timeout: 10000, maxBuffer: 16384 })
   return JSON.parse(result.stdout.replace(/^\uFEFF/, ''))
 }
 test('Windows ReplaceFile preserves the destination ACL', { skip: process.platform !== 'win32' }, async t => {
