@@ -608,3 +608,36 @@ test('actual CLI reports deferred with exit2 and completed selection with exit0'
   assert.equal(await fs.readFile(attempt, 'utf8'), 'UNVERIFIED ORIGINAL')
   await preserve(f)
 })
+
+async function stoppedObservationRetention(t) {
+  const f = await retainedFixture(t), state = await f.manager.lifecycleStore.load(), status = JSON.parse(await fs.readFile(f.statusFile))
+  status.attention = 'herdr_observation_unknown'; await fs.writeFile(f.statusFile, JSON.stringify(status))
+  const prior = { ...state, phase: 'stopped', attention: 'herdr_observation_unknown' }; delete prior.infrastructureRecovery
+  const original = JSON.stringify(prior), fromState = createHash('sha256').update(original).digest('hex')
+  const backup = path.join(f.manager.lifecycleDirectory, `lifecycle-before-recheck-${fromState}.json`)
+  await fs.writeFile(backup, original)
+  await f.manager.lifecycleStore.save({ ...state, infrastructureRecovery: { ...state.infrastructureRecovery, run: status.runId, fromState, previousPhase: 'stopped' } })
+  return { ...f, backup }
+}
+test('stopped observation recheck permits a compatible update while preserving original status and unknown receipt', async t => {
+  const f = await stoppedObservationRetention(t), status = await fs.readFile(f.statusFile), state = await fs.readFile(f.manager.lifecycleStore.file)
+  assert.equal((await f.manager.select(f.b.hash, 'update')).state, 'selected_review_only')
+  assert.deepEqual(await fs.readFile(f.statusFile), status); assert.deepEqual(await fs.readFile(f.manager.lifecycleStore.file), state)
+  assert.equal(await fs.readFile(f.attempt, 'utf8'), f.raw)
+})
+for (const kind of ['backup', 'wrong_run', 'live_component', 'old_reader']) test(`stopped observation update retains ${kind} rejection`, async t => {
+  const f = await stoppedObservationRetention(t)
+  let target = f.b.hash
+  if (kind === 'backup') await fs.appendFile(f.backup, '\n')
+  if (kind === 'wrong_run') { const s = JSON.parse(await fs.readFile(f.statusFile)); s.runId = randomUUID(); await fs.writeFile(f.statusFile, JSON.stringify(s)) }
+  if (kind === 'live_component') f.manager.observe = async () => ({ ownerVerified: true, oldHostAbsent: true, referencedProcessesAbsent: false })
+  if (kind === 'old_reader') {
+    delete f.b.manifest.native_stopped_observation_recovery
+    await fs.writeFile(path.join(f.b.directory, 'candidate.json'), JSON.stringify(f.b.manifest))
+    target = await digest(path.join(f.b.directory, 'candidate.json')); await f.manager.stage(f.b.directory, target)
+  }
+  const before = await fs.readFile(f.manager.file)
+  if (kind === 'wrong_run') assert.equal((await f.manager.select(target, 'update')).reason, 'task_handoff_unverified')
+  else await assert.rejects(f.manager.select(target, 'update'), { code: kind === 'backup' ? 'deployment_retained_recovery_mismatch' : kind === 'old_reader' ? 'deployment_stopped_recovery_unsupported' : 'deployment_retained_processes_unknown' })
+  assert.deepEqual(await fs.readFile(f.manager.file), before); assert.equal(await fs.readFile(f.attempt, 'utf8'), f.raw)
+})

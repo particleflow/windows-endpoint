@@ -249,6 +249,11 @@ restore the previous home mapping. A journal rechecked from `running` additional
 requires `native_running_recovery` on the target; this prevents rollback to an
 older reader, including ba63f47, that cannot load that prior-state record. This
 capability is build metadata, not a user configuration or permission flag.
+For a controlled stop retaining the original observation attention, the reviewed
+offline recheck records that truthful stopped/attention pair and requires
+`native_stopped_observation_recovery` on the selected target. It retains the exact
+original journal/status and repeats the existing absence and history checks;
+there is no automatic stop, task replay or older-reader rollback.
 Switching requires the same verified stopped ownership and history preservation
 or task handoff as other program updates. No existing attempt's WorkDir,
 configuration root, receipt or unknown result is rewritten by this correction.

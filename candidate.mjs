@@ -30,6 +30,7 @@ export async function verifyCandidate(root, expectedHash) {
   if (manifest.native_transfer_directory_pair !== undefined) demand(manifest.native_transfer_directory_pair === true && manifest.native_runtime, 'candidate_configuration_support_invalid')
   if (manifest.native_runtime_project_root !== undefined) demand(manifest.native_runtime_project_root === true && manifest.native_runtime, 'candidate_configuration_support_invalid')
   if (manifest.native_running_recovery !== undefined) demand(manifest.native_running_recovery === true && manifest.native_runtime, 'candidate_configuration_support_invalid')
+  if (manifest.native_stopped_observation_recovery !== undefined) demand(manifest.native_stopped_observation_recovery === true && manifest.native_runtime, 'candidate_configuration_support_invalid')
   if (manifest.native_transfer_direct_cli !== undefined) demand(manifest.native_transfer_direct_cli === true && manifest.native_transfer_directory_pair === true, 'candidate_configuration_support_invalid')
   if (manifest.native_runtime !== undefined) {
     const n = manifest.native_runtime, pin = catalog.nativeRuntime

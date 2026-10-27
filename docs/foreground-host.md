@@ -307,8 +307,20 @@ continuation, process adoption or business replay follows the recheck.
 
 Success means **infrastructure rechecked, no process started**. Explicit foreground
 start remains separate, through the existing selected program and same HostRoot.
-Deployment update still retains `task_handoff_unverified` for original attempts;
-this acknowledgement does not authorize an active-task upgrade or stop. Business
+When an old host's controlled stop retained `herdr_observation_unknown`, the same
+offline recovery also accepts that exact `stopped` journal and matching stopped
+status/run. It still requires the original configured processes absent, ordinary
+session evidence, immutable attempts and all publication-time comparisons. It
+archives the original stopped/attention bytes without changing the old status or
+unknown tasks. A program update can consume this bounded recovery without first
+restarting the old host. The target must advertise
+`native_stopped_observation_recovery`; incompatible older readers are refused.
+This is not permission to stop a running task or use offline recovery against a
+live Herdr. The installed old recovery command does not gain this behavior; use
+the reviewed new program's entry only after the controlled stop and evidence readback.
+Original attempts still require the existing retained-history checks; mismatches
+retain `task_handoff_unverified`. This acknowledgement does not authorize an
+active-task upgrade or stop. Business
 continuation uses the original NAS operation/attempt and its authenticated resume
 entry, after the original Runtime connection is restored. The CLI never calls it.
 
