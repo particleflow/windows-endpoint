@@ -2,6 +2,15 @@
 // belong to the host integration, which must supply a compare-and-swap writer.
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const positive = value => Number.isSafeInteger(value) && value > 0
+function abortable(operation, signal) {
+  if (!signal) return operation
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(Error('catalog_cancelled'))
+    if (signal.aborted) { abort(); return }
+    signal.addEventListener('abort', abort, { once: true })
+    Promise.resolve(operation).then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
+  })
+}
 
 export function mergePiCatalog(document, providerId, discovered) {
   if (!object(document) || !object(document.providers) || typeof providerId !== 'string' || !providerId || !Array.isArray(discovered)) throw Error('invalid_catalog_input')
@@ -33,7 +42,7 @@ export async function syncPiCatalogOnce({ read, discover, compareAndSwap, provid
     const before = await read({ signal })
     if (signal?.aborted) return 'cancelled'
     const document = JSON.parse(before)
-    const models = await discover({ signal })
+    const models = await abortable(discover({ signal }), signal)
     if (signal?.aborted) return 'cancelled'
     const merged = mergePiCatalog(document, providerId, models)
     if (merged === document) return 'unchanged'
