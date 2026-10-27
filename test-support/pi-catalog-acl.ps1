@@ -1,5 +1,8 @@
 param([string]$Target, [ValidateSet('read','restrict-fixture')][string]$Mode = 'read')
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell startup may prepend AllUsers paths even to an explicitly
+# supplied PSModulePath. Pin discovery after startup too, in this child only.
+$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')
 if ($Mode -eq 'restrict-fixture') {
   # Only a newly created synthetic test file is eligible. No production helper
   # imports this script, and no user/profile/root ACL is modified.

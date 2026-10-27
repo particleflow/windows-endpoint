@@ -60,18 +60,49 @@ subcases and original/backup checks executed. Run on both the failing CI image
 and the owner's isolated Windows directory; do not relabel Linux or historical
 onsite results as this new Windows result. No model endpoint is contacted.
 
-## Combination and Windows module environment
+## Subsequent owner verification and module-path isolation
 
-The parent supplied an actual Windows 2/2, zero-skip checkpoint for the exact
-`f85e65cebfdedb4b69908deff3c8a81d816620b4` sources. Its first attempt could not
-autoload Get-Acl under inherited PSModulePath; that failure is retained. The
-operator's bounded test subprocess used the native Windows PowerShell module
-directory and restored its prior environment. No real Pi/profile/service ACL
-was touched. This is delegated checkpoint evidence, not this cloud tree's run.
+The owner subsequently reported f85e65ce's two selected real Windows tests passing
+2/2 with zero skips. Its first attempt failed before ACL comparison because the
+inherited PSModulePath prevented Get-Acl from loading. Restricting that test
+process to Windows PowerShell's own modules resolved it; the owner restored
+TEMP/TMP/PSModulePath. This report is separate from the earlier CI ACL failure.
 
-For combined CI, fixtureAcl passes the native Desktop module directory only in
-the inspection subprocess environment, removing case variants from its local
-copy. It does not change process.env, global settings, TEMP/TMP or product ACL
-code. The exact ordered-ACE/owner/group/protection checks and synthetic-only
-current-user test remain intact. Actual combined Windows execution is still
-required; the original failed CI is not overwritten by the older checkpoint.
+Microsoft documents that PowerShell 7's module-path compatibility handling applies
+only to directly launched Windows PowerShell. Node as an intermediate process
+can forward incompatible module paths:
+https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_psmodulepath
+
+The source now supplies the ACL test child with a cloned environment, removes
+case variants of PSModulePath, and names the invoked Windows PowerShell's Modules
+directory. The test script pins $PSHOME/Modules again after startup, since Windows
+PowerShell may insert AllUsers paths during startup. Parent environment, TEMP/TMP,
+registry, global module paths and script policies are untouched. This changes only
+test support, not the production replacement helper or ACL assertions.
+
+A new targeted child-process regression, including mixed-case pollution, confirms
+that the intended environment reaches a child and the parent values remain exact.
+It passes locally 1/1; no prior Windows ACL tests or old seven-case suite were
+repeated. The owner's successful Windows run used equivalent manual isolation;
+it is not relabeled as execution of the subsequent source patch.
+
+## Combined CI before the complete module-path patch
+
+PR6 head `49be5cca5f8971a207e3c3acc76e46552654b96f`, run
+[40575784260](https://github.com/particleflow/windows-endpoint/actions/runs/40575784260),
+finished with Windows 589/590 passing and zero skips. Get-Acl loaded. The default
+fixture's installed target retained the same ordered normalized ACE binary keys,
+but the original three `inherited` flags changed from true to false. The exact
+ordered-prefix assertion rejected that change at line 120. This happened before
+backup inspection or the protected current-user subcase; neither is claimed as
+covered by this failed run. The pure ACL rejection comparison passed.
+
+This is a distinct CI finding from both the previous appended-duplicate failure
+and the operator's separate 2/2 checkpoint. Production replacement code and the
+strict assertion remain unchanged. The module-path patch supplies a missing
+post-startup child pin and a child-environment regression; it does not establish
+that this inherited-flag finding is resolved. Original ACL ownership remains
+with the separate specialist. Actual installed PowerShell entry tests were
+skipped downstream of the main suite failure. The retained native packaged
+transfer/authentication/TLS acceptance gate also failed separately; no system
+trust import or onsite TLS operation was performed.
