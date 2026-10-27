@@ -1,5 +1,12 @@
 # Pi catalog Windows ACL regression
 
+This is historical replacement-writer evidence. The retired store/lifecycle/PS
+implementation and its positive write fixtures are removed from current source
+and packages. Commands and line numbers below identify their original commits,
+not current executable instructions. Strict comparator/flag negative tests now
+live in `test-support/pi-catalog-acl.test.mjs`; current Windows native deployment
+compares original settings/models/auth descriptors exactly without replacing them.
+
 Failure source: run 40571503333, Windows job 122426609495, checked-out PR5
 merge 67e4624ffc33cee3e5f99609385a3e319efdecf2 (51d4567fbd26cf8bca56180da6ecc92900ff2253
 into c5a63bcf1cd39065c73911e6b7ca7847dd5ec8df), Node 24.14.0, Server 2025.

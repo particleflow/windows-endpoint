@@ -17,6 +17,11 @@ export const nativeCatalogResources = Object.freeze([
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v)
 const validProvider = v => typeof v === 'string' && /^[A-Za-z0-9_.-]{1,100}$/.test(v)
 const equalPath = (a,b) => process.platform === 'win32' ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase() : path.resolve(a) === path.resolve(b)
+async function requireNoPendingCatalogWrite(profileDir) {
+  try { await lstat(path.join(profileDir,'.pi-models-pending.json')) }
+  catch(error) { if(error.code==='ENOENT')return; throw Error('catalog_legacy_write_recovery_required') }
+  throw Error('catalog_legacy_write_recovery_required')
+}
 function settingsFrom(raw) {
   let settings
   try { settings = JSON.parse(raw.replace(/^\uFEFF/,'')) } catch { throw Error('catalog_settings_invalid') }
@@ -59,6 +64,7 @@ async function referenceBinding(profileDir) {
 }
 export async function prepareNativePiCatalogReference({profileDir,packageRoot,manifest,settingsRaw,modelsRaw,providerId,intervalMs=60000}) {
   checkProfile(profileDir); checkProvider(modelsRaw,providerId)
+  await requireNoPendingCatalogWrite(profileDir)
   await checkAutomaticReferenceDirectory(profileDir)
   const settings=settingsFrom(settingsRaw),resource=await packageEntry(packageRoot,manifest)
   // Never override a user's negative resource filter with an inferred glob.
@@ -109,6 +115,7 @@ function checkProvider(modelsRaw, providerId) {
 // Stale/different package bindings require an explicit reviewed owner migration.
 export async function prepareNativePiCatalogProfile({ profileDir, packageRoot, manifest, settingsRaw, modelsRaw, providerId, intervalMs=60000 }) {
   checkProfile(profileDir); checkProvider(modelsRaw,providerId)
+  await requireNoPendingCatalogWrite(profileDir)
   if (!Number.isSafeInteger(intervalMs) || intervalMs < 1000) throw Error('catalog_interval_invalid')
   const resource = await packageEntry(packageRoot,manifest), settings = settingsFrom(settingsRaw)
   const binding = {schema:1,mode:'pi-in-process',providerId,intervalMs,resource}
@@ -131,6 +138,7 @@ export async function prepareNativePiCatalogProfile({ profileDir, packageRoot, m
 // silently fall back to the retired file writer. No configuration is repaired.
 export async function nativePiCatalogHostOptions({ config, packageRoot, manifest, requestedProviderId=null }) {
   checkProfile(config.piConfigDir)
+  if(requestedProviderId!==null)await requireNoPendingCatalogWrite(config.piConfigDir)
   let raw
   try { raw = await readFile(path.join(config.piConfigDir,'settings.json'),'utf8') }
   catch (error) { if (error.code !== 'ENOENT') throw Error('catalog_settings_unreadable'); raw = '{}' }
@@ -141,6 +149,7 @@ export async function nativePiCatalogHostOptions({ config, packageRoot, manifest
     if (requestedProviderId !== null) throw Error('catalog_native_profile_not_prepared')
     return {piCatalogBinding:null,piCatalogMode:'disabled',piNativeCatalog:null}
   }
+  await requireNoPendingCatalogWrite(config.piConfigDir)
   if (requestedProviderId !== null && requestedProviderId !== binding.providerId) throw Error('catalog_native_provider_conflict')
   if(binding.profileDir!==undefined&&!equalPath(binding.profileDir,config.piConfigDir))throw Error('catalog_native_profile_conflict')
   const resource = await packageEntry(packageRoot,manifest)
@@ -152,17 +161,4 @@ export async function nativePiCatalogHostOptions({ config, packageRoot, manifest
   checkProvider(modelsRaw,binding.providerId)
   return {piCatalogBinding:null,piCatalogMode:'native',piCatalogProviderId:binding.providerId,
     piNativeCatalog:{profileDir:config.piConfigDir,providerId:binding.providerId,resource}}
-}
-
-// Defense for current legacy lifecycle call sites until the owner removes their
-// old CLI binding. Invalid native claims also fail closed, before any GET/write.
-export async function assertLegacyPiCatalogAllowed(profileDir, providerId) {
-  const reference=await referenceBinding(profileDir)
-  if (reference?.providerId === providerId) throw Error('catalog_native_mode_required')
-  let raw
-  try { raw = await readFile(path.join(profileDir,'settings.json'),'utf8') }
-  catch (error) { if (error.code === 'ENOENT') return; throw Error('catalog_native_mode_required') }
-  const settings = settingsFrom(raw)
-  const claim = settings[nativeCatalogSettingsKey]
-  if (claim !== undefined && (!object(claim) || !validProvider(claim.providerId) || claim.providerId === providerId)) throw Error('catalog_native_mode_required')
 }

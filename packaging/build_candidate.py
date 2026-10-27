@@ -12,7 +12,7 @@ import zipfile
 
 RUNTIME_FILES = (
     'endpoint.mjs', 'endpoint.ps1', 'WindowsEndpoint.ps1', 'product-installation.mjs', 'host.mjs', 'runtime.mjs', 'installed.mjs',
-    'pi-catalog-sync.mjs', 'pi-catalog-store.mjs', 'pi-catalog-lifecycle.mjs', 'pi-catalog-replace.ps1', 'pi-magpie-catalog.mjs',
+    'pi-catalog-sync.mjs', 'pi-magpie-catalog.mjs',
     'pi-magpie-native-extension.mjs', 'pi-magpie-native-profile-entry.mjs', 'pi-native-catalog-profile.mjs',
     'pi-native-catalog-transaction.mjs',
     'native-connector.mjs', 'native-connector-child.mjs', 'setup.mjs', 'host-recovery.mjs', 'host-recovery.ps1',

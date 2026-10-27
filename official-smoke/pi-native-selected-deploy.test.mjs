@@ -10,6 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { nativeCatalogInstall } from '../test-support/native-catalog-install.mjs'
 import { nativeCatalogReferenceName } from '../pi-native-catalog-profile.mjs'
 import { StateStore } from '../lifecycle.mjs'
+import {readCatalogFixtureAcl,assertCatalogAclPreserved} from '../test-support/pi-catalog-acl.mjs'
 
 const piPackage=process.env.PI_NATIVE_FIXTURE_PACKAGE
 test('actual deploy CLI selects the guarded host and loads native discovery inside the original-config official Pi JSON child',{skip:!piPackage,timeout:30000},async t=>{
@@ -46,12 +47,14 @@ const end=Date.now()+10000;while(Date.now()<end){try{await fs.access(p.audit);re
 `)
   }})
   const observer=path.join(f.base,'existing-user-extension.mjs')
-  await fs.writeFile(observer,`import * as fs from 'node:fs/promises';import {setTimeout as delay} from 'node:timers/promises';export default function(pi){pi.registerCommand('fixture-selected-observe',{handler:async(_args,ctx)=>{await fs.writeFile(${JSON.stringify(paths.audit)},JSON.stringify({pid:process.pid,session:ctx.sessionManager.getSessionId(),provider:ctx.model.provider,model:ctx.model.id,models:ctx.modelRegistry.getAll().filter(m=>m.provider==='approved').map(m=>({id:m.id,maxTokens:m.maxTokens,reasoning:m.reasoning}))}));while(true){try{await fs.access(${JSON.stringify(paths.release)});break}catch{await delay(25)}}}})}\n`)
+  await fs.writeFile(observer,`import * as fs from 'node:fs/promises';import {setTimeout as delay} from 'node:timers/promises';export default function(pi){pi.registerCommand('fixture-selected-observe',{handler:async(_args,ctx)=>{const deadline=Date.now()+10000;while(!ctx.modelRegistry.getAll().some(m=>m.provider==='approved'&&m.id==='upstream-added')){if(Date.now()>deadline)throw Error('fixture native discovery deadline');await delay(25)}await fs.writeFile(${JSON.stringify(paths.audit)},JSON.stringify({pid:process.pid,session:ctx.sessionManager.getSessionId(),provider:ctx.model.provider,model:ctx.model.id,models:ctx.modelRegistry.getAll().filter(m=>m.provider==='approved').map(m=>({id:m.id,maxTokens:m.maxTokens,reasoning:m.reasoning}))}));while(true){try{await fs.access(${JSON.stringify(paths.release)});break}catch{await delay(25)}}}})}\n`)
   f.settingsRaw='\uFEFF'+JSON.stringify({extensions:[observer],packages:[],defaultProvider:'approved',defaultModel:'selected',custom:{keep:true}},null,3)+'\n'
   const document=JSON.parse(f.modelsRaw.replace(/^\uFEFF/,''));document.providers.approved.baseUrl=`http://127.0.0.1:${server.address().port}/v1`
   f.modelsRaw='\uFEFF'+JSON.stringify(document)
   const authRaw=JSON.stringify({approved:{type:'api_key',key:'synthetic-selected-deploy'}})
   for(const [name,raw]of [['settings.json',f.settingsRaw],['models.json',f.modelsRaw],['auth.json',authRaw]])await fs.writeFile(path.join(f.config.piConfigDir,name),raw)
+  const originalAcls=new Map()
+  if(process.platform==='win32')for(const name of ['settings.json','models.json','auth.json'])originalAcls.set(name,await readCatalogFixtureAcl(path.join(f.config.piConfigDir,name)))
   const settingsStamp=await fs.stat(path.join(f.config.piConfigDir,'settings.json'),{bigint:true})
   const endpoint=fileURLToPath(new URL('../endpoint.mjs',import.meta.url)),children=[]
   function cli(args){const child=spawn(process.execPath,[endpoint,'deploy',...args],{stdio:['pipe','pipe','pipe']});let out='',err='';child.stdout.on('data',v=>{out+=v});child.stderr.on('data',v=>{err+=v});const done=new Promise(resolve=>child.once('close',code=>resolve(code)));const p={child,done,out:()=>out,err:()=>err};children.push(p);return p}
@@ -75,6 +78,7 @@ const end=Date.now()+10000;while(Date.now()<end){try{await fs.access(p.audit);re
   assert.match(await fs.readFile(paths.piError,'utf8'),/windows_endpoint_pi_catalog: cancelled/)
   const finishedGets=gets;await delay(1100);assert.equal(gets,finishedGets)
   for(const [name,raw]of [['settings.json',f.settingsRaw],['models.json',f.modelsRaw],['auth.json',authRaw]])assert.equal(await fs.readFile(path.join(f.config.piConfigDir,name),'utf8'),raw)
+  for(const [name,before]of originalAcls){const after=await readCatalogFixtureAcl(path.join(f.config.piConfigDir,name));assertCatalogAclPreserved(before,after);assert.deepEqual(after,before)}
   const after=await fs.stat(path.join(f.config.piConfigDir,'settings.json'),{bigint:true})
   for(const key of ['ino','mode','mtimeNs','ctimeNs'])assert.equal(after[key],settingsStamp[key])
   assert.equal((await fs.stat(path.join(f.config.piConfigDir,'extensions',nativeCatalogReferenceName))).nlink,1)
@@ -88,5 +92,5 @@ const end=Date.now()+10000;while(Date.now()<end){try{await fs.access(p.audit);re
   blocked.child.stdin.end('{"action":"stop"}\n');assert.equal(await blocked.done,2)
   assert.equal(await fs.readFile(receipt,'utf8'),unknown);assert.equal(await fs.readFile(store.file,'utf8'),originalState)
   assert.equal(await fs.readFile(paths.binding,'utf8'),originalBinding);assert.equal(gets,finishedGets);assert.equal(inference,0)
-  console.log(JSON.stringify({entry:'endpoint deploy run -> selected host -> isolated Herdr boundary -> official Pi 1.4.0 JSON',nativeResourceActuallyLoaded:true,originalIdentityAndProfile:true,userExtensionPreserved:true,modelUnchanged:true,userFilesUnchanged:true,normalExitCancels:true,unknownWorkNotReplayed:true,inferenceRequests:0,windowsHerdrExe:'not exercised'}))
+  console.log(JSON.stringify({entry:'endpoint deploy run -> selected host -> isolated Herdr boundary -> official Pi 1.4.0 JSON',nativeResourceActuallyLoaded:true,originalIdentityAndProfile:true,userExtensionPreserved:true,modelUnchanged:true,userFilesUnchanged:true,normalExitCancels:true,unknownWorkNotReplayed:true,inferenceRequests:0,originalWindowsACLs:originalAcls.size===3?'exactly_preserved':'not_exercised',windowsHerdrExe:'not exercised'}))
 })

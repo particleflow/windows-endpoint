@@ -1,5 +1,16 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import {execFile} from 'node:child_process'
+import {promisify} from 'node:util'
+import {fileURLToPath} from 'node:url'
+
+export async function readCatalogFixtureAcl(file) {
+  const executable=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe')
+  const result=await promisify(execFile)(executable,
+    ['-NoLogo','-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./pi-catalog-acl.ps1',import.meta.url)),file],
+    aclChildProcessOptions(executable))
+  return JSON.parse(result.stdout.replace(/^\uFEFF/,''))
+}
 
 export function aclChildProcessOptions(executable, inherited = process.env) {
   const env = { ...inherited }

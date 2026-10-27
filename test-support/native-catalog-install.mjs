@@ -7,7 +7,7 @@ import { digest } from '../endpoint.mjs'
 
 export async function nativeCatalogInstall(t,{piPackage=null,extensions=[],configurePackage=null}={}) {
   const f=await nativeInstalledFixture(t),root=path.join(f.base,'endpoint')
-  if(piPackage){f.config.programs.piPackage=piPackage;f.config.programs.node=process.execPath}
+  if(piPackage){f.config.programs.piPackage=await fs.realpath(piPackage);f.config.programs.node=await fs.realpath(process.execPath)}
   await fs.mkdir(path.join(root,'config'),{recursive:true})
   const configurationRaw=JSON.stringify(f.config)
   await fs.writeFile(path.join(root,'config/endpoint.json'),configurationRaw)

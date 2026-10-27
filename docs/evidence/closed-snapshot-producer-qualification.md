@@ -43,13 +43,27 @@ previous npm lock entry remain unchanged. New profile/transaction units and the
 three real-process tests are explicitly scheduled, with the required package
 environment supplied instead of accepting skipped integration tests.
 
-Local combined checks pass 356/358 affected cases; the two Windows-only ACL
-cases are skipped on Linux. The three unchanged official Pi 1.4 process/selected
-deployment tests pass with zero skips and zero inference requests. Four affected
-packaging tests pass. These results do not establish Windows PowerShell or
-exact-62d producer execution. The complete candidate requires one new existing
-workflow run; no unchanged run was dispatched or repeated. No exact-62d Windows
-executable, producer pass or artifact is claimed by these local checks. The
+At the initial `2dae77c` composition, local checks passed 356/358 affected cases
+(two Windows-only ACL skips), three actual Pi process cases and four packaging
+cases. Its CI40591695300 built the exact 62d Windows EXE/test executables with
+the unchanged upstream script and ordinary strict dependency TLS. Linux race
+tests and the compiled Windows dispatcher passed all four snapshot Go tests and
+the actual CLI dispatcher case, with zero skips. The existing full producer
+suite also passed: 39 native and 10 CLI top-level cases, 30 API vectors and
+13 task-boundary cases. This is exact-source build/fixture evidence, not positive
+production-EXE system-trust TLS or real PC/NAS acceptance.
+
+That complete endpoint run remained failed: four obsolete file-writer positive
+cases, a Windows mixed-separator fixture package reference, and the retained
+transfer/TLS gate. Its review artifact12775301379 contains the original failed
+source and cannot qualify the subsequent correction. The old writer has since
+been removed after caller verification; strict descriptor/flag tests remain and
+the current Windows native process test compares original profile ACLs exactly.
+The fixture now resolves real package paths before creating synthetic config and
+waits for actual registry discovery before recording its observation. Local
+current native/safety checks pass 52/52, actual Pi process tests 3/3 and packaging
+4/4. Those local checks still do not establish Windows PowerShell execution.
+Only changed-source CI is requested; no unchanged run is repeated. The
 original transfer/authentication/system-trust acceptance
 gates remain required, and earlier failed ACL/entry records remain preserved.
 There is no installation, production task replay, queue/root/profile migration,

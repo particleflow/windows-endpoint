@@ -530,3 +530,7 @@ test('foreground failed recheck leaves the same host and latch available for lat
   assert.equal(p.events.filter(e => e.event === 'component_started').length, 2)
   assert.equal((await stop(p)).code, 0)
 })
+
+test('foreground host refuses the retired file-sync binding before discovery or startup', () => {
+  assert.throws(()=>new ForegroundHost({root:path.resolve('unused-fixture'),piCatalogBinding:{providerId:'approved',discover(){throw Error('must not run')}}}),{code:'host_pi_catalog_file_sync_retired'})
+})

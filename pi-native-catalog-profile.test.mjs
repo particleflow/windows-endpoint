@@ -6,8 +6,7 @@ import os from 'node:os'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { nativeCatalogResources, nativeCatalogPackage, nativeCatalogSettingsKey,
-  prepareNativePiCatalogProfile, nativePiCatalogHostOptions } from './pi-native-catalog-profile.mjs'
-import { PiCatalogLifecycle } from './pi-catalog-lifecycle.mjs'
+  prepareNativePiCatalogProfile, prepareNativePiCatalogReference, nativePiCatalogHostOptions } from './pi-native-catalog-profile.mjs'
 
 async function fixture(t) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'pi-native-wiring-')))
@@ -49,13 +48,14 @@ test('unprepared old profile stays compatible; opt-in and changed package fail w
   await assert.rejects(prepareNativePiCatalogProfile(f),/resource_changed/)
   assert.equal(await fs.readFile(path.join(f.profileDir,'settings.json'),'utf8'),f.settingsRaw)
 })
-test('native profile claim stops the legacy file writer before discovery or file reads',async t=>{
+test('pending historical model publication blocks native enablement without reading or replacing its evidence',async t=>{
   const f=await fixture(t),plan=await prepareNativePiCatalogProfile(f)
   await fs.writeFile(plan.settingsPath,plan.settingsAfter)
-  let reads=0,gets=0,writes=0
-  const lifecycle=new PiCatalogLifecycle({config:{piConfigDir:f.profileDir},providerId:'approved',
-    discover:async()=>{gets++;return[]},store:{read:async()=>{reads++;return f.modelsRaw},compareAndSwap:async()=>{writes++;return true}}})
-  assert.equal(await lifecycle.tick(),'conflict');assert.equal(await lifecycle.tick(),'conflict')
-  assert.deepEqual({reads,gets,writes},{reads:0,gets:0,writes:0})
-  assert.equal(lifecycle.controller.signal.aborted,true)
+  const marker=path.join(f.profileDir,'.pi-models-pending.json'),raw='UNPARSED ORIGINAL UNKNOWN CATALOG PUBLICATION\n'
+  await fs.writeFile(marker,raw)
+  for(const prepare of [prepareNativePiCatalogProfile,prepareNativePiCatalogReference])await assert.rejects(prepare(f),/catalog_legacy_write_recovery_required/)
+  await assert.rejects(nativePiCatalogHostOptions({config:{piConfigDir:f.profileDir},...f}),/catalog_legacy_write_recovery_required/)
+  assert.equal(await fs.readFile(marker,'utf8'),raw)
+  assert.equal(await fs.readFile(plan.settingsPath,'utf8'),plan.settingsAfter)
+  assert.equal(await fs.readFile(path.join(f.profileDir,'models.json'),'utf8'),f.modelsRaw)
 })

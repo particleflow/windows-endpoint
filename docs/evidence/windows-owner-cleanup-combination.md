@@ -162,3 +162,28 @@ the [producer qualification record](closed-snapshot-producer-qualification.md).
 Neither prior green fixtures nor the old producer's artifacts qualify the new
 62d action. The retained transfer/TLS gates and independent review/onsite limits
 remain in force; this source composition does not deploy or replay a task.
+
+## Removing the unused file writer after complete-head CI
+
+CI40591695300 on `2dae77c` established exact-62d Linux/Windows producer execution,
+but retained four old store replacement failures. Caller verification showed
+that `pi-catalog-store`, `PiCatalogLifecycle`, its replacement PS helper and the
+`syncPiCatalogOnce` mutation adapter had only their retired positive tests and
+packaging references left. They are removed, not renamed or moved into another
+runtime location. The pure projection remains used by the native extension.
+The former guarded refusal-only writer is not a product fallback.
+
+The existing strict owner/group/protection/ordered-ACE/inherited-flag comparator
+and all its negative cases remain. Current Windows selected deployment reads
+original settings/models/auth descriptors before preparation and after normal
+official Pi shutdown, requiring exact equality as well as the strict comparison.
+Its helper is now read-only; no fixture ACL rewrite is needed. Host refusal of
+non-null old bindings stays tested. An opaque `.pi-models-pending.json` blocks
+native catalog enablement and is preserved byte-for-byte, never parsed or retried.
+
+The same run exposed a mixed-separator official fixture package path; only the
+fixture resolves real paths before serializing its synthetic configuration.
+The selected-deploy observer also now waits with a bounded deadline for the
+actual new registry model before recording its audit; the original model
+assertions remain. No product path validator, safety assertion or task identity
+is relaxed. Failed source/checkpoints remain available through their exact SHAs.
