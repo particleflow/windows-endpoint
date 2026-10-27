@@ -199,7 +199,7 @@ export class NativeDriver {
   }
   recordStatusFailure(outcome, result = {}) {
     const stderr = String(result.stderr || '').slice(0, 4096)
-    const stderrClass = /permission denied|access (?:is )?denied|os error 5\b/i.test(stderr) ? 'permission_denied' :
+    const stderrClass = /permission\s*denied|access (?:is )?denied|os error 5\b|For an elevated server, use an administrator terminal\./i.test(stderr) ? 'permission_denied' :
       /unexpected argument|unrecognized (?:option|argument)|unknown (?:option|argument)|bad option|invalid session/i.test(stderr) ? 'arguments_rejected' :
       /connection refused|pipe.*(?:not found|busy)|server_not_running/i.test(stderr) ? 'endpoint_unavailable' : stderr ? 'unclassified' : 'absent'
     this.statusObservation = { component: 'herdr_observation', outcome,
@@ -208,9 +208,16 @@ export class NativeDriver {
       signal: typeof result.signal === 'string' && /^SIG[A-Z]+$/.test(result.signal) ? result.signal : null,
       stdoutBytes: Math.min(16385, Buffer.byteLength(String(result.stdout || ''))), stderrBytes: Math.min(16385, Buffer.byteLength(String(result.stderr || ''))), stderrClass }
   }
+  statusFailure(outcome, result) {
+    this.recordStatusFailure(outcome, result)
+    return new LifecycleError(this.statusObservation.stderrClass === 'permission_denied' || ['EACCES','EPERM'].includes(result?.code) ? 'herdr_observation_permission_denied' : 'herdr_observation_unknown')
+  }
   command(file, args, timeout = 10000) {
     this.checkPrograms?.()
     const r = spawnSync(file, args, { env: this.env, cwd: this.config.sourceRoot, encoding: 'utf8', timeout, maxBuffer: 16384, windowsHide: true, shell: false })
+    if (file === this.herdr && args.join('\0') === ['--session', this.config.session, 'status', 'server', '--json'].join('\0') && (r.error || r.status !== 0)) {
+      throw this.statusFailure(r.error?.code === 'ETIMEDOUT' ? 'deadline' : r.error ? 'process_error' : 'nonzero_exit', { stdout: r.stdout, stderr: r.stderr, code: r.error?.code || r.status, signal: r.signal })
+    }
     demand(!r.error && r.status === 0, 'official_command_failed')
     return r.stdout
   }
@@ -218,7 +225,7 @@ export class NativeDriver {
     this.checkPrograms?.()
     let value
     try { value = JSON.parse(this.command(this.herdr, ['--session', this.config.session, 'status', 'server', '--json'], 3000)) }
-    catch { throw new LifecycleError('herdr_observation_unknown') }
+    catch (error) { if (error.code === 'herdr_observation_permission_denied') throw error; throw new LifecycleError('herdr_observation_unknown') }
     demand(typeof value.running === 'boolean', 'herdr_observation_unknown')
     return value
   }
@@ -234,8 +241,7 @@ export class NativeDriver {
         env: this.env, cwd: this.config.sourceRoot, timeout: 3000, maxBuffer: 16384, windowsHide: true, shell: false,
       })
     } catch (error) {
-      this.recordStatusFailure(error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 'output_limit' : error.killed ? 'deadline' : Number.isInteger(error.code) ? 'nonzero_exit' : 'process_error', error)
-      throw new LifecycleError('herdr_observation_unknown')
+      throw this.statusFailure(error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 'output_limit' : error.killed ? 'deadline' : Number.isInteger(error.code) ? 'nonzero_exit' : 'process_error', error)
     }
     try { value = JSON.parse(result.stdout) }
     catch { this.recordStatusFailure('invalid_json', { ...result, code: 0 }); throw new LifecycleError('herdr_observation_unknown') }

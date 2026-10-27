@@ -155,6 +155,22 @@ test('unknown host observation stops recovery without guessing from unavailable'
   assert.equal(calls.filter(c => c.startsWith('start:')).length, 2)
 })
 
+test('elevated-server permission refusal remains explicit and never retries or starts another server', async t => {
+  const f = await fixture(t)
+  const refusal = new LifecycleError('herdr_observation_permission_denied')
+  f.driver.hostStatus = () => { throw refusal }
+  await assert.rejects(f.lifecycle.start(), { code: refusal.code })
+  assert.equal(f.calls.filter(c => c.startsWith('start:')).length, 0)
+  assert.equal((await f.store.load()).attention, refusal.code)
+  const running = await fixture(t)
+  await running.lifecycle.start()
+  running.driver.ownedHostStatus = async () => { throw refusal }
+  await running.lifecycle.tick(); await running.lifecycle.tick()
+  assert.equal(running.lifecycle.state.attention, refusal.code)
+  assert.equal(running.calls.filter(c => c === 'start:herdr').length, 1)
+  assert.equal(running.lifecycle.state.restarts.length, 0)
+})
+
 for (const reason of ['herdr_observation_unknown', 'herdr_owner_exited']) {
   test(`confirmed owned exit racing ${reason} recovers once through the existing budget`, async t => {
     const { lifecycle, driver, alive, calls, store } = await fixture(t)
@@ -284,6 +300,10 @@ test('native runtime status probe lets pending process events run before reporti
   const redacted = driver.diagnostics().find(record => record.component === 'herdr_observation')
   assert.equal(redacted.stderrClass, 'permission_denied')
   assert.equal(JSON.stringify(redacted).includes('PRIVATE'), false)
+  const refused = driver.statusFailure('nonzero_exit', { code: 1, stderr: 'For an elevated server, use an administrator terminal. PRIVATE-CONFIG' })
+  assert.equal(refused.code, 'herdr_observation_permission_denied')
+  assert.equal(driver.statusObservation.stderrClass, 'permission_denied')
+  assert.equal(JSON.stringify(driver.statusObservation).includes('PRIVATE'), false)
 })
 
 async function nativeConnectorFixture(t) {
