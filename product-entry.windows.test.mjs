@@ -6,6 +6,7 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { nativeInstalledFixture } from './test-support/installed-fixture.mjs'
 import { programPackage } from './test-support/program-package.mjs'
@@ -43,13 +44,12 @@ async function fixture(t,unicodeNode=false,{selectedHost=null}={}){
   return {...f,root,entry:result.entry}
 }
 const args=f=>['-NoProfile','-NonInteractive','-File',f.entry]
-test('stable PowerShell Run forwards PiCatalogProvider and preserves old selected-host compatibility',async t=>{
+test('stable PowerShell Run forwards the prepared native Pi catalog and preserves old selected-host refusal',async t=>{
   const wrapper=version=>`import fs from 'node:fs/promises';import path from 'node:path';
-${version===null?'':`export const piCatalogBindingVersion=${version};`}
-export async function runForeground({root,piCatalogBinding}){
+${version===null?'':`export const piNativeCatalogBindingVersion=${version};`}
+export async function runForeground({root,piNativeCatalog}){
  const config=JSON.parse(await fs.readFile(path.join(root,'config/endpoint.json'),'utf8'));
- const binding=typeof piCatalogBinding==='function'?piCatalogBinding(config):piCatalogBinding;
- process.stdout.write(JSON.stringify({provider:binding?.providerId??null,profile:config.piConfigDir})+'\\n');
+ process.stdout.write(JSON.stringify({provider:piNativeCatalog?.providerId??null,profile:config.piConfigDir})+'\\n');
  return 0;
 }\n`
   for(const version of [1,null]){
@@ -59,12 +59,22 @@ export async function runForeground({root,piCatalogBinding}){
     const run=extra=>promisify(execFile)(powershell,[...args(f),'-Action','Run',...extra],{timeout:20000,maxBuffer:16384})
     const plain=JSON.parse((await run([])).stdout)
     assert.deepEqual(plain,{provider:null,profile:f.config.piConfigDir})
+    const settings=path.join(f.config.piConfigDir,'settings.json'),models=path.join(f.config.piConfigDir,'models.json')
+    await fs.writeFile(settings,'{}\n')
+    await fs.writeFile(models,JSON.stringify({providers:{'existing-magpie':{models:[{id:'selected'}]}}})+'\n')
+    const userFiles=[settings,models,path.join(f.config.piConfigDir,'auth.json')]
+    const userBytes=await Promise.all(userFiles.map(file=>fs.readFile(file)))
+    await assert.rejects(run(['-PiCatalogProvider','existing-magpie']),error=>error.code===2&&error.stderr.includes('catalog_native_profile_not_prepared'))
+    const selected=JSON.parse(await fs.readFile(selection,'utf8')).current
+    const prepared=await promisify(execFile)(f.config.programs.node,[path.join(f.root,'packages',selected,'endpoint.mjs'),'deploy','prepare-pi-catalog','--root',f.root,'--request-id',randomUUID(),'--provider','existing-magpie'],{timeout:20000,maxBuffer:16384})
+    assert.equal(JSON.parse(prepared.stdout).state,'prepared_native_catalog')
     if(version===1){
       const enabled=JSON.parse((await run(['-PiCatalogProvider','existing-magpie'])).stdout)
       assert.deepEqual(enabled,{provider:'existing-magpie',profile:f.config.piConfigDir})
     }else{
-      await assert.rejects(run(['-PiCatalogProvider','existing-magpie']),error=>error.code===2&&error.stderr.includes('deployment_pi_catalog_unsupported'))
+      await assert.rejects(run(['-PiCatalogProvider','existing-magpie']),error=>error.code===2&&error.stderr.includes('deployment_pi_native_catalog_unsupported'))
     }
+    assert.deepEqual(await Promise.all(userFiles.map(file=>fs.readFile(file))),userBytes)
     assert.deepEqual(await Promise.all([config,selection,f.config.connector.enrollmentFile].map(file=>fs.readFile(file))),before)
     assert.equal(await fs.readFile(f.config.connector.enrollmentFile,'utf8'),'SYNTHETIC UNREAD ENROLLMENT')
   }

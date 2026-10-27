@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: '24.14.0'
       - name: Verify delivery boundary and recovery fixtures
-        run: node --test --test-timeout=30000 endpoint.test.mjs pi-catalog-sync.test.mjs pi-catalog-lifecycle.test.mjs pi-magpie-catalog.test.mjs agenvo-retirement.test.mjs diagnostic-retirement.test.mjs legacy-writer-retirement.test.mjs directory-selection.test.mjs handoff.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs program-deployment.test.mjs product-installation.test.mjs host-layout.test.mjs host.test.mjs host-recovery.test.mjs runtime.test.mjs installed.test.mjs setup.test.mjs native-connector.test.mjs session-diagnostics.test.mjs session-continuation.test.mjs official-smoke/native-runtime-peer.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs official-smoke/pi-model-fixture.test.mjs
+        run: node --test --test-timeout=30000 endpoint.test.mjs pi-catalog-sync.test.mjs pi-catalog-lifecycle.test.mjs pi-magpie-catalog.test.mjs pi-native-catalog-profile.test.mjs pi-native-catalog-transaction.test.mjs agenvo-retirement.test.mjs diagnostic-retirement.test.mjs legacy-writer-retirement.test.mjs directory-selection.test.mjs handoff.test.mjs lifecycle.test.mjs transfer-contract.test.mjs transfer-lifecycle.test.mjs deployment.test.mjs program-deployment.test.mjs product-installation.test.mjs host-layout.test.mjs host.test.mjs host-recovery.test.mjs runtime.test.mjs installed.test.mjs setup.test.mjs native-connector.test.mjs session-diagnostics.test.mjs session-continuation.test.mjs official-smoke/native-runtime-peer.test.mjs official-smoke/producer-fixtures.test.mjs official-smoke/nas-fixture.test.mjs official-smoke/pi-model-fixture.test.mjs
       - uses: actions/checkout@v4
         if: runner.os == 'Linux'
         with:
@@ -90,6 +90,13 @@ jobs:
         run: |
           & '${{ runner.temp }}/endpoint official Unicode 空格/node/node.exe' ./official-smoke/verify.mjs '${{ runner.temp }}/endpoint official Unicode 空格'
           if ($LASTEXITCODE -ne 0) { throw 'Official dependency smoke failed' }
+      - name: Verify unchanged official Pi 1.4 native catalog and selected deployment
+        shell: pwsh
+        env:
+          PI_NATIVE_FIXTURE_PACKAGE: ${{ runner.temp }}/endpoint official Unicode 空格/node_modules/pi-native-catalog-fixture
+        run: |
+          & '${{ runner.temp }}/endpoint official Unicode 空格/node/node.exe' --test --test-timeout=60000 ./official-smoke/pi-native-catalog.test.mjs ./official-smoke/pi-native-product-entry.test.mjs ./official-smoke/pi-native-selected-deploy.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Official Pi native catalog integration failed' }
       - name: Verify retired execution denial and preserved unknown receipts
         shell: pwsh
         run: |

@@ -131,3 +131,34 @@ existing CI. No old seven-group Windows checkpoint is substituted for it.
   Closed-only queue source consumption is still owned elsewhere and is not
   included or declared complete here. Formal image/NAS release and Windows
   installation remain unperformed.
+
+## Native refresh and retained-snapshot composition
+
+The following composition keeps the published `c221aed` cleanup and original
+`4e841911`/`51d4567` recovery behavior. It adds the exact `3c970163` consumer and
+the six native increments `81076c2`, `2414905`, `7716e7c`, `a5ad978`, `3e84c9a`
+and `7423bc8`. The actual native branch merge base is `deeeb51`, so replacing its
+whole tree would lose later owner/recovery/consumer work. Incremental application
+instead preserves the stopped-recovery manifest flag, profile SDK/CAS commands,
+all recovery negative cases and the snapshot-only lifecycle branch.
+
+Normal `host run` and selected `deploy run` no longer import/start the old
+file-sync lifecycle. Non-null legacy bindings reject before discovery/startup.
+The new path loads the resource into the existing official Pi process; the
+refusal-only `81076c2` helper is not presented as the functional refresh solution.
+Its protected-file success and unchanged unprotected-file refusal fixtures keep
+the strict inherited-flag assertion. No real file ACL is changed.
+
+The Windows stable-entry test now checks an unprepared native request refusing,
+explicit stopped preparation through the selected installed package, successful
+PowerShell forwarding to a capable inert selected host, and refusal by an old
+selected host. Plain old-host execution remains checked before native enablement;
+configuration/selection/enrollment and synthetic user settings/models/auth bytes
+must remain unchanged. Actual PowerShell execution belongs to the new Windows CI.
+
+Consumer/producer identity, exact new pin, compiled upstream case selection,
+local differential counts and the explicit remaining build gap are recorded in
+the [producer qualification record](closed-snapshot-producer-qualification.md).
+Neither prior green fixtures nor the old producer's artifacts qualify the new
+62d action. The retained transfer/TLS gates and independent review/onsite limits
+remain in force; this source composition does not deploy or replay a task.

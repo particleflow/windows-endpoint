@@ -35,10 +35,22 @@ source removal, registered/indexed input exclusion, missing-byte rejection and
 original TLS/authorization guards. Existing Linux Go steps select the same
 contract cases using ordinary strict TLS and go.sum resolution.
 
-This is preparation for one complete candidate after the separately owned
-native Pi host/deploy wiring arrives. No CI was dispatched or repeated for this
-local composition. No exact-62d Windows executable, producer pass or artifact
-is claimed yet. The original transfer/authentication/system-trust acceptance
+The separately owned native Pi host/deploy wiring through `7423bc8` is now
+composed as source increments onto this retained-snapshot consumer. The existing
+official dependency fixture also has a locked Pi 1.4 alias solely for its three
+real-process native tests; the original Pi 1.2 dependency/launcher and every
+previous npm lock entry remain unchanged. New profile/transaction units and the
+three real-process tests are explicitly scheduled, with the required package
+environment supplied instead of accepting skipped integration tests.
+
+Local combined checks pass 356/358 affected cases; the two Windows-only ACL
+cases are skipped on Linux. The three unchanged official Pi 1.4 process/selected
+deployment tests pass with zero skips and zero inference requests. Four affected
+packaging tests pass. These results do not establish Windows PowerShell or
+exact-62d producer execution. The complete candidate requires one new existing
+workflow run; no unchanged run was dispatched or repeated. No exact-62d Windows
+executable, producer pass or artifact is claimed by these local checks. The
+original transfer/authentication/system-trust acceptance
 gates remain required, and earlier failed ACL/entry records remain preserved.
 There is no installation, production task replay, queue/root/profile migration,
 credential copy or identity/permission change.
