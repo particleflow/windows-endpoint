@@ -5,8 +5,10 @@ try {
     $encoding = [Text.UTF8Encoding]::new($false,$true)
     $inputBytes = [Convert]::FromBase64String($FilesBase64)
     $json = $encoding.GetString($inputBytes)
-    $files = @($json | ConvertFrom-Json)
-    if ($files.Count -lt 1 -or $files.Count -gt 24) { throw 'bounded_reference_inventory_required' }
+    # PS5 can emit a JSON array as one pipeline object. Direct assignment keeps
+    # its 22 string entries flat; @(... | ConvertFrom-Json) can wrap that array.
+    $files = ConvertFrom-Json -InputObject $json
+    if ($files -isnot [array] -or $files.Count -ne 22) { throw 'bounded_reference_inventory_required' }
     $result = @()
     foreach ($file in $files) {
         $stage = 'item'
