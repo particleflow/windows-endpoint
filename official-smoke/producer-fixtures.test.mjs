@@ -5,11 +5,19 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { catalog, digest } from '../endpoint.mjs'
-import { testNames, fixturePlan, completedTests, completedAPIBaseCases, completedTaskAPIBaseCases, completedFeedbackCases, feedbackTests, networkTests, downloadTests, cliDownloadTests, publicationMigrationTests, budgetTests, cliBudgetTests, registrationTests, cliRegistrationTests, explicitFilenameTests, verifyProducerBundle } from './producer-fixtures.mjs'
+import { testNames, fixturePlan, completedTests, completedAPIBaseCases, completedTaskAPIBaseCases, completedFeedbackCases, feedbackTests, networkTests, downloadTests, cliDownloadTests, publicationMigrationTests, budgetTests, cliBudgetTests, registrationTests, cliRegistrationTests, explicitFilenameTests, resultRecoveryTests, cliResultRecoveryTests, verifyProducerBundle } from './producer-fixtures.mjs'
 
 const native = ['TestWindowsNativeActiveJournal', 'TestWindowsNativePublicationBucketBudget', 'TestWindowsNativePublicationMigrationProcessCrash', 'TestWindowsNativePublicationNewCase', 'TestWindowsNativeNewCore']
 const cli = ['TestCLIPathChild', 'TestCLIPathTLSRestartAndLostResponses']
 const output = names => names.map(n => `=== RUN   ${n}\n--- PASS: ${n} (0.01s)`).join('\n') + '\nPASS\n'
+
+test('0813 recovery coverage requires the finite CLI and portable original-ID cases without skipped branches', () => {
+  assert.equal(resultRecoveryTests.length,2);assert.equal(cliResultRecoveryTests.length,1)
+  for(const names of [resultRecoveryTests,cliResultRecoveryTests]){
+    assert.deepEqual(completedTests(output(names),names),names)
+    for(const raw of ['PASS\n',output(names.slice(1)),output(names).replace('--- PASS:','--- SKIP:')])assert.throws(()=>completedTests(raw,names))
+  }
+})
 
 test('explicit filename Windows coverage requires process recovery and foreign-context refusal without skipped cases', () => {
   assert.deepEqual(explicitFilenameTests, ['TestExplicitFilenameRegistrationProcessRecovery', 'TestExplicitFilenameRejectsForeignContext'])

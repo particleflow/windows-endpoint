@@ -65,6 +65,10 @@ export const cliRegistrationTests = ['TestProducerAdmissionPendingCanResumeSameD
 export const snapshotTests = ['TestSnapshotProducerOnlyAdvancesRetainedPrivateBytes', 'TestSnapshotProducerRejectsExplicitRegisteredAndIndexedJobs', 'TestSnapshotProducerMissingPrivateBytesFailsBeforeNetwork', 'TestSnapshotProducerRetainsAuthorizationAndTLSGuards']
 export const cliSnapshotTests = ['TestCLISnapshotScopeNeverActivatesRegisteredInput']
 export const explicitFilenameTests = ['TestExplicitFilenameRegistrationProcessRecovery', 'TestExplicitFilenameRejectsForeignContext']
+// Only portable recovery cases: Unix chmod/revocation/reparse branches retain
+// their separate upstream evidence and are not claimed as Windows coverage.
+export const resultRecoveryTests = ['TestResultRecoveryProcessInterruptionAndSameID', 'TestResultRecoveryExistingReceiptGetOnly']
+export const cliResultRecoveryTests = ['TestResultRecoveryCLIUsesExistingFiniteEntry']
 export function completedTaskAPIBaseCases(output) {
   completedTests(output, taskAPIBaseTests)
   const expected = [
@@ -150,6 +154,8 @@ export async function verifyFixtures(root, sourceRoot) {
     [binary, snapshotTests, '^TestSnapshotProducer', 'producerSnapshotContract'],
     [cliBinary, cliSnapshotTests, '^TestCLISnapshotScope', 'producerSnapshotContract'],
     [binary, explicitFilenameTests, '^TestExplicit', 'producerExplicitFilenameContract'],
+    [binary, resultRecoveryTests, '^TestResultRecovery(ProcessInterruptionAndSameID|ExistingReceiptGetOnly)$', 'producerResultRecoveryContract'],
+    [cliBinary, cliResultRecoveryTests, '^TestResultRecoveryCLIUsesExistingFiniteEntry$', 'producerResultRecoveryContract'],
   ]) {
     const inventory = testNames(await execute(file, [`-test.list=${selector}`], remaining(30000)), 'Test')
     requireFixture(sameSet(inventory, names), `${contractName}_inventory_changed`)

@@ -18,10 +18,10 @@ import {inspectInstalled} from './installed.mjs'
 const sha = value => createHash('sha256').update(value).digest('hex')
 const encode = value => JSON.stringify(value) + '\n'
 // Synthetic package metadata/inert EXEs exercise the updater contract only.
-// Real 57/62d execution and NTFS publication are separate Windows evidence.
-async function packageFixture(directory, old, sourceCommit) {
+// Actual producer EXEs and NTFS publication need separate Windows evidence.
+async function packageFixture(directory, old, sourceCommit, oldProducer=historicalProducer) {
   const pkg = await programPackage(directory, old?'history':'new', {native:true})
-  const revision = old ? historicalProducer : catalog.components.transfer.revision
+  const revision = old ? oldProducer : catalog.components.transfer.revision
   const depsFile = path.join(directory,'dependencies.json'), deps = JSON.parse(await fs.readFile(depsFile,'utf8'))
   deps.components.transfer.revision = revision; await fs.writeFile(depsFile,encode(deps))
   const producerFiles = ['README.md','herdr-plugin.toml','transfer.example.json','transferqueue-cli.test.exe','transferqueue.exe','transferqueue.test.exe','verify-fixtures.ps1']
@@ -54,9 +54,10 @@ test('the existing raw lifecycle attention fence prevents validation and compone
   assert.deepEqual(calls,[])
   assert.equal(state.attention,'producer_upgrade_pending')
 })
-async function fixture(t,{snapshot=true,agent=false,external=false,externalRecorded=false}={}) {
+async function fixture(t,{snapshot=true,agent=false,external=false,externalRecorded=false,baseline8351=false}={}) {
   const f=await nativeInstalledFixture(t), root=path.join(f.base,'host')
-  const old=await packageFixture(path.join(f.base,'old'),true), next=await packageFixture(path.join(f.base,'new'),false)
+  const old=await packageFixture(path.join(f.base,'old'),true,baseline8351?'8351b9c433922762f579c1c7b70e755d45b6ed2c':undefined,
+    baseline8351?'1b7200d768c1231179725cfa2f85c8c3452882fb':historicalProducer), next=await packageFixture(path.join(f.base,'new'),false)
   const source=externalRecorded?await packageFixture(path.join(f.base,'original candidate'),true,externalProducerIdentity.sourceCommit):null
   const securityOverrides=new Map(),securityDefault={ownerSid:'S-1-5-21-1-2-3-1001',groupSid:'S-1-5-32-545',descriptorSha256:sha('inert fixture descriptor')}
   const reference=source?createProducerReferenceAdapter({identity:{...externalProducerIdentity,manifestSha256:source.hash,
@@ -75,7 +76,7 @@ async function fixture(t,{snapshot=true,agent=false,external=false,externalRecor
   if(snapshot)await f.write(path.join(config.herdrConfigRoot,'sessions',config.session,'session.json'),encode({version:3,workspaces:[{id:'ordinary',tabs:[{panes:{one:{cwd:config.sourceRoot,...(agent?{agent_name:'pi'}:{label:'saved shell'})}}}]}]}))
   const manager=await programDeployment(root,{prepare:true,...injected});await manager.initialize()
   await fs.cp(old.directory,path.join(root,'packages',old.hash),{recursive:true})
-  const selected={schema:1,owner:config.deviceId,packages:[{hash:old.hash,profile:profileForProducer(historicalProducer)}],current:old.hash,previous:null,pending:null}
+  const selected={schema:1,owner:config.deviceId,packages:[{hash:old.hash,profile:profileForProducer(old.manifest.producer_commit)}],current:old.hash,previous:null,pending:null}
   if(source){await fs.cp(source.directory,path.join(root,'packages',source.hash),{recursive:true});selected.packages.push({hash:source.hash,profile:profileForProducer(historicalProducer)})}
   await fs.writeFile(manager.file,encode(selected))
   const checkpoint=await captureSessionContinuation(config)
@@ -102,8 +103,76 @@ async function fixture(t,{snapshot=true,agent=false,external=false,externalRecor
     assert.equal(await producerStateEvidence(config),queue)
     if(transfer)assert.equal(await fs.readFile(transferFile,'utf8'),transferRaw)
   }
-  return{...f,root,config,manager,old,next,oldRaw,options,run,create,preservedCheck,transferFile,transferRaw,source,reference,securityOverrides,securityDefault,programProbe:f.run}
+  return{...f,root,config,manager,old,next,oldRaw,options,run,create,preserved,preservedCheck,transferFile,transferRaw,source,reference,securityOverrides,securityDefault,programProbe:f.run}
 }
+
+for(const rollback of [false,true])test(`v6 opaque write in final asynchronous observation retains the ${rollback?'rollback':'upgrade'} fence`,async t=>{
+  const f=await fixture(t)
+  if(rollback)await f.run()
+  const journal=path.join(f.config.transferStateDir,'mapped-v6.journal')
+  // Synthetic opaque bytes exercise host metadata CAS, not the native Go decoder.
+  const raw=encode({fixture:'opaque-v6-cas-only',version:6,source_ref:'original-source',delivery_id:'original-delivery',RootHash:'original-root',HostBinding:'ORIGINAL BYTES'})
+  let drift=false
+  const manager=await programDeployment(f.root,{...injected,observe:async()=>{
+    if(drift){drift=false;await fs.writeFile(journal,raw)}
+    return goodEvidence
+  }})
+  await assert.rejects(transactProducerUpgrade(manager,{...f.options,action:rollback?'rollback-producer':'upgrade-producer'},
+    {verifySecurity:security,checkpoint:async phase=>{if(phase==='producer_release_file_synced')drift=true}}),{code:'producer_upgrade_evidence_changed'})
+  assert.equal((await f.manager.lifecycleStore.load()).attention,'producer_upgrade_pending')
+  assert.equal(await fs.readFile(journal,'utf8'),raw)
+  for(const [file,bytes]of f.preserved)assert.equal(await fs.readFile(file,'utf8'),bytes)
+  for(const action of ['recover-producer','rollback-producer'])await assert.rejects(f.run({action}),{code:'producer_upgrade_evidence_changed'})
+})
+
+test('v6 admission after completed selection blocks downgrade without changing source_ref or old unknown receipts',async t=>{
+  const f=await fixture(t);await f.run()
+  const files=[f.manager.configFile,f.manager.lifecycleStore.file,f.manager.file]
+  const before=await Promise.all(files.map(file=>fs.readFile(file)))
+  const journal=path.join(f.config.transferStateDir,'mapped-v6.journal'),raw=encode({fixture:'opaque-v6-cas-only',version:6,source_ref:'original-source',delivery_id:'original-delivery'})
+  await fs.writeFile(journal,raw)
+  await assert.rejects(f.run({action:'rollback-producer'}),{code:'producer_upgrade_evidence_changed'})
+  assert.deepEqual(await Promise.all(files.map(file=>fs.readFile(file))),before)
+  assert.equal((await f.manager.read()).current,f.next.hash)
+  assert.equal(await fs.readFile(journal,'utf8'),raw)
+  for(const [file,bytes]of f.preserved)assert.equal(await fs.readFile(file,'utf8'),bytes)
+})
+
+test('8351 recorded package retains its original 1b profile but cannot be newly staged as the v6 producer',async t=>{
+  const f=await fixture(t,{baseline8351:true})
+  const record={hash:f.old.hash,profile:profileForProducer(f.old.manifest.producer_commit)}
+  assert.equal((await verifyRecordedCandidate(f.old.directory,record)).manifest.source_commit,'8351b9c433922762f579c1c7b70e755d45b6ed2c')
+  await assert.rejects(verifyCandidate(f.old.directory,f.old.hash),{code:'candidate_kind_or_producer_mismatch'})
+  await assert.rejects(verifyRecordedCandidate(f.old.directory,{...record,profile:programProfileHash}),{code:'candidate_record_profile_mismatch'})
+  await fs.writeFile(path.join(f.old.directory,'candidate.json'),encode({...f.old.manifest,source_commit:'2'.repeat(40)}))
+  const changedHash=await digest(path.join(f.old.directory,'candidate.json'))
+  await assert.rejects(verifyRecordedCandidate(f.old.directory,{hash:changedHash,profile:record.profile}),{code:'candidate_kind_or_producer_mismatch'})
+})
+
+test('8351 to v6 producer uses the joint transaction and permits exact rollback only before queue work',async t=>{
+  const f=await fixture(t,{baseline8351:true})
+  assert.equal((await f.manager.select(f.next.hash,'update')).reason,'producer_transaction_required')
+  const plan=await f.run({action:'plan-producer'})
+  assert.equal(plan.oldProducer,'1b7200d768c1231179725cfa2f85c8c3452882fb')
+  assert.equal(plan.newProducer,'0813c7127faa2f6383b723d5f81ec05487c4e446')
+  assert.equal((await f.run()).state,'host_producer_selected')
+  assert.equal((await f.run({action:'rollback-producer'})).state,'producer_rolled_back')
+  assert.equal(await fs.readFile(f.manager.configFile,'utf8'),f.oldRaw.configuration)
+  assert.equal(await fs.readFile(f.manager.lifecycleStore.file,'utf8'),f.oldRaw.lifecycle)
+  assert.equal(await fs.readFile(f.manager.file,'utf8'),f.oldRaw.selection)
+  await f.preservedCheck()
+})
+
+test('8351 downgrade after opaque v6 admission refuses without selecting the old producer',async t=>{
+  const f=await fixture(t,{baseline8351:true});await f.run()
+  const journal=path.join(f.config.transferStateDir,'mapped-v6.journal'),raw=encode({fixture:'opaque-v6-cas-only',version:6})
+  await fs.writeFile(journal,raw)
+  await assert.rejects((await f.create()).select(f.old.hash,'rollback'),{code:'candidate_kind_or_producer_mismatch'})
+  await assert.rejects(f.run({action:'rollback-producer'}),{code:'producer_upgrade_evidence_changed'})
+  assert.equal((await f.manager.read()).current,f.next.hash)
+  assert.equal(await fs.readFile(journal,'utf8'),raw)
+  for(const [file,bytes]of f.preserved)assert.equal(await fs.readFile(file,'utf8'),bytes)
+})
 
 test('transfer.json newline drift after archive refuses publication without changing the original task bindings',async t=>{
   const f=await fixture(t)

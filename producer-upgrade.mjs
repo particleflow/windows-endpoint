@@ -6,7 +6,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { validateConfig, validateDirectory, transferLocations, catalog } from './endpoint.mjs'
 import { boundedRead } from './session-diagnostics.mjs'
 import { producerSessionTransition, verifySessionContinuation } from './session-continuation.mjs'
-import { verifyCandidate, verifyRecordedCandidate, historicalProducer, programProfileHash } from './candidate.mjs'
+import { verifyCandidate, verifyRecordedCandidate, historicalProducer, explicitFilenameProducer, programProfileHash } from './candidate.mjs'
 import { attemptEvidence, nativeRecoveryEvidence, recoveryConfigurationHash, verifyReplacementSecurity } from './host-recovery.mjs'
 import { producerReferenceAdapter } from './producer-reference.mjs'
 
@@ -206,12 +206,13 @@ export async function transactProducerUpgrade(manager, options, { checkpoint = a
       const oldRecord = await manager.owned(selected, selected.current), newRecord = await manager.owned(selected, target)
       const oldRoot = path.join(manager.layout.packages, selected.current), nextRoot = path.join(manager.layout.packages, target)
       const old = await verifyRecordedCandidate(oldRoot, oldRecord), next = await verifyCandidate(nextRoot, target)
-      demand(old.manifest.producer_commit === historicalProducer && next.manifest.producer_commit === catalog.components.transfer.revision && newRecord.profile === programProfileHash, 'producer_upgrade_version_unsupported')
+      demand([historicalProducer,explicitFilenameProducer].includes(old.manifest.producer_commit) && next.manifest.producer_commit === catalog.components.transfer.revision && newRecord.profile === programProfileHash, 'producer_upgrade_version_unsupported')
       // Outside the selected package, only the exact recorded producer witness
       // can justify a reference change. It grants no directory adoption/write.
       const external=manager.config.transfer?.pluginRoot !== path.join(oldRoot,'transfer')
       let producerSource
       if (external) {
+        demand(old.manifest.producer_commit===historicalProducer,'producer_upgrade_external_version_unsupported')
         demand(next.manifest.native_producer_reference===1,'producer_upgrade_external_target_unsupported')
         if(action==='upgrade-producer')demand(hash(referenceSha256),'producer_upgrade_external_reference_review_required')
         producerSource=await referenceFor(manager).capture(selected,manager.config,manager.layout)
@@ -228,7 +229,7 @@ export async function transactProducerUpgrade(manager, options, { checkpoint = a
         runtime: manager.runtimeRaw === null ? null : sha(manager.runtimeRaw), status: sha(statusRaw), registration: await registryEvidence(manager.config) }
       await assertTransferConfiguration(manager.config,plan.transferConfiguration)
       if(external)await referenceFor(manager).assert(producerSource,selected,manager.config,manager.layout)
-      if (action === 'plan-producer') return {state:'producer_upgrade_plan',requestId,from:plan.from,to:target,oldProducer:historicalProducer,newProducer:catalog.components.transfer.revision,
+      if (action === 'plan-producer') return {state:'producer_upgrade_plan',requestId,from:plan.from,to:target,oldProducer:old.manifest.producer_commit,newProducer:catalog.components.transfer.revision,
         pluginRoot:{from:manager.config.transfer.pluginRoot,to:after.transfer.pluginRoot,kept:false,reason:external?'recorded_external_read_only_reference':'immutable_owned_package'},
         ...(external?{referenceSha256:sha(encode(producerSource)),sourceRegisteredManifestSha256:producerSource.registeredManifestSha256,externalDirectoryAdopted:false,
           sourceEvidence:{sourceCommit:JSON.parse(producerSource.manifestRaw).source_commit,producerCommit:historicalProducer,
@@ -301,6 +302,9 @@ export async function transactProducerUpgrade(manager, options, { checkpoint = a
       // asynchronous process/security/package evidence was being collected.
       await assertTransferConfiguration(record.before,plan.transferConfiguration)
       if(plan.schema===3&&!completedReference)await referenceFor(manager).assert(plan.producerSource,record.selected,record.before,manager.layout)
+      // Queue writes (including a v6 recovery registration) during the async
+      // observations must be caught before any publication or fence release.
+      demand(await producerStateEvidence(record.before)===plan.queue,'producer_upgrade_evidence_changed')
       return {c,s,d,versions:Object.fromEntries(Object.entries(snapshots).map(([key,value])=>[key,value.version]))}
     }
     const final = rollback ? {c:record.configuration,s:record.lifecycle,d:record.selection} : {c:record.configurationAfter,s:record.lifecycleAfter,d:record.selectionAfter}

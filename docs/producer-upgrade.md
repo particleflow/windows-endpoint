@@ -7,12 +7,13 @@ against the NAS. The c036 artifact is unchanged and does not contain this code.
 ## Version and ownership boundary
 
 New candidates and new staging retain the exact `dependencies.json` producer
-pin `1b7200d768c1231179725cfa2f85c8c3452882fb`. Read-only verification of an
-already-recorded package additionally accepts only the native historical pair:
+pin `0813c7127faa2f6383b723d5f81ec05487c4e446`. Read-only verification of an
+already-recorded package additionally accepts only these native historical pairs:
 
 | Program source | Producer source | Purpose |
 | --- | --- | --- |
 | `57ae131eff3fb675a51b6ea5ee945bfa0b9de837` | `0894a6eb8ff69c8796e2da5450fa172d4cd5ef81` | Verify the owned old package, original manifest digest, complete inventory, original producer-derived profile and pinned Runtime provenance. |
+| `8351b9c433922762f579c1c7b70e755d45b6ed2c` | `1b7200d768c1231179725cfa2f85c8c3452882fb` | Verify the already-recorded explicit-filename candidate and its original profile before a package-local joint producer upgrade. |
 
 This exception does not stage or execute historical programs. It does not accept
 arbitrary old revisions, an invented profile or a substituted producer. Legacy
@@ -34,6 +35,9 @@ Its program source is `41ddb9be845eae09a1ac49a7bde3e8a108e510b0`, producer
 SHA-256 `e34f3232f483380c4f141ecd0462ff1dc4a5cad26c0c12e1fb8781f5158bee01`.
 These are provenance pins, not external-directory ownership grants. The current
 host stays 57 until selection of the new target; it never selects or executes 41.
+This external witness remains restricted to the original 57 starting point.
+An already-recorded 8351 starting point uses its owned package-local producer;
+an external producer for 8351 is not silently imported or rebound.
 
 The adapter checks both manifest copies and complete eight-file producer
 subtrees at the configured external path and recorded package path. Exact file
@@ -115,6 +119,20 @@ links, excessive inventories or an external writer cause refusal with the fence
 retained. There is no queue replay, task reconciliation or business-idle claim.
 This is guarded publication under cooperative leases, not a kernel CAS against
 an administrator or arbitrary uncooperative writer.
+
+The 0813 producer supports explicit original-result mappings in its own journal
+v6. Windows still treats all queue payloads as opaque metadata. The final queue
+comparison now follows asynchronous process, security and package observation,
+before each publication and fence release. A new v6 registration, append or
+checkpoint after the baseline blocks reverse publication/recovery; no frame is
+converted, removed or reinterpreted. Rollback only restores archived program
+references while work is unchanged; it never starts an old producer. The opaque
+baseline does not certify that pre-existing records are old-format compatible.
+If v6 already exists or its format is unknown, retain a compatible v6 producer
+or keep that queue stopped. Old admission scans can refuse the entire directory,
+including other unmapped jobs. Server rollback does not authorize producer
+downgrade, journal deletion or stripping a mapping. See the
+[0813 qualification boundary](evidence/result-recovery-producer-qualification.md).
 
 Plan schema 2 additionally binds the exact nonsecret `transfer.json` bytes
 (bounded SHA-256) and original file generation before asynchronous observation.

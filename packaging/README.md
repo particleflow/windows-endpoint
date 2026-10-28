@@ -154,15 +154,22 @@ transfer.json. Explicit IPs are tried in order; only TCP connection failure fall
 back to the original authority's IPv6. Certificate/auth failures never select
 another route. An invalid policy or conflicting proxy fails visibly.
 
-This candidate pins producer 1b7200d768c1231179725cfa2f85c8c3452882fb, plugin
-0.10.1. This pin adds explicit future result filenames such as `result.png`;
+This candidate pins producer 0813c7127faa2f6383b723d5f81ec05487c4e446, plugin
+0.10.1. It retains explicit future result filenames such as `result.png`;
 Server declarations must follow installation of a compatible producer. It does
-not repair, rename, regenerate or upload a completed result with an old declaration.
+not automatically repair, rename, regenerate or upload a completed result with an old declaration.
+The separate original-owner `recover-result` seam and journal v6 now require
+this producer; 8351/1b and 57/0894 EXEs cannot substitute for it. Its receipt GET
+can record the original server ready proof, and exit0 is only observation, not
+committed delivery. The Windows lifecycle does not call or parse that action.
+See the [0813 contract and downgrade boundary](../docs/evidence/result-recovery-producer-qualification.md).
 Exact-source strict-TLS builds and the retained-snapshot and explicit-filename
 Go/CLI fixtures are required before treating this pin as verified. See the
 [qualification record](../docs/evidence/closed-snapshot-producer-qualification.md). The prior 648/a51/c292 candidates remain separate checkpoints. Endpoint program
-update does not replace/relink an external producer, and cross-producer candidate
-switches remain rejected by the existing compatibility profile. Do not present
+update does not replace/relink an external producer, and ordinary cross-producer
+switches remain rejected by the existing compatibility profile. The separate
+stopped joint transaction requires exact recorded 57 or 8351 ownership evidence.
+Do not present
 this new build as an automatic upgrade of a running old plugin.
 
 This producer registers downloads as metadata and empty parts, without a total
