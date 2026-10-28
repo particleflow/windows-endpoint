@@ -19,7 +19,17 @@ while ($null -ne $nodeAncestor) {
     if ($nodeAncestor -is [IO.FileInfo]) { $nodeAncestor = $nodeAncestor.Directory }
     else { $nodeAncestor = $nodeAncestor.Parent }
 }
-if ((Get-FileHash -LiteralPath $NodePath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $NodeSha256) {
+try {
+    # Resolve only the Utility shipped with this exact Windows PowerShell;
+    # inherited PSModulePath and autoload settings are not hash authority.
+    Import-Module -Name "$PSHOME\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1" -ErrorAction Stop
+    $nodeHash = (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $NodePath -Algorithm SHA256 -ErrorAction Stop).Hash
+    if ($nodeHash -notmatch '^[a-fA-F0-9]{64}$') { throw 'native_sha256_unavailable' }
+} catch {
+    [Console]::Error.WriteLine('node_hash_verifier_unavailable: native Windows PowerShell Utility SHA256 verification required')
+    exit 2
+}
+if ($nodeHash.ToLowerInvariant() -ne $NodeSha256) {
     [Console]::Error.WriteLine('node_hash_mismatch: use the trusted release inventory')
     exit 2
 }

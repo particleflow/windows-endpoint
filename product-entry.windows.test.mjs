@@ -116,18 +116,23 @@ test('actual installer process refuses unqualified default and reports unverifie
 })
 test('installed stable PowerShell entry runs and stops the real foreground observer after extraction is removed',async t=>{
   const f=await fixture(t,true),child=spawn(powershell,[...args(f),'-Action','Run'],{stdio:['pipe','pipe','pipe'],windowsHide:true})
-  let output='',stderr='',closed=false
+  let output='',stderr='',closed=false,exitCode=null,exitSignal=null,spawnError=null
   child.stdin.on('error',()=>{})
   child.stdout.on('data',c=>{output+=c});child.stderr.on('data',c=>{stderr+=c})
-  const done=new Promise(resolve=>child.once('close',code=>{closed=true;resolve(code)}))
-  t.after(async()=>{if(!closed){child.stdin.end('{"action":"stop"}\n');const ok=await childExitDeadline(done.then(()=>true),8000,false);if(!ok)child.kill()}})
+  child.once('error',error=>{spawnError=error.code??error.message})
+  const done=new Promise(resolve=>child.once('close',(code,signal)=>{closed=true;exitCode=code;exitSignal=signal;resolve(code)}))
+  const evidence=()=>JSON.stringify({powershell,closed,exitCode,exitSignal,spawnError,stdout:output,stderr})
+  t.after(async()=>{
+    try { if(!closed){child.stdin.end('{"action":"stop"}\n');const ok=await childExitDeadline(done.then(()=>true),8000,false);if(!ok)child.kill()} }
+    finally { t.diagnostic(evidence()) }
+  })
   const deadline=Date.now()+15000
   while(Date.now()<deadline&&!output.includes('"phase":"running"')&&!closed)await delay(25)
-  assert.ok(output.includes('"phase":"running"'),'installed entry must expose the live foreground observer')
+  assert.ok(output.includes('"phase":"running"'),'installed entry must expose the live foreground observer: '+evidence())
   await delay(150)
   assert.equal(closed,false,'launcher must not substitute immediate EOF for a live foreground control channel')
   child.stdin.write('{"action":"stop"}\n')
-  assert.equal(await childExitDeadline(done,10000,'deadline'),0)
+  assert.equal(await childExitDeadline(done,10000,'deadline'),0,evidence())
   child.stdin.end()
   assert.equal(stderr,'');assert.ok(output.includes('"phase":"stopped"'))
   assert.equal(await fs.readFile(f.config.connector.enrollmentFile,'utf8'),'SYNTHETIC UNREAD ENROLLMENT')
