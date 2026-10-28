@@ -145,6 +145,7 @@ test('installed stable entry refuses an unsupported old program reader without s
   const f=await fixture(t);await installProduct(f.options,f.deps)
   const old=await programPackage(path.join(f.base,'old reader'),'old',{native:true})
   delete old.manifest.stable_installation_entry
+  delete old.manifest.native_producer_reference // This historical reader predates both entry protocols.
   await fs.writeFile(path.join(old.directory,'candidate.json'),JSON.stringify(old.manifest))
   const oldHash=await digest(path.join(old.directory,'candidate.json')),manager=await programDeployment(f.root)
   await manager.stage(old.directory,oldHash)

@@ -8,6 +8,7 @@ import { boundedRead } from './session-diagnostics.mjs'
 import { producerSessionTransition, verifySessionContinuation } from './session-continuation.mjs'
 import { verifyCandidate, verifyRecordedCandidate, historicalProducer, programProfileHash } from './candidate.mjs'
 import { attemptEvidence, nativeRecoveryEvidence, recoveryConfigurationHash, verifyReplacementSecurity } from './host-recovery.mjs'
+import { producerReferenceAdapter } from './producer-reference.mjs'
 
 export const producerPendingName = 'producer-upgrade-pending.json'
 const sha = value => createHash('sha256').update(value).digest('hex')
@@ -65,6 +66,9 @@ async function retain(file, raw) {
   else await exclusive(file, raw)
 }
 const history = (manager, requestId) => path.join(manager.lifecycleDirectory, 'producer-upgrade-history', requestId)
+const planLimit = 65536
+// The public factory never loads an adapter/policy from config or CLI JSON.
+const referenceFor = manager => manager.producerReference || producerReferenceAdapter
 
 // Opaque metadata only: never open journal payloads, credentials, or unknown
 // files. A changed inode/size/ctime, unknown link, or excessive tree refuses the
@@ -107,11 +111,11 @@ async function producerProof(verified, directory) {
       Object.keys(file).sort().join(',') === 'name,sha256' && files.some(expected => expected.path === `transfer/${file.name}` && expected.sha256 === file.sha256)), 'producer_upgrade_provenance_mismatch')
 }
 async function originals(manager, requestId) {
-  const dir = history(manager, requestId), raw = await boundedRead(path.join(dir, 'plan.json'), 16384)
+  const dir = history(manager, requestId), raw = await boundedRead(path.join(dir, 'plan.json'), planLimit)
   const plan = JSON.parse(raw)
   demand(validTransferEvidence(plan.transferConfiguration),'producer_upgrade_transfer_configuration_unrecorded')
-  demand(Object.keys(plan).sort().join(',') === ['schema','requestId','from','target','configuration','lifecycle','selection','nextConfiguration','continuation','attempts','queue','runtime','status','registration','transferConfiguration'].sort().join(',') &&
-    plan.schema === 2 && plan.requestId === requestId && [plan.from,plan.target,plan.attempts,plan.queue,plan.configuration,plan.lifecycle,plan.selection,plan.nextConfiguration,plan.status].every(hash) &&
+  demand(Object.keys(plan).sort().join(',') === ['schema','requestId','from','target','configuration','lifecycle','selection','nextConfiguration','continuation','attempts','queue','runtime','status','registration','transferConfiguration',...(plan.schema===3?['producerSource']:[])].sort().join(',') &&
+    [2,3].includes(plan.schema) && plan.requestId === requestId && [plan.from,plan.target,plan.attempts,plan.queue,plan.configuration,plan.lifecycle,plan.selection,plan.nextConfiguration,plan.status].every(hash) &&
     (plan.runtime === null || hash(plan.runtime)) && (plan.registration === null || hash(plan.registration)), 'producer_upgrade_plan_invalid')
   const read = async name => boundedRead(path.join(dir, name + '.json'), 262144)
   const [configuration,lifecycle,selection] = await Promise.all(['configuration','lifecycle','selection'].map(read))
@@ -121,7 +125,9 @@ async function originals(manager, requestId) {
   after.transfer.pluginRoot = path.join(manager.layout.packages, plan.target, 'transfer')
   validateConfig(after)
   const configurationAfter = encode(after)
-  demand(sha(configurationAfter) === plan.nextConfiguration && before.transfer.pluginRoot === path.join(manager.layout.packages, plan.from, 'transfer'), 'producer_upgrade_plan_invalid')
+  demand(sha(configurationAfter) === plan.nextConfiguration, 'producer_upgrade_plan_invalid')
+  if (plan.schema===3) referenceFor(manager).validate(plan.producerSource,selected,before,manager.layout)
+  else demand(before.transfer.pluginRoot === path.join(manager.layout.packages, plan.from, 'transfer'),'producer_upgrade_plan_invalid')
   const nextContinuation = await producerSessionTransition(before, after, state.sessionContinuation)
   demand(JSON.stringify(nextContinuation) === JSON.stringify(plan.continuation), 'producer_upgrade_evidence_changed')
   await assertTransferConfiguration(before,plan.transferConfiguration)
@@ -140,6 +146,11 @@ export async function verifyProducerTransition(manager, state) {
   const pointer = state.producerUpgrade
   if (!pointer || Object.keys(pointer).sort().join(',') !== 'planSha256,requestId,schema' || pointer.schema !== 1 || !uuid(pointer.requestId) || !hash(pointer.planSha256)) return false
   const record = await originals(manager, pointer.requestId)
+  if (record.plan.schema===3) {
+    demand(await optional(path.join(manager.lifecycleDirectory,producerPendingName),16384)===null,'producer_upgrade_evidence_changed')
+    demand(await optional(path.join(record.dir,'rollback.json'),16384)===null,'producer_upgrade_evidence_changed')
+    demand(await boundedRead(path.join(record.dir,'upgrade-ready.json'),16384)===encode({schema:1,requestId:pointer.requestId,planSha256:sha(record.raw),direction:'upgrade',state:'joint_publication_verified'}),'producer_upgrade_evidence_changed')
+  }
   const valid = sha(record.raw) === pointer.planSha256 && manager.configRaw === record.configurationAfter &&
     JSON.stringify(state.sessionContinuation) === JSON.stringify(record.plan.continuation) &&
     JSON.stringify(state.infrastructureRecovery) === JSON.stringify(record.state.infrastructureRecovery) &&
@@ -175,7 +186,7 @@ async function stoppedEvidence(manager, before, state, status, producerRoots, co
 }
 
 export async function transactProducerUpgrade(manager, options, { checkpoint = async () => {}, verifySecurity = verifyReplacementSecurity } = {}) {
-  const { action, requestId, target, configurationSha256, lifecycleSha256, selectionSha256 } = options
+  const { action, requestId, target, configurationSha256, lifecycleSha256, selectionSha256, referenceSha256 } = options
   demand(['plan-producer','upgrade-producer','recover-producer','rollback-producer'].includes(action) && uuid(requestId), 'producer_upgrade_arguments_invalid')
   const preparing = ['plan-producer','upgrade-producer'].includes(action)
   if (preparing) demand([target,configurationSha256,lifecycleSha256,selectionSha256].every(hash), 'producer_upgrade_arguments_invalid')
@@ -196,21 +207,35 @@ export async function transactProducerUpgrade(manager, options, { checkpoint = a
       const oldRoot = path.join(manager.layout.packages, selected.current), nextRoot = path.join(manager.layout.packages, target)
       const old = await verifyRecordedCandidate(oldRoot, oldRecord), next = await verifyCandidate(nextRoot, target)
       demand(old.manifest.producer_commit === historicalProducer && next.manifest.producer_commit === catalog.components.transfer.revision && newRecord.profile === programProfileHash, 'producer_upgrade_version_unsupported')
-      // Never adopt an arbitrary referenced folder or change an immutable old
-      // package in place to disguise a producer revision under its old hash.
-      demand(manager.config.transfer?.pluginRoot === path.join(oldRoot, 'transfer'), 'producer_upgrade_external_root_not_owned')
+      // Outside the selected package, only the exact recorded producer witness
+      // can justify a reference change. It grants no directory adoption/write.
+      const external=manager.config.transfer?.pluginRoot !== path.join(oldRoot,'transfer')
+      let producerSource
+      if (external) {
+        demand(next.manifest.native_producer_reference===1,'producer_upgrade_external_target_unsupported')
+        if(action==='upgrade-producer')demand(hash(referenceSha256),'producer_upgrade_external_reference_review_required')
+        producerSource=await referenceFor(manager).capture(selected,manager.config,manager.layout)
+        if(action==='upgrade-producer')demand(sha(encode(producerSource))===referenceSha256,'producer_upgrade_external_reference_review_required')
+      } else demand(referenceSha256===undefined,'producer_upgrade_arguments_invalid')
       await producerProof(old, oldRoot); await producerProof(next, nextRoot)
       await manager.projectRoot(target)
       const after = structuredClone(manager.config); after.transfer.pluginRoot = path.join(nextRoot, 'transfer'); validateConfig(after)
       const continuation = await producerSessionTransition(manager.config, after, state.sessionContinuation)
       const statusRaw = await boundedRead(path.join(manager.lifecycleDirectory, 'host-status.json'), 32768)
       await stoppedEvidence(manager, manager.config, state, JSON.parse(statusRaw), [manager.config.transfer.pluginRoot, after.transfer.pluginRoot],manager.configRaw,manager.runtimeRaw)
-      const plan = { schema: 2, requestId, from: selected.current, target, configuration: configurationSha256, lifecycle: lifecycleSha256, selection: selectionSha256,transferConfiguration,
+      const plan = { schema: external?3:2, requestId, from: selected.current, target, configuration: configurationSha256, lifecycle: lifecycleSha256, selection: selectionSha256,transferConfiguration,...(external?{producerSource}:{}),
         nextConfiguration: sha(encode(after)), continuation, attempts: await attemptEvidence(manager.config), queue: await producerStateEvidence(manager.config),
         runtime: manager.runtimeRaw === null ? null : sha(manager.runtimeRaw), status: sha(statusRaw), registration: await registryEvidence(manager.config) }
       await assertTransferConfiguration(manager.config,plan.transferConfiguration)
+      if(external)await referenceFor(manager).assert(producerSource,selected,manager.config,manager.layout)
       if (action === 'plan-producer') return {state:'producer_upgrade_plan',requestId,from:plan.from,to:target,oldProducer:historicalProducer,newProducer:catalog.components.transfer.revision,
-        pluginRoot:{from:manager.config.transfer.pluginRoot,to:after.transfer.pluginRoot,kept:false,reason:'immutable_owned_package'},
+        pluginRoot:{from:manager.config.transfer.pluginRoot,to:after.transfer.pluginRoot,kept:false,reason:external?'recorded_external_read_only_reference':'immutable_owned_package'},
+        ...(external?{referenceSha256:sha(encode(producerSource)),sourceRegisteredManifestSha256:producerSource.registeredManifestSha256,externalDirectoryAdopted:false,
+          sourceEvidence:{sourceCommit:JSON.parse(producerSource.manifestRaw).source_commit,producerCommit:historicalProducer,
+            rootGeneration:producerSource.objects.find(item=>item.role==='source:root').generation,
+            ...producerSource.objects.find(item=>item.role==='source:root').security,
+            executableSha256:producerSource.objects.find(item=>item.role==='source:transferqueue.exe').sha256,
+            executableSize:producerSource.objects.find(item=>item.role==='source:transferqueue.exe').size}}:{}),
         configurationSha256,lifecycleSha256,selectionSha256,transferConfigurationSha256:transferConfiguration.sha256,transferConfigurationVersion:transferConfiguration.version,
         ordinarySnapshotSha256:continuation.snapshot,attemptsSha256:plan.attempts,queueMetadataSha256:plan.queue,
         activation:'blocked',persistentPayloadsWritten:false,queueAdvanced:false,businessReplayed:false,credentialsRead:false,productionAccepted:false}
@@ -228,6 +253,7 @@ export async function transactProducerUpgrade(manager, options, { checkpoint = a
       demand(await boundedRead(manager.file, 65536) === selectionRaw && await boundedRead(manager.lifecycleStore.file, 262144) === lifecycleRaw &&
         await attemptEvidence(manager.config) === plan.attempts && await producerStateEvidence(manager.config) === plan.queue, 'producer_upgrade_evidence_changed')
       await assertTransferConfiguration(manager.config,plan.transferConfiguration)
+      if(external)await referenceFor(manager).assert(producerSource,selected,manager.config,manager.layout)
       markerRaw = encode({ schema: 1, requestId, planSha256: sha(encode(plan)) })
       markerVersion = await exclusive(markerFile, markerRaw)
       await checkpoint('producer_intent_synced')
@@ -248,7 +274,7 @@ export async function transactProducerUpgrade(manager, options, { checkpoint = a
     const check = async () => {
       demand(await optional(markerFile,16384) === markerRaw, 'producer_upgrade_pending_conflict')
       if (markerRaw !== null) demand((await snapshot(markerFile,16384)).version === markerVersion,'producer_upgrade_pending_conflict')
-      demand(await boundedRead(path.join(record.dir,'plan.json'),16384) === record.raw, 'producer_upgrade_archive_conflict')
+      demand(await boundedRead(path.join(record.dir,'plan.json'),planLimit) === record.raw, 'producer_upgrade_archive_conflict')
       demand(await optional(rollbackFile,16384) === rollbackRaw,'producer_upgrade_request_conflict')
       demand(await optional(readyFile,16384) === readyRaw,'producer_upgrade_request_conflict')
       for (const [name,raw] of [['configuration',record.configuration],['lifecycle',record.lifecycle],['selection',record.selection]])
@@ -257,13 +283,16 @@ export async function transactProducerUpgrade(manager, options, { checkpoint = a
       const {c,s,d} = Object.fromEntries(Object.entries(snapshots).map(([key,value])=>[key,value.raw]))
       demand([record.configuration,record.configurationAfter].includes(c) && [record.lifecycle,record.fence,record.nextFence,record.lifecycleAfter].includes(s) &&
         [record.selection,record.selectionFence,record.selectionAfter].includes(d), 'producer_upgrade_evidence_changed')
+      const completedReference=plan.schema===3&&!rollback&&markerRaw===null&&readyRaw===expectedReady&&
+        c===record.configurationAfter&&s===record.lifecycleAfter&&d===record.selectionAfter
+      if(plan.schema===3&&!completedReference)await referenceFor(manager).assert(plan.producerSource,record.selected,record.before,manager.layout)
       const runtime = await optional(manager.runtimeFile,65536)
       demand((runtime === null ? null : sha(runtime)) === plan.runtime && await attemptEvidence(record.before) === plan.attempts &&
         await producerStateEvidence(record.before) === plan.queue && await registryEvidence(record.before) === plan.registration, 'producer_upgrade_evidence_changed')
       const statusRaw = await boundedRead(statusFile,32768)
       demand(sha(statusRaw) === plan.status, 'producer_upgrade_evidence_changed')
       await verifySessionContinuation(record.before,record.state.sessionContinuation)
-      await stoppedEvidence(manager, record.before, record.state, JSON.parse(statusRaw), [record.before.transfer.pluginRoot,record.after.transfer.pluginRoot],record.configuration,runtime,
+      await stoppedEvidence(manager, record.before, record.state, JSON.parse(statusRaw), [completedReference?record.after.transfer.pluginRoot:record.before.transfer.pluginRoot,record.after.transfer.pluginRoot],record.configuration,runtime,
         ['plan','configuration','lifecycle','selection'].map(name=>path.join(record.dir,name+'.json')).concat(markerRaw===null?[]:[markerFile],rollbackRaw===null?[]:[rollbackFile]))
       const oldRecord = record.selected.packages.find(item=>item.hash===plan.from)
       await verifyRecordedCandidate(path.join(manager.layout.packages,plan.from),oldRecord)
@@ -271,6 +300,7 @@ export async function transactProducerUpgrade(manager, options, { checkpoint = a
       // Last observation before publication, including changes made while the
       // asynchronous process/security/package evidence was being collected.
       await assertTransferConfiguration(record.before,plan.transferConfiguration)
+      if(plan.schema===3&&!completedReference)await referenceFor(manager).assert(plan.producerSource,record.selected,record.before,manager.layout)
       return {c,s,d,versions:Object.fromEntries(Object.entries(snapshots).map(([key,value])=>[key,value.version]))}
     }
     const final = rollback ? {c:record.configuration,s:record.lifecycle,d:record.selection} : {c:record.configurationAfter,s:record.lifecycleAfter,d:record.selectionAfter}

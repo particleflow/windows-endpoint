@@ -88,6 +88,7 @@ class CandidateTests(unittest.TestCase):
             self.assertEqual(manifest['native_runtime']['commit'], self.pin)
             self.assertTrue(manifest['native_transfer_directory_pair'])
             self.assertTrue(manifest['native_transfer_direct_cli'])
+            self.assertEqual(manifest['native_producer_reference'], 1)
             self.assertTrue(manifest['native_runtime_project_root'])
             self.assertTrue(manifest['native_running_recovery'])
             self.assertTrue(manifest['native_stopped_observation_recovery'])

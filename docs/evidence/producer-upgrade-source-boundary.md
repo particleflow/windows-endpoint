@@ -68,3 +68,13 @@ transaction group then passed 45/45, zero skips, including same-byte replacement
 late asynchronous observation, interrupted recovery and unchanged synthetic two
 unknown/three committed records. Process/security observations remain injected
 in these Linux fixtures; no onsite upgrade or credential read was performed.
+
+The subsequent external-source adapter keeps the current 57 host separate from
+the already-recorded 3ccaa/41ddb producer witness. Its production identity is
+fixed; synthetic source-only tests inject an inert identity/security observer
+and do not qualify the actual external candidate. Public CLI/config cannot
+replace that policy. Tests cover the full subtree, preview/path binding,
+SID/DACL/generation drift, interrupted recovery/rollback, strict target capability
+and completed transition after removal of the disposable source fixture. No
+onsite source adoption, staging, installation, permission change or deletion was
+performed; the existing final upload/auth/TLS acceptance requirement is retained.

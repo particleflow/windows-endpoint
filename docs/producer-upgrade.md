@@ -21,10 +21,27 @@ schema 1/2 execution remains retired. Historical task records remain readable.
 `pluginRoot` inside `packages/<old-hash>/transfer` is an immutable package
 reference. Replacing that EXE in place would invalidate the old manifest, so this
 transaction moves only the reference to `packages/<new-hash>/transfer`. The old
-package remains byte-verifiable for history and rollback. An arbitrary external
-producer root returns `producer_upgrade_external_root_not_owned`; a configured
-path is not ownership evidence. Keeping that external string while replacing
-its contents is not implemented or authorized by this transaction.
+package remains byte-verifiable for history and rollback. A configured external
+path alone is not ownership evidence. The single recorded external source below
+has a read-only reference adapter; it never imports, adopts, writes or deletes
+that directory. In-place replacement at an external path is not supported.
+
+The external source must be the exact manifest
+`3ccaa153c386d8c4b6cda76c3201d39eebee0c6d747fda296ce7dc441491517a`,
+already recorded with its original producer-derived profile in this installation.
+Its program source is `41ddb9be845eae09a1ac49a7bde3e8a108e510b0`, producer
+`0894a6eb8ff69c8796e2da5450fa172d4cd5ef81`; its EXE is 10254336 bytes,
+SHA-256 `e34f3232f483380c4f141ecd0462ff1dc4a5cad26c0c12e1fb8781f5158bee01`.
+These are provenance pins, not external-directory ownership grants. The current
+host stays 57 until selection of the new target; it never selects or executes 41.
+
+The adapter checks both manifest copies and complete eight-file producer
+subtrees at the configured external path and recorded package path. Exact file
+hashes, proof, canonical non-overlapping paths, object generations and full
+owner/group/DACL descriptor digests must match the preview. Links, missing or
+unknown files and unavailable security metadata refuse. Owner SIDs are recorded
+and compared, never added to a trust whitelist. The current staging/run verifier
+is unchanged: 41 is not made a stageable or executable candidate.
 
 Both versions must use the existing explicit transfer config/state directory
 pair. Any old enabled `memoh.delivery` hook refuses the operation. The transaction
@@ -48,6 +65,15 @@ deploy upgrade-producer <the same arguments>
 deploy recover-producer --root <original-host-root> --request-id <same-uuid>
 deploy rollback-producer --root <original-host-root> --request-id <same-uuid>
 ```
+
+For the external case, dry-run returns `referenceSha256` and a source summary
+including owner SID, descriptor digest, directory generation and EXE identity.
+Supply that exact digest as `--reference-sha256 <preview-digest>` on
+`upgrade-producer`; it binds fresh observations to the reviewed original plan,
+and is not an authorization credential. No external path/policy override or
+generic allow-external flag exists. The target must declare
+`native_producer_reference: 1` and contain its recovery implementation. Earlier
+c036/63a6 packages cannot be used as this external-mode target.
 
 Hashes are of exact original file bytes, not parsed/reserialized JSON. The plan
 reports the actual old/new producer paths and identity evidence without writing
@@ -100,6 +126,15 @@ plan lacking this original evidence remains audit data and is refused with
 `producer_upgrade_transfer_configuration_unrecorded`; the current file is never
 used to manufacture a missing historical baseline. Keep its records intact.
 
+External mode adds a schema 3 read-only source witness to the same journal;
+schema 2 package-local history retains its prior checks. Before completion and
+for any rollback, source files, generations and SID/DACL evidence are rechecked
+through the last asynchronous observation. A completed forward proof uses the
+archived witness and matching ready receipt, so normal transition validation and
+idempotent completed recovery no longer read the old external directory. A
+missing or changed old source still refuses rollback; another same-byte copy
+cannot substitute. No source binary or credential is copied into the archive.
+
 Before replacement, read-only Windows PowerShell compares **complete security
 descriptors for exact equality**, including owner/group/protection/order. A
 different descriptor or unavailable native module refuses publication. There is
@@ -137,9 +172,12 @@ The running old 57 host and its stdin ownership remain unconfirmed here. It
 understands only its original status/stop protocol; never send `recheck-herdr`
 to it or force-stop Pi. A real ordinary snapshot, truthful normal-stop evidence,
 original owner/profile mapping and no live external producer are prerequisites
-for even the controlled local transaction. An external `pluginRoot` needs a
-separately evidenced ownership and publication contract before this path can
-apply; do not invent a path or use Pi-only `prepare-profile` to authorize it.
+for even the controlled local transaction. The external case additionally needs
+the actual recorded 3ccaa manifest/subtree, stable SID/DACL evidence and reviewed
+preview described above. Same EXE bytes or an owner display name alone do not
+satisfy it. Do not invent a path, register a missing old package, or use Pi-only
+`prepare-profile` to authorize the reference change. After acceptance, source
+cleanup is a separate exact-path handoff; this transaction has no deletion code.
 
 New source/fault tests do not replace the existing real Windows, strict-TLS
 producer build and independent review. No new installer artifact or production

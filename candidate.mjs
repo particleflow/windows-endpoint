@@ -47,6 +47,7 @@ async function verifyPackage(root, expectedHash, recorded) {
   if (manifest.native_running_recovery !== undefined) demand(manifest.native_running_recovery === true && manifest.native_runtime, 'candidate_configuration_support_invalid')
   if (manifest.native_stopped_observation_recovery !== undefined) demand(manifest.native_stopped_observation_recovery === true && manifest.native_runtime, 'candidate_configuration_support_invalid')
   if (manifest.native_transfer_direct_cli !== undefined) demand(manifest.native_transfer_direct_cli === true && manifest.native_transfer_directory_pair === true, 'candidate_configuration_support_invalid')
+  if (manifest.native_producer_reference !== undefined) demand(manifest.native_producer_reference === 1 && manifest.native_runtime && manifest.stable_installation_entry === 1, 'candidate_configuration_support_invalid')
   if (manifest.native_runtime !== undefined) {
     const n = manifest.native_runtime, pin = catalog.nativeRuntime
     demand(n && Object.keys(n).sort().join(',') === 'commit,entry,provenance,repository,version' && pin &&
@@ -65,6 +66,7 @@ async function verifyPackage(root, expectedHash, recorded) {
     demand(totalBytes <= 4 * 1024 ** 3, 'candidate_package_too_large')
   }
   demand(required.every(name => seen.has(name.toLowerCase())), 'candidate_component_missing')
+  if(manifest.native_producer_reference===1)demand(['producer-upgrade.mjs','producer-reference.mjs','producer-reference.ps1'].every(name=>seen.has(name)),'candidate_component_missing')
   if (manifest.stable_installation_entry !== undefined) demand(manifest.stable_installation_entry === 1 &&
     seen.has('windowsendpoint.ps1') && seen.has('product-installation.mjs'), 'candidate_installation_entry_missing')
   const actual = []

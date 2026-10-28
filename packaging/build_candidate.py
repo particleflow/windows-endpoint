@@ -14,7 +14,7 @@ RUNTIME_FILES = (
     'endpoint.mjs', 'endpoint.ps1', 'WindowsEndpoint.ps1', 'product-installation.mjs', 'host.mjs', 'runtime.mjs', 'installed.mjs',
     'pi-catalog-sync.mjs', 'pi-magpie-catalog.mjs',
     'pi-magpie-native-extension.mjs', 'pi-magpie-native-profile-entry.mjs', 'pi-native-catalog-profile.mjs',
-    'pi-native-catalog-transaction.mjs', 'producer-upgrade.mjs',
+    'pi-native-catalog-transaction.mjs', 'producer-upgrade.mjs', 'producer-reference.mjs', 'producer-reference.ps1',
     'native-connector.mjs', 'native-connector-child.mjs', 'setup.mjs', 'host-recovery.mjs', 'host-recovery.ps1',
     'directory-selection.mjs', 'directory-selection.ps1',
     'lifecycle.mjs', 'handoff.mjs', 'owned-herdr.ps1', 'session-continuation.mjs',
@@ -170,6 +170,7 @@ def build(source, commit, producer, producer_source, output, native_runtime=None
                                       'entry': native['entry'], 'provenance': 'runtime-connector/SHA256SUMS.json'}
         manifest['native_transfer_directory_pair'] = True
         manifest['native_transfer_direct_cli'] = True
+        manifest['native_producer_reference'] = 1
         manifest['native_runtime_project_root'] = True
         manifest['native_running_recovery'] = True
         manifest['native_stopped_observation_recovery'] = True

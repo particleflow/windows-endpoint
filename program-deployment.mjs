@@ -659,10 +659,11 @@ export async function programDeploymentMain(args) {
     fields.push('--pi-catalog-provider')
   }
   if(action==='prepare-pi-catalog'&&Object.hasOwn(options,'--interval-ms'))fields.push('--interval-ms')
+  if(action==='upgrade-producer'&&Object.hasOwn(options,'--reference-sha256'))fields.push('--reference-sha256')
   demand(['install', 'update', 'rollback', 'recover', 'status', 'run', 'plan-producer','upgrade-producer','recover-producer','rollback-producer', 'prepare-pi-catalog', 'prepare-profile', 'archive-profile', 'commit-profile', 'rollback-profile'].includes(action) && Object.keys(options).sort().join(',') === fields.sort().join(','), 'deployment_arguments_invalid')
   const root = options['--root'], target = options['--manifest-sha256']
   if (['plan-producer','upgrade-producer','recover-producer','rollback-producer'].includes(action)) return transactProducerUpgrade(await programDeployment(root), {
-    action, requestId: options['--request-id'], target, configurationSha256: options['--configuration-sha256'], lifecycleSha256: options['--lifecycle-sha256'], selectionSha256: options['--selection-sha256'] })
+    action, requestId: options['--request-id'], target, configurationSha256: options['--configuration-sha256'], lifecycleSha256: options['--lifecycle-sha256'], selectionSha256: options['--selection-sha256'],referenceSha256:options['--reference-sha256'] })
   if (action === 'prepare-profile') return prepareProfileSwitch({ root, requestId: options['--request-id'], profile: options['--profile'], configurationSha256: options['--configuration-sha256'], lifecycleSha256: options['--lifecycle-sha256'], continuationSha256: options['--continuation-sha256'], attemptsSha256: options['--attempts-sha256'] })
   if (action === 'archive-profile') return archiveProfileSwitch({ root, requestId: options['--request-id'] })
   if (action === 'commit-profile') return commitProfileSwitch({ root, requestId: options['--request-id'] })
