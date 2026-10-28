@@ -49,8 +49,10 @@ the historical misleading read_only value as a modern alias.
 - A package-local 8351-to-0813 change requires the same stopped joint transaction
   as 57-to-0813. The external 3ccaa/41ddb/0894 witness remains 57-only.
 - Any queue metadata drift after the original baseline blocks rollback/recovery.
-  Baseline metadata is not a journal-format attestation: known/pre-existing v6 or
-  unknown compatibility requires a v6-capable producer or a stopped queue.
+  Baseline metadata is not a journal-format attestation. Reverse publication
+  additionally requires the unchanged original runtime to disable transfer or
+  remain absent/observer-only. existing-queue is refused before any reverse
+  publication, including resumed durable rollback intents.
   Program rollback itself grants no old-producer activation. Do not downgrade a
   producer because the Server was rolled back, strip mappings or clear unknowns.
 
@@ -82,3 +84,31 @@ The 0813 PG cold-ready output case remains upstream evidence. Windows/UNC/ACL,
 new source-built EXE qualification, paired Server/producer artifacts, independent
 owner review and production upload/auth/TLS remain pending. The fe893 field
 probe is separately approval-blocked and was not executed or retried.
+
+## Independent-review baseline-format counterexample
+
+The 0614731 review found a real gap: its successful pre-work rollback fixture
+used transfer disabled. In an 8351 fixture with existing-queue and a v6-like
+record already present before the upgrade baseline, unchanged metadata still
+allowed producer_rolled_back, restoring an old selected producer and clearing
+attention/pointer. No old producer was launched. The local narrow counterexample
+also failed 0/1 before the repair (missing expected rejection).
+
+The repair retains all original queue/data checks and adds a post-observation
+runtime hash/request gate. No trusted old-format attestation API is invented.
+Active existing-queue rollback fails with
+producer_upgrade_rollback_queue_compatibility_unverified while the compatible
+producer remains selected. A legacy reverse intent under a pending fence also
+refuses recovery across reconstructed managers and retains the stable-run
+recovery blocker. Passive rollback is allowed only under the original unchanged
+disabled/absent runtime request; neither original transfer.json nor a journal is
+changed. Altering runtime enablement during observation refuses fence release.
+
+The six added format-proof checks pass, zero skips: v6 and unknown active
+baselines, durable reverse-intent restart/stable dispatch refusal, disabled and
+observer-only passive rollback, and late runtime enablement. The stable dispatch
+check is the existing JS -Action Run seam, not a Windows PowerShell execution.
+The original eight increment checks are reused, not rerun. Initial repair tests
+exposed an error-name mapping mismatch and an earlier strict candidate refusal;
+the error now uses the existing producer_upgrade namespace and tests require
+the exact existing refusal. No error envelope, pin or runtime protocol changed.

@@ -9,6 +9,7 @@ import { producerSessionTransition, verifySessionContinuation } from './session-
 import { verifyCandidate, verifyRecordedCandidate, historicalProducer, explicitFilenameProducer, programProfileHash } from './candidate.mjs'
 import { attemptEvidence, nativeRecoveryEvidence, recoveryConfigurationHash, verifyReplacementSecurity } from './host-recovery.mjs'
 import { producerReferenceAdapter } from './producer-reference.mjs'
+import { validateRuntimeRequest } from './runtime.mjs'
 
 export const producerPendingName = 'producer-upgrade-pending.json'
 const sha = value => createHash('sha256').update(value).digest('hex')
@@ -305,6 +306,15 @@ export async function transactProducerUpgrade(manager, options, { checkpoint = a
       // Queue writes (including a v6 recovery registration) during the async
       // observations must be caught before any publication or fence release.
       demand(await producerStateEvidence(record.before)===plan.queue,'producer_upgrade_evidence_changed')
+      if (rollback) {
+        // Opaque queue metadata is not an old-format attestation. Until such a
+        // trusted boundary exists, reverse publication requires persistent
+        // observer-only/disabled transfer, including resumed rollback intents.
+        const rollbackRuntime = await optional(manager.runtimeFile,65536)
+        demand((rollbackRuntime===null?null:sha(rollbackRuntime))===plan.runtime,'producer_upgrade_evidence_changed')
+        demand(rollbackRuntime===null || validateRuntimeRequest(JSON.parse(rollbackRuntime),record.before).transfer==='disabled',
+          'producer_upgrade_rollback_queue_compatibility_unverified')
+      }
       return {c,s,d,versions:Object.fromEntries(Object.entries(snapshots).map(([key,value])=>[key,value.version]))}
     }
     const final = rollback ? {c:record.configuration,s:record.lifecycle,d:record.selection} : {c:record.configurationAfter,s:record.lifecycleAfter,d:record.selectionAfter}

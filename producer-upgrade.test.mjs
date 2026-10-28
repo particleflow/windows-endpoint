@@ -54,7 +54,7 @@ test('the existing raw lifecycle attention fence prevents validation and compone
   assert.deepEqual(calls,[])
   assert.equal(state.attention,'producer_upgrade_pending')
 })
-async function fixture(t,{snapshot=true,agent=false,external=false,externalRecorded=false,baseline8351=false}={}) {
+async function fixture(t,{snapshot=true,agent=false,external=false,externalRecorded=false,baseline8351=false,transfer='disabled',preexistingV6=false}={}) {
   const f=await nativeInstalledFixture(t), root=path.join(f.base,'host')
   const old=await packageFixture(path.join(f.base,'old'),true,baseline8351?'8351b9c433922762f579c1c7b70e755d45b6ed2c':undefined,
     baseline8351?'1b7200d768c1231179725cfa2f85c8c3452882fb':historicalProducer), next=await packageFixture(path.join(f.base,'new'),false)
@@ -72,7 +72,7 @@ async function fixture(t,{snapshot=true,agent=false,external=false,externalRecor
   await fs.writeFile(transferFile,transferRaw)
   await fs.mkdir(path.join(root,'config'),{recursive:true})
   await fs.writeFile(path.join(root,'config/endpoint.json'),encode(config))
-  await fs.writeFile(path.join(root,'config/runtime.json'),encode({schema:2,mode:'existing-installations',transfer:'disabled'}))
+  await fs.writeFile(path.join(root,'config/runtime.json'),encode({schema:2,mode:'existing-installations',transfer}))
   if(snapshot)await f.write(path.join(config.herdrConfigRoot,'sessions',config.session,'session.json'),encode({version:3,workspaces:[{id:'ordinary',tabs:[{panes:{one:{cwd:config.sourceRoot,...(agent?{agent_name:'pi'}:{label:'saved shell'})}}}]}]}))
   const manager=await programDeployment(root,{prepare:true,...injected});await manager.initialize()
   await fs.cp(old.directory,path.join(root,'packages',old.hash),{recursive:true})
@@ -88,6 +88,11 @@ async function fixture(t,{snapshot=true,agent=false,external=false,externalRecor
     const journal=path.join(config.transferStateDir,`job-${i}.journal`), attempt=path.join(config.sourceRoot,'.memoh-computer/attempts',`job-${i}.json`)
     await fs.writeFile(journal,raw);await f.write(attempt,raw)
     preserved.push([journal,raw],[attempt,raw])
+  }
+  if(preexistingV6){
+    const journal=path.join(config.transferStateDir,'preexisting-mapped-v6.journal')
+    const raw=encode({fixture:'opaque-v6-cas-only',version:6,source_ref:'original-source',delivery_id:'original-delivery',RootHash:'original-root',HostBinding:'ORIGINAL BYTES'})
+    await fs.writeFile(journal,raw);preserved.push([journal,raw])
   }
   const queue=await producerStateEvidence(config)
   // Neither source preparation nor the transaction opens these private files.
@@ -105,6 +110,73 @@ async function fixture(t,{snapshot=true,agent=false,external=false,externalRecor
   }
   return{...f,root,config,manager,old,next,oldRaw,options,run,create,preserved,preservedCheck,transferFile,transferRaw,source,reference,securityOverrides,securityDefault,programProbe:f.run}
 }
+
+for(const preexistingV6 of [true,false])test(`rollback format proof refuses existing-queue baseline ${preexistingV6?'v6':'unknown'}`,async t=>{
+  const f=await fixture(t,{baseline8351:true,transfer:'existing-queue',preexistingV6})
+  await f.run()
+  const files=[f.manager.configFile,f.manager.lifecycleStore.file,f.manager.file,f.manager.runtimeFile]
+  const before=await Promise.all(files.map(file=>fs.readFile(file)))
+  await assert.rejects(f.run({action:'rollback-producer'}),{code:'producer_upgrade_rollback_queue_compatibility_unverified'})
+  assert.deepEqual(await Promise.all(files.map(file=>fs.readFile(file))),before)
+  assert.equal((await f.manager.read()).current,f.next.hash)
+  assert.ok((await f.manager.lifecycleStore.load()).producerUpgrade)
+  const restarted=await f.create()
+  await assert.rejects(transactProducerUpgrade(restarted,{...f.options,action:'rollback-producer'},{verifySecurity:security}),
+    {code:'producer_upgrade_rollback_queue_compatibility_unverified'})
+  assert.equal((await f.run({action:'recover-producer'})).state,'already_completed')
+  await assert.rejects(fs.stat(path.join(f.manager.lifecycleDirectory,'producer-upgrade-history',f.options.requestId,'rollback.json')),{code:'ENOENT'})
+  await assert.rejects((await f.create()).select(f.old.hash,'rollback'),{code:'candidate_kind_or_producer_mismatch'})
+  assert.deepEqual(await Promise.all(files.map(file=>fs.readFile(file))),before)
+  await f.preservedCheck()
+})
+
+test('rollback format proof survives a legacy reverse intent and rejects the stable run seam after restart',async t=>{
+  const f=await fixture(t,{baseline8351:true,transfer:'existing-queue',preexistingV6:true})
+  await assert.rejects(f.run({}, {checkpoint:async phase=>{if(phase==='producer_selection_published')throw Error('isolated forward interruption')}}))
+  const dir=path.join(f.manager.lifecycleDirectory,'producer-upgrade-history',f.options.requestId)
+  const plan=await fs.readFile(path.join(dir,'plan.json'),'utf8')
+  // Synthetic old-version reverse intent; no production archive is edited.
+  const reverse=path.join(dir,'rollback.json')
+  await fs.writeFile(reverse,encode({schema:1,requestId:f.options.requestId,planSha256:sha(plan),direction:'rollback'}))
+  const marker=path.join(f.manager.lifecycleDirectory,producerPendingName)
+  const files=[f.manager.configFile,f.manager.lifecycleStore.file,f.manager.file,f.manager.runtimeFile,marker,reverse]
+  const before=await Promise.all(files.map(file=>fs.readFile(file)))
+  for(const action of ['recover-producer','rollback-producer']){
+    await assert.rejects(transactProducerUpgrade(await f.create(),{...f.options,action},{verifySecurity:security}),
+      {code:'producer_upgrade_rollback_queue_compatibility_unverified'})
+    assert.deepEqual(await Promise.all(files.map(file=>fs.readFile(file))),before)
+  }
+  assert.equal((await f.manager.lifecycleStore.load()).attention,'producer_upgrade_pending')
+  // This is the JS dispatch used by stable -Action Run, before any package import.
+  await assert.rejects(runSelectedProgram(f.root),{code:'deployment_producer_recovery_required'})
+  await f.preservedCheck()
+})
+
+for(const mode of ['disabled','observer'])test(`rollback format proof permits the original persistent ${mode} state despite pre-baseline v6`,async t=>{
+  const f=await fixture(t,{baseline8351:true,preexistingV6:true})
+  if(mode==='observer')await fs.rm(f.manager.runtimeFile)
+  const runtime=mode==='observer'?null:await fs.readFile(f.manager.runtimeFile)
+  await f.run()
+  assert.equal((await f.run({action:'rollback-producer'})).state,'producer_rolled_back')
+  if(runtime===null)await assert.rejects(fs.stat(f.manager.runtimeFile),{code:'ENOENT'})
+  else {assert.deepEqual(await fs.readFile(f.manager.runtimeFile),runtime);assert.equal(JSON.parse(runtime).transfer,'disabled')}
+  assert.equal(await fs.readFile(f.manager.configFile,'utf8'),f.oldRaw.configuration)
+  await f.preservedCheck()
+})
+
+test('rollback format proof rechecks the stopped runtime after asynchronous observation before release',async t=>{
+  const f=await fixture(t,{baseline8351:true,preexistingV6:true});await f.run()
+  let enable=false
+  const manager=await programDeployment(f.root,{...injected,observe:async()=>{
+    if(enable){enable=false;await fs.writeFile(f.manager.runtimeFile,encode({schema:2,mode:'existing-installations',transfer:'existing-queue'}))}
+    return goodEvidence
+  }})
+  await assert.rejects(transactProducerUpgrade(manager,{...f.options,action:'rollback-producer'},
+    {verifySecurity:security,checkpoint:async phase=>{if(phase==='producer_release_file_synced')enable=true}}),{code:'producer_upgrade_evidence_changed'})
+  assert.equal((await f.manager.lifecycleStore.load()).attention,'producer_upgrade_pending')
+  await assert.rejects(runSelectedProgram(f.root),{code:'candidate_kind_or_producer_mismatch'})
+  await f.preservedCheck()
+})
 
 for(const rollback of [false,true])test(`v6 opaque write in final asynchronous observation retains the ${rollback?'rollback':'upgrade'} fence`,async t=>{
   const f=await fixture(t)

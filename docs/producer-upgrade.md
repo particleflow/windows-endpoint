@@ -128,8 +128,16 @@ checkpoint after the baseline blocks reverse publication/recovery; no frame is
 converted, removed or reinterpreted. Rollback only restores archived program
 references while work is unchanged; it never starts an old producer. The opaque
 baseline does not certify that pre-existing records are old-format compatible.
-If v6 already exists or its format is unknown, retain a compatible v6 producer
-or keep that queue stopped. Old admission scans can refuse the entire directory,
+Reverse publication now additionally requires the unchanged original runtime
+request to have transfer disabled, or to be absent (persistent observer mode).
+An existing-queue request fails with
+`producer_upgrade_rollback_queue_compatibility_unverified` before reverse intent
+or publication; no trusted old-format attestation entry exists. The same check
+follows asynchronous observation and applies to durable rollback recovery, so
+an interrupted reverse intent retains its marker/attention across restart.
+The transaction does not disable transfer or rewrite the original request to
+obtain this proof. Active queues retain the compatible producer instead.
+Old admission scans can refuse the entire directory,
 including other unmapped jobs. Server rollback does not authorize producer
 downgrade, journal deletion or stripping a mapping. See the
 [0813 qualification boundary](evidence/result-recovery-producer-qualification.md).
@@ -171,7 +179,8 @@ An explicit rollback appends `rollback.json` before reverse publication, so
 Recover only the same request. Do not run generic deployment recovery, delete
 markers, restore a backup by hand or clear attention. Rollback restores the
 three original files exactly only while all task/queue/session evidence is still
-unchanged and no process has started. It cannot undo work executed by the new
+unchanged, no process has started, and the original runtime remains passive as
+required above. It cannot undo work executed by the new
 producer. A completed rollback needs a new request UUID for a later upgrade.
 Partial pre-intent archives are retained; mismatched bytes are not overwritten
 or deleted. If a pre-intent archive is complete, the same upgrade request can
