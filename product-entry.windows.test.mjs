@@ -13,6 +13,7 @@ import { programPackage } from './test-support/program-package.mjs'
 import { setupEndpoint } from './setup.mjs'
 import { installProduct } from './product-installation.mjs'
 import { digest } from './endpoint.mjs'
+import { childExitDeadline } from './test-support/child-exit-deadline.mjs'
 
 assert.equal(process.platform,'win32','this differential entry test requires actual Windows')
 const powershell=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe')
@@ -119,14 +120,14 @@ test('installed stable PowerShell entry runs and stops the real foreground obser
   child.stdin.on('error',()=>{})
   child.stdout.on('data',c=>{output+=c});child.stderr.on('data',c=>{stderr+=c})
   const done=new Promise(resolve=>child.once('close',code=>{closed=true;resolve(code)}))
-  t.after(async()=>{if(!closed){child.stdin.end('{"action":"stop"}\n');const ok=await Promise.race([done.then(()=>true),delay(8000,false)]);if(!ok)child.kill()}})
+  t.after(async()=>{if(!closed){child.stdin.end('{"action":"stop"}\n');const ok=await childExitDeadline(done.then(()=>true),8000,false);if(!ok)child.kill()}})
   const deadline=Date.now()+15000
   while(Date.now()<deadline&&!output.includes('"phase":"running"')&&!closed)await delay(25)
   assert.ok(output.includes('"phase":"running"'),'installed entry must expose the live foreground observer')
   await delay(150)
   assert.equal(closed,false,'launcher must not substitute immediate EOF for a live foreground control channel')
   child.stdin.write('{"action":"stop"}\n')
-  assert.equal(await Promise.race([done,delay(10000,'deadline')]),0)
+  assert.equal(await childExitDeadline(done,10000,'deadline'),0)
   child.stdin.end()
   assert.equal(stderr,'');assert.ok(output.includes('"phase":"stopped"'))
   assert.equal(await fs.readFile(f.config.connector.enrollmentFile,'utf8'),'SYNTHETIC UNREAD ENROLLMENT')
