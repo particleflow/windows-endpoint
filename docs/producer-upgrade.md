@@ -7,7 +7,7 @@ against the NAS. The c036 artifact is unchanged and does not contain this code.
 ## Version and ownership boundary
 
 New candidates and new staging retain the exact `dependencies.json` producer
-pin `62d27ed995c53f405297eb0069290f3aefba2c51`. Read-only verification of an
+pin `1b7200d768c1231179725cfa2f85c8c3452882fb`. Read-only verification of an
 already-recorded package additionally accepts only the native historical pair:
 
 | Program source | Producer source | Purpose |

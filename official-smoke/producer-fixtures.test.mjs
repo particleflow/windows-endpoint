@@ -5,11 +5,19 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { catalog, digest } from '../endpoint.mjs'
-import { testNames, fixturePlan, completedTests, completedAPIBaseCases, completedTaskAPIBaseCases, completedFeedbackCases, feedbackTests, networkTests, downloadTests, cliDownloadTests, publicationMigrationTests, budgetTests, cliBudgetTests, registrationTests, cliRegistrationTests, verifyProducerBundle } from './producer-fixtures.mjs'
+import { testNames, fixturePlan, completedTests, completedAPIBaseCases, completedTaskAPIBaseCases, completedFeedbackCases, feedbackTests, networkTests, downloadTests, cliDownloadTests, publicationMigrationTests, budgetTests, cliBudgetTests, registrationTests, cliRegistrationTests, explicitFilenameTests, verifyProducerBundle } from './producer-fixtures.mjs'
 
 const native = ['TestWindowsNativeActiveJournal', 'TestWindowsNativePublicationBucketBudget', 'TestWindowsNativePublicationMigrationProcessCrash', 'TestWindowsNativePublicationNewCase', 'TestWindowsNativeNewCore']
 const cli = ['TestCLIPathChild', 'TestCLIPathTLSRestartAndLostResponses']
 const output = names => names.map(n => `=== RUN   ${n}\n--- PASS: ${n} (0.01s)`).join('\n') + '\nPASS\n'
+
+test('explicit filename Windows coverage requires process recovery and foreign-context refusal without skipped cases', () => {
+  assert.deepEqual(explicitFilenameTests, ['TestExplicitFilenameRegistrationProcessRecovery', 'TestExplicitFilenameRejectsForeignContext'])
+  assert.deepEqual(completedTests(output(explicitFilenameTests), explicitFilenameTests), explicitFilenameTests)
+  for (const raw of ['PASS\n', output(explicitFilenameTests.slice(1)), output(explicitFilenameTests).replace('--- PASS:', '--- SKIP:'), output([...explicitFilenameTests, 'TestExplicitUnexpected'])]) {
+    assert.throws(() => completedTests(raw, explicitFilenameTests))
+  }
+})
 
 test('native network configuration coverage requires the three shared tests, without claiming Linux-only routing', () => {
   assert.equal(networkTests.length, 3)

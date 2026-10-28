@@ -64,6 +64,7 @@ export const registrationTests = ['TestRegisteredProcessExitBeforeAcknowledgemen
 export const cliRegistrationTests = ['TestProducerAdmissionPendingCanResumeSameDelivery']
 export const snapshotTests = ['TestSnapshotProducerOnlyAdvancesRetainedPrivateBytes', 'TestSnapshotProducerRejectsExplicitRegisteredAndIndexedJobs', 'TestSnapshotProducerMissingPrivateBytesFailsBeforeNetwork', 'TestSnapshotProducerRetainsAuthorizationAndTLSGuards']
 export const cliSnapshotTests = ['TestCLISnapshotScopeNeverActivatesRegisteredInput']
+export const explicitFilenameTests = ['TestExplicitFilenameRegistrationProcessRecovery', 'TestExplicitFilenameRejectsForeignContext']
 export function completedTaskAPIBaseCases(output) {
   completedTests(output, taskAPIBaseTests)
   const expected = [
@@ -148,6 +149,7 @@ export async function verifyFixtures(root, sourceRoot) {
     [cliBinary, cliRegistrationTests, '^TestProducerAdmissionPending', 'producerRegistrationContract'],
     [binary, snapshotTests, '^TestSnapshotProducer', 'producerSnapshotContract'],
     [cliBinary, cliSnapshotTests, '^TestCLISnapshotScope', 'producerSnapshotContract'],
+    [binary, explicitFilenameTests, '^TestExplicit', 'producerExplicitFilenameContract'],
   ]) {
     const inventory = testNames(await execute(file, [`-test.list=${selector}`], remaining(30000)), 'Test')
     requireFixture(sameSet(inventory, names), `${contractName}_inventory_changed`)
