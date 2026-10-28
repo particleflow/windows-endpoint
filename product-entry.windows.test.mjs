@@ -3,6 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as fs from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -14,10 +15,11 @@ import { setupEndpoint } from './setup.mjs'
 import { installProduct } from './product-installation.mjs'
 import { digest } from './endpoint.mjs'
 import { childExitDeadline } from './test-support/child-exit-deadline.mjs'
+import { productEntryProbe, parseEntryProbe } from './test-support/product-entry-probe.mjs'
 
 assert.equal(process.platform,'win32','this differential entry test requires actual Windows')
 const powershell=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe')
-async function fixture(t,unicodeNode=false,{selectedHost=null}={}){
+async function fixture(t,unicodeNode=false,{selectedHost=null,entryProbe=false}={}){
   const f=await nativeInstalledFixture(t),root=path.join(f.base,'persistent product')
   f.config.programs.node=await fs.realpath(process.execPath)
   if(unicodeNode){
@@ -26,6 +28,17 @@ async function fixture(t,unicodeNode=false,{selectedHost=null}={}){
     f.config.programs.node=copy
   }
   const source=await programPackage(path.join(f.base,'disposable extraction'),'product-entry',{native:true})
+  let entryTrace=null
+  if(entryProbe){
+    const entry=path.join(source.directory,'WindowsEndpoint.ps1')
+    const instrumented=productEntryProbe(await fs.readFile(entry))
+    await fs.writeFile(entry,instrumented)
+    const member=source.manifest.files.find(file=>file.path==='WindowsEndpoint.ps1')
+    member.size=Buffer.byteLength(instrumented);member.sha256=await digest(entry)
+    await fs.writeFile(path.join(source.directory,'candidate.json'),JSON.stringify(source.manifest))
+    source.hash=await digest(path.join(source.directory,'candidate.json'))
+    entryTrace=path.join(f.base,'entry-probe.jsonl');await fs.writeFile(entryTrace,'')
+  }
   if(selectedHost!==null){
     const entry=path.join(source.directory,'host.mjs');await fs.writeFile(entry,selectedHost)
     const member=source.manifest.files.find(file=>file.path==='host.mjs')
@@ -42,7 +55,7 @@ async function fixture(t,unicodeNode=false,{selectedHost=null}={}){
   // supported observer: no inert Agent program may be launched by this check.
   await fs.rm(path.join(root,'config/runtime.json'))
   await fs.rm(source.directory,{recursive:true})
-  return {...f,root,entry:result.entry}
+  return {...f,root,entry:result.entry,entryTrace}
 }
 const args=f=>['-NoProfile','-NonInteractive','-File',f.entry]
 test('stable PowerShell Run forwards the prepared native Pi catalog and preserves old selected-host refusal',async t=>{
@@ -115,16 +128,29 @@ test('actual installer process refuses unqualified default and reports unverifie
   assert.deepEqual(await fs.readFile(path.join(root,'config/endpoint.json')),configuration)
 })
 test('installed stable PowerShell entry runs and stops the real foreground observer after extraction is removed',async t=>{
-  const f=await fixture(t,true),child=spawn(powershell,[...args(f),'-Action','Run'],{stdio:['pipe','pipe','pipe'],windowsHide:true})
-  let output='',stderr='',closed=false,exitCode=null,exitSignal=null,spawnError=null
+  const f=await fixture(t,true,{entryProbe:process.env.WINDOWS_ENDPOINT_ENTRY_PROBE==='1'})
+  const env={...process.env}
+  if(f.entryTrace)env.WINDOWS_ENDPOINT_FIXTURE_ENTRY_TRACE=f.entryTrace
+  const child=spawn(powershell,[...args(f),'-Action','Run'],{stdio:['pipe','pipe','pipe'],windowsHide:true,env})
+  let output='',stderr='',closed=false,exitCode=null,exitSignal=null,spawnError=null,probeEvidence=null
   child.stdin.on('error',()=>{})
   child.stdout.on('data',c=>{output+=c});child.stderr.on('data',c=>{stderr+=c})
   child.once('error',error=>{spawnError=error.code??error.message})
-  const done=new Promise(resolve=>child.once('close',(code,signal)=>{closed=true;exitCode=code;exitSignal=signal;resolve(code)}))
+  const done=new Promise(resolve=>child.once('close',(code,signal)=>{
+    closed=true;exitCode=code;exitSignal=signal
+    if(f.entryTrace){
+      try { probeEvidence={rows:parseEntryProbe(readFileSync(f.entryTrace,'utf8'))} }
+      catch { probeEvidence={state:'unreadable'} }
+    }
+    resolve(code)
+  }))
   const evidence=()=>JSON.stringify({powershell,closed,exitCode,exitSignal,spawnError,stdout:output,stderr})
   t.after(async()=>{
     try { if(!closed){child.stdin.end('{"action":"stop"}\n');const ok=await childExitDeadline(done.then(()=>true),8000,false);if(!ok)child.kill()} }
-    finally { t.diagnostic(evidence()) }
+    finally {
+      t.diagnostic(evidence())
+      if(f.entryTrace)t.diagnostic(JSON.stringify({fixtureEntryProbe:true,...(probeEvidence??{state:'close_not_observed'})}))
+    }
   })
   const deadline=Date.now()+15000
   while(Date.now()<deadline&&!output.includes('"phase":"running"')&&!closed)await delay(25)
