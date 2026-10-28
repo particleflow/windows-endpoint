@@ -16,7 +16,8 @@ export const externalProducerIdentity = Object.freeze({
 })
 const names=['README.md','herdr-plugin.toml','transfer.example.json','transferqueue-cli.test.exe','transferqueue.exe','transferqueue.test.exe','verify-fixtures.ps1','SHA256SUMS.json'].sort()
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex')
-const fail=()=>{throw Object.assign(Error('producer_upgrade_external_reference_unverified'),{code:'producer_upgrade_external_reference_unverified'})}
+const stages=new Set(['validation','paths','source_manifest','registered_manifest','source_subtree','registered_subtree','security_transport','security_decode','security_item','security_descriptor','security_output','security_envelope','generation','archive'])
+const fail=(stage='validation')=>{throw Object.assign(Error('producer_upgrade_external_reference_unverified'),{code:'producer_upgrade_external_reference_unverified',evidenceStage:stages.has(stage)?stage:'validation'})}
 const demand=ok=>{if(!ok)fail()}
 const hash=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value)
 const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).sort().join(',')===keys.slice().sort().join(',')
@@ -30,13 +31,22 @@ async function readSecurity(files) {
   demand(process.platform==='win32'&&process.arch==='x64')
   const powershell=path.join(process.env.SystemRoot||'C:\\Windows','System32/WindowsPowerShell/v1.0/powershell.exe')
   const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>key.toUpperCase()!=='PSMODULEPATH'))
+  const input=Buffer.from(JSON.stringify(files),'utf8')
+  let stage='security_transport'
   try {
     const result=await promisify(execFile)(powershell,['-NoLogo','-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./producer-reference.ps1',import.meta.url)),
-      '-FilesJson',JSON.stringify(files)],{env,shell:false,windowsHide:true,timeout:15000,maxBuffer:32768,encoding:'utf8'})
+      '-FilesBase64',input.toString('base64')],{env,shell:false,windowsHide:true,timeout:15000,maxBuffer:32768,encoding:'utf8'})
+    stage='security_envelope'
     const values=JSON.parse(result.stdout.replace(/^\uFEFF/,''))
-    demand(Array.isArray(values)&&values.length===files.length&&values.every(securityValid))
-    return values
-  } catch { fail() }
+    demand(exact(values,['schema','requestSha256','files'])&&values.schema===1&&values.requestSha256===sha(input)&&Array.isArray(values.files)&&values.files.length===files.length&&values.files.every(securityValid))
+    return values.files
+  } catch(error) {
+    try {
+      const detail=JSON.parse(error.stderr)
+      if(detail.error==='producer_reference_security_unavailable')stage=({argument:'security_decode',item:'security_item',descriptor:'security_descriptor',output:'security_output'})[detail.stage]||stage
+    } catch {}
+    fail(stage)
+  }
 }
 async function fileEvidence(file,maximum,{size,sha256,retain=false}={}) {
   await validateDirectory(path.dirname(file))
@@ -122,16 +132,21 @@ export function createProducerReferenceAdapter({identity=externalProducerIdentit
     return witness
   }
   async function capture(selected,config,layout) {
+    let stage='paths'
     try {
       const r=roots(config,layout),paths=[],rows=[]
+      stage='source_manifest'
       const external=await fileEvidence(path.join(r.parent,'candidate.json'),262144,{sha256:pin.manifestSha256,retain:true})
       const files=manifest(external.raw,selected)
       for(const [side,parent,root]of [['source',r.parent,r.root],['registered',r.registered,path.join(r.registered,'transfer')]]) {
+        stage=side==='source'?'source_subtree':'registered_subtree'
         for(const [role,file]of [[side+':parent',parent],[side+':root',root]]) {
           rows.push({role,kind:'directory',...await directoryEvidence(file)});paths.push(file)
         }
+        stage=side==='source'?'source_manifest':'registered_manifest'
         const receipt=await fileEvidence(path.join(parent,'candidate.json'),262144,{sha256:pin.manifestSha256,retain:true})
         demand(receipt.raw===external.raw);rows.push({role:side+':manifest',kind:'file',generation:receipt.generation,size:receipt.size,sha256:receipt.sha256});paths.push(path.join(parent,'candidate.json'))
+        stage=side==='source'?'source_subtree':'registered_subtree'
         demand(JSON.stringify((await fs.readdir(root)).sort())===JSON.stringify(names))
         for(const name of names) {
           const file=path.join(root,name),entry=files.find(item=>item.path==='transfer/'+name)
@@ -140,7 +155,9 @@ export function createProducerReferenceAdapter({identity=externalProducerIdentit
           rows.push({role:side+':'+name,kind:'file',generation:value.generation,size:value.size,sha256:value.sha256});paths.push(file)
         }
       }
+      stage='security_envelope'
       const acl=await security(paths);demand(Array.isArray(acl)&&acl.length===paths.length&&acl.every(securityValid))
+      stage='generation'
       for(let i=0;i<rows.length;i++){
         rows[i].security={ownerSid:acl[i].ownerSid,groupSid:acl[i].groupSid,descriptorSha256:acl[i].descriptorSha256}
         demand(stamp(await fs.lstat(paths[i],{bigint:true}))===rows[i].generation)
@@ -149,9 +166,10 @@ export function createProducerReferenceAdapter({identity=externalProducerIdentit
       const proofRow=rows.find(row=>row.role==='source:SHA256SUMS.json')
       demand(proofFile.sha256===proofRow.sha256&&proofFile.generation===proofRow.generation)
       const witness={kind:'recorded-candidate-producer-v1',root:r.root,registeredManifestSha256:pin.manifestSha256,manifestRaw:external.raw,proofRaw:proofFile.raw,objects:rows}
+      stage='archive'
       validate(witness,selected,config,layout)
       return witness
-    } catch {fail()}
+    } catch(error) {fail(error?.evidenceStage&&error.evidenceStage!=='validation'?error.evidenceStage:stage)}
   }
   return Object.freeze({capture,validate,async assert(witness,selected,config,layout){
     validate(witness,selected,config,layout)

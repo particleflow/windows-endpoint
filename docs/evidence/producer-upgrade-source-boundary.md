@@ -78,3 +78,11 @@ SID/DACL/generation drift, interrupted recovery/rollback, strict target capabili
 and completed transition after removal of the disposable source fixture. No
 onsite source adoption, staging, installation, permission change or deletion was
 performed; the existing final upload/auth/TLS acceptance requirement is retained.
+
+The first external-mode CI (`40683385221`, a62ae19) passed Linux and all injected
+transaction cases, but the actual Windows SID/DACL reader failed: 702/703 passed,
+one `producer_upgrade_external_reference_unverified`. That is not a TLS failure
+or a qualified candidate. The reader now transports its bounded UTF-8 path list
+as base64 and verifies a request SHA in the response, with bounded stage-only
+diagnostics. It retains the same exact descriptor checks and refusal behavior;
+the corrected actual Windows case requires a new exact-head CI result.
