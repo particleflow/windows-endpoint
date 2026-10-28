@@ -90,6 +90,16 @@ retained. There is no queue replay, task reconciliation or business-idle claim.
 This is guarded publication under cooperative leases, not a kernel CAS against
 an administrator or arbitrary uncooperative writer.
 
+Plan schema 2 additionally binds the exact nonsecret `transfer.json` bytes
+(bounded SHA-256) and original file generation before asynchronous observation.
+Dry-run reports both. Preparation, every publication, recovery, rollback and
+transition validation compare that original evidence; even an appended newline
+or same-byte replacement refuses without rewriting the file or old HostBinding.
+The final comparison follows asynchronous process/package checks. A schema 1
+plan lacking this original evidence remains audit data and is refused with
+`producer_upgrade_transfer_configuration_unrecorded`; the current file is never
+used to manufacture a missing historical baseline. Keep its records intact.
+
 Before replacement, read-only Windows PowerShell compares **complete security
 descriptors for exact equality**, including owner/group/protection/order. A
 different descriptor or unavailable native module refuses publication. There is

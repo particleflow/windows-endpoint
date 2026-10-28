@@ -57,3 +57,14 @@ the ping-verified original Herdr process handle before normal stop and observes
 its absence while retaining that handle through recovery. Production PID reuse
 and marker refusal checks are unchanged. The original failure is retained; this
 fixture correction still needs its own exact-head real Windows CI result.
+
+Independent review of d087 found that `transfer.json`, the producer's raw-byte
+HostBinding input, was absent from the CAS plan. A local narrow reproduction
+appended only a newline after archive: d087 returned success and the expected
+rejection assertion failed (0/1). The correction binds raw SHA-256 plus file
+generation in plan schema 2, refuses unbound historical plans and checks the
+evidence through publication/recovery/rollback/transition. The affected producer
+transaction group then passed 45/45, zero skips, including same-byte replacement,
+late asynchronous observation, interrupted recovery and unchanged synthetic two
+unknown/three committed records. Process/security observations remain injected
+in these Linux fixtures; no onsite upgrade or credential read was performed.
