@@ -101,15 +101,16 @@ export class DeploymentTransactions {
     catch (error) { if (error.code === 'endpoint_already_owned') return report('deferred', { reason: 'endpoint_owned' }); throw error }
     try {
       const lifecycle = await this.lifecycleStore.load()
-      if (lifecycle.phase !== 'stopped' || lifecycle.attention) return report('deferred', { reason: lifecycle.attention ? 'endpoint_attention' : 'endpoint_stop_unverified' })
+      if (!this.maintenanceEligible(lifecycle)) return report('deferred', { reason: lifecycle.attention ? 'endpoint_attention' : 'endpoint_stop_unverified' })
       return await operation()
     } catch (error) {
       if (error instanceof DeploymentError) throw error
-      if (/^candidate_[a-z_]+$/.test(error.code)) throw new DeploymentError(error.code)
+      if (/^(?:candidate|producer_upgrade|producer_session)_[a-z_]+$/.test(error.code)) throw new DeploymentError(error.code)
       const reason = ['EACCES', 'EPERM', 'EROFS'].includes(error.code) ? 'deployment_storage_read_only' : error.code === 'ENOSPC' ? 'deployment_space_unavailable' : 'deployment_operation_failed'
       throw new DeploymentError(reason)
     } finally { await release() }
   }
+  maintenanceEligible(lifecycle) { return lifecycle.phase === 'stopped' && lifecycle.attention === null }
   async read() { return readDeploymentState(this.layout, this.config.deviceId, this.io) }
   async write(state) {
     // Flush the complete small journal before same-directory atomic rename.
@@ -257,7 +258,7 @@ export class DeploymentTransactions {
       for (const entry of await this.io.readdir(this.layout.packages)) if (!state.packages.some(p => p.hash === entry)) unknown.push(`packages/${entry}`)
       for (const entry of await this.io.readdir(this.layout.control)) if (entry !== 'deployment.json') unknown.push(`control/${entry}`)
       for (const item of state.packages) {
-        try { await this.verify(path.join(this.layout.packages, item.hash), item.hash) }
+        try { await this.owned(state, item.hash) }
         catch { unverifiedOwnedPackages.push(item.hash) }
       }
       // No cleanup implementation in this first batch: even known old packages

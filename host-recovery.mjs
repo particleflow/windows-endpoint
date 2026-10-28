@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
-import { validateConfig, validateDirectory, programPaths, managedEnvironment, connectorConfigReference, isNativeRuntimeConfig } from './endpoint.mjs'
+import { validateConfig, validateDirectory, programPaths, managedEnvironment, connectorConfigReference, isNativeRuntimeConfig, transferLocations } from './endpoint.mjs'
 import { deploymentLayout } from './deployment.mjs'
 import { acquireLeases, leaseKeys, StateStore, NativeDriver } from './lifecycle.mjs'
 import { boundedRead } from './session-diagnostics.mjs'
@@ -17,6 +17,19 @@ const hash = s => createHash('sha256').update(s).digest('hex')
 const demand = (ok, code) => { if (!ok) throw Object.assign(new Error(code), { code }) }
 const same = (a,b) => JSON.stringify(a) === JSON.stringify(b)
 export const recoveryConfigurationHash = (configRaw, runtimeRaw) => hash(JSON.stringify([configRaw,runtimeRaw]))
+
+// Read-only equality gate before a transaction publishes a new inode. No ACL
+// copying/repair or inherited-ACE exception: unsupported replacement stays inert.
+export async function verifyReplacementSecurity(before, replacement) {
+  demand(process.platform === 'win32' && process.arch === 'x64', 'producer_upgrade_windows_required')
+  const powershell = path.join(process.env.SystemRoot || 'C:\\Windows','System32/WindowsPowerShell/v1.0/powershell.exe')
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== 'PSMODULEPATH'))
+  try {
+    const result = await promisify(execFile)(powershell,['-NoLogo','-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./host-recovery.ps1',import.meta.url)),
+      '-ReplacementFile',replacement,'-ReplacedFile',before],{env,windowsHide:true,shell:false,timeout:15000,maxBuffer:16384,encoding:'utf8'})
+    demand(JSON.parse(result.stdout).replacementSecurityUnchanged === true, 'producer_upgrade_security_changed')
+  } catch { demand(false, 'producer_upgrade_security_unverified') }
+}
 
 // Fingerprint only the existing attempt directory. No second task ledger and no
 // claim that these receipts prove completed work. Unknown/oversized files block.
@@ -104,7 +117,7 @@ export function classifyRecoveryProcesses(records, {oldPid, currentSession, runS
   return {absent:true,excluded}
 }
 
-export async function nativeRecoveryEvidence({config,status,files}) {
+export async function nativeRecoveryEvidence({config,status,files,producerRoots}) {
   demand(process.platform === 'win32' && process.arch === 'x64','host_recovery_windows_required')
   const driver = new NativeDriver(config)
   const markerRead = async () => {
@@ -116,12 +129,15 @@ export async function nativeRecoveryEvidence({config,status,files}) {
   // Reuse the official Runtime's Windows PowerShell environment rule: a
   // PowerShell 7 parent must not redirect PS5 built-in module resolution.
   const env = Object.fromEntries(Object.entries(managedEnvironment(config)).filter(([key]) => key.toUpperCase() !== 'PSMODULEPATH'))
+  const producerArguments = producerRoots ? ['-ProducerPath',path.join(producerRoots[0],'transferqueue.exe'),'-NextProducerPath',path.join(producerRoots[1],'transferqueue.exe'),
+    '-TransferStateRoot',transferLocations(config).state,'-TransferConfigRoot',transferLocations(config).config] : []
+  const extraArguments = files.additional?.length ? ['-AdditionalEvidenceJson',JSON.stringify(files.additional)] : []
   let evidence
   try {
     const result = await promisify(execFile)(powershell,['-NoLogo','-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./host-recovery.ps1',import.meta.url)),
       '-LifecycleFile',files.state,'-ConfigurationFile',files.config,'-RuntimeFile',files.runtime,'-StatusFile',files.status,
       '-OldProcessId',String(status.pid),'-RecoveryProcessId',String(process.pid),'-NodePath',p.node,'-HerdrPath',p.herdr,
-      '-PiEntry',p.pi,'-EnrollmentFile',connectorConfigReference(config),'-HostRoot',files.root,'-SourceRoot',config.sourceRoot,'-HerdrSession',config.session,'-RuntimeEntry',p.connector,'-HerdrSessionRoot',path.join(config.herdrConfigRoot,'sessions',config.session)],
+      '-PiEntry',p.pi,'-EnrollmentFile',connectorConfigReference(config),'-HostRoot',files.root,'-SourceRoot',config.sourceRoot,'-HerdrSession',config.session,'-RuntimeEntry',p.connector,'-HerdrSessionRoot',path.join(config.herdrConfigRoot,'sessions',config.session),...producerArguments,...extraArguments],
     {cwd:config.sourceRoot,env,windowsHide:true,shell:false,timeout:15000,maxBuffer:262144,encoding:'utf8'})
     evidence = JSON.parse(result.stdout)
   } catch(error) {
@@ -148,7 +164,8 @@ export async function nativeRecoveryEvidence({config,status,files}) {
   }
   demand(driver.hostStatus().running === false,'host_recovery_herdr_present')
   demand(await markerRead() === marker,'host_recovery_herdr_marker_changed')
-  return {ownerVerified:true,oldHostAbsent:true,referencedProcessesAbsent:true,herdrAbsent:true,excludedProcesses:classified.excluded}
+  if (producerRoots) demand(evidence.producerAbsent === true, 'host_recovery_producer_present_or_unknown')
+  return {ownerVerified:true,oldHostAbsent:true,referencedProcessesAbsent:true,herdrAbsent:true,...(producerRoots ? {producerAbsent:true} : {}),excludedProcesses:classified.excluded}
 }
 
 // Injection is internal test support, never a config/CLI field.

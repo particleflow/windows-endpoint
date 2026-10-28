@@ -2,15 +2,31 @@
 [CmdletBinding()]
 param([string]$LifecycleFile,[string]$ConfigurationFile,[string]$StatusFile,[string]$RuntimeFile,
       [int]$OldProcessId,[int]$RecoveryProcessId,[string]$NodePath,[string]$HerdrPath,
-      [string]$PiEntry,[string]$EnrollmentFile,[string]$HostRoot,[string]$SourceRoot,[string]$HerdrSession,[string]$RuntimeEntry,[string]$HerdrSessionRoot)
+      [string]$PiEntry,[string]$EnrollmentFile,[string]$HostRoot,[string]$SourceRoot,[string]$HerdrSession,[string]$RuntimeEntry,[string]$HerdrSessionRoot,
+      [string]$ProducerPath,[string]$NextProducerPath,[string]$TransferStateRoot,[string]$TransferConfigRoot,
+      [string]$ReplacementFile,[string]$ReplacedFile,[string]$AdditionalEvidenceJson)
 $ErrorActionPreference = 'Stop'
 $stage = 'file_owner'
 try {
+    if ($ReplacementFile -or $ReplacedFile) {
+        if (-not $ReplacementFile -or -not $ReplacedFile) { throw 'replacement_pair_required' }
+        $before = (Get-Acl -LiteralPath $ReplacedFile).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All)
+        $after = (Get-Acl -LiteralPath $ReplacementFile).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All)
+        if ($before -cne $after) { throw 'replacement_security_changed' }
+        '{"replacementSecurityUnchanged":true}'
+        exit 0
+    }
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     # Match the fixed official Runtime's trusted Windows principals. Elevated
     # file creation can legitimately select Administrators as owner. Read only.
     $trusted = @($sid, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
-    foreach ($file in @($LifecycleFile,$ConfigurationFile,$RuntimeFile,$StatusFile)) {
+    $additional = @()
+    if ($AdditionalEvidenceJson) {
+        $additional = @($AdditionalEvidenceJson | ConvertFrom-Json)
+        if ($additional.Count -gt 10) { throw 'evidence_inventory_too_large' }
+        foreach ($file in $additional) { if ($file -isnot [string] -or -not [IO.Path]::IsPathRooted($file)) { throw 'evidence_path_invalid' } }
+    }
+    foreach ($file in (@($LifecycleFile,$ConfigurationFile,$RuntimeFile,$StatusFile) + $additional)) {
         $acl = Get-Acl -LiteralPath $file
         if ($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'owner_not_verified' }
         foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
@@ -71,8 +87,14 @@ public static class RecoveryArgv {
         return $values[0]
     }
     $records = @()
+    $producerAbsent = $true
     $currentSession = [Diagnostics.Process]::GetCurrentProcess().SessionId
     foreach ($p in @(Get-CimInstance Win32_Process)) {
+        if ($ProducerPath -and ($p.Name -eq 'transferqueue.exe' -or (Same-Path $p.ExecutablePath $ProducerPath) -or (Same-Path $p.ExecutablePath $NextProducerPath))) {
+            if (-not $p.ExecutablePath -or -not $p.CommandLine -or
+                (Same-Path $p.ExecutablePath $ProducerPath) -or (Same-Path $p.ExecutablePath $NextProducerPath) -or
+                (Text-References-Root $p.CommandLine $TransferStateRoot) -or (Text-References-Root $p.CommandLine $TransferConfigRoot)) { $producerAbsent = $false }
+        }
         # Win32_Process can retain an exiting row with empty detail fields.
         # One same-provider/same-generation recheck; a live unreadable process
         # or PID reuse remains unknown. No looping, stop, or alternate arg read.
@@ -150,7 +172,7 @@ public static class RecoveryArgv {
     # Only IDs/times and bounded classifications cross this private child pipe.
     # No command lines, arguments, paths, environment or credentials are emitted.
     @{ ownerVerified=$true; oldHostAbsent=(@($records | Where-Object {$_.id -eq $OldProcessId}).Count -eq 0);
-       currentSession=$currentSession; processes=$records } | ConvertTo-Json -Depth 4 -Compress
+       currentSession=$currentSession; processes=$records; producerAbsent=$producerAbsent } | ConvertTo-Json -Depth 4 -Compress
 
 } catch {
     # Never emit command lines, private paths, identities or raw CIM/ACL errors.

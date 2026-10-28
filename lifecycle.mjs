@@ -82,6 +82,11 @@ export class StateStore {
     demand([1, 2].includes(data.schema) && data.identity === this.identity && Array.isArray(data.restarts) && data.restarts.length <= 100 && data.restarts.every(t => Number.isSafeInteger(t) && t >= 0), 'lifecycle_state_mismatch')
     demand(['stopped', 'starting', 'running', 'stopping', 'needs_attention'].includes(data.phase) && (data.attention === null || /^[a-z_]{1,80}$/.test(data.attention)), 'lifecycle_state_mismatch')
     demand(data.sessionContinuation === undefined || validSessionContinuation(data.sessionContinuation), 'lifecycle_state_mismatch')
+    if (data.producerUpgrade !== undefined) {
+      const p = data.producerUpgrade
+      demand(p && Object.keys(p).sort().join(',') === 'planSha256,requestId,schema' && p.schema === 1 &&
+        /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(p.requestId) && /^[a-f0-9]{64}$/.test(p.planSha256), 'lifecycle_producer_upgrade_mismatch')
+    }
     if (data.infrastructureRecovery !== undefined) {
       const r = data.infrastructureRecovery
       demand(r && Object.keys(r).sort().join(',') === 'attempts,businessReplayed,configuration,fromState,previousAttention,previousPhase,run,schema' &&

@@ -6,16 +6,30 @@ import { catalog, digest, validateDirectory } from './endpoint.mjs'
 import { boundedRead } from './session-diagnostics.mjs'
 
 export const programStateProfile = 'endpoint-program-v1'
-export const programProfileHash = createHash('sha256').update(JSON.stringify({
+export const profileForProducer = producer => createHash('sha256').update(JSON.stringify({
   // This format covers our lifecycle/status/continuation/deployment records.
   // No official state is migrated. A producer change needs separate review.
-  program: programStateProfile, producer: catalog.components.transfer.revision,
+  program: programStateProfile, producer,
 })).digest('hex')
+export const programProfileHash = profileForProducer(catalog.components.transfer.revision)
+// One released reader boundary, used only to inspect an already-owned package.
+// It cannot stage, select or execute this historical producer.
+export const historicalProducer = '0894a6eb8ff69c8796e2da5450fa172d4cd5ef81'
+const historicalProgram = '57ae131eff3fb675a51b6ea5ee945bfa0b9de837'
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 const demand = (ok, code) => { if (!ok) throw Object.assign(new Error(code), { code }) }
 const required = ['endpoint.mjs', 'host.mjs', 'candidate.mjs', 'program-deployment.mjs', 'deployment.mjs', 'lifecycle.mjs', 'handoff.mjs', 'runtime.mjs', 'installed.mjs', 'dependencies.json', 'LICENSE', 'transfer/transferqueue.exe', 'transfer/SHA256SUMS.json']
 
 export async function verifyCandidate(root, expectedHash) {
+  return verifyPackage(root, expectedHash, false)
+}
+export async function verifyRecordedCandidate(root, record) {
+  demand(record && Object.keys(record).sort().join(',') === 'hash,profile' && hash(record.hash) && hash(record.profile), 'candidate_record_invalid')
+  const result = await verifyPackage(root, record.hash, true)
+  demand(record.profile === profileForProducer(result.manifest.producer_commit), 'candidate_record_profile_mismatch')
+  return result
+}
+async function verifyPackage(root, expectedHash, recorded) {
   demand(hash(expectedHash), 'candidate_manifest_hash_required')
   await validateDirectory(root)
   const raw = await boundedRead(path.join(root, 'candidate.json'), 262144)
@@ -25,7 +39,8 @@ export async function verifyCandidate(root, expectedHash) {
   demand(manifest.schema === 1 && manifest.kind === 'portable-existing-installations-review' && manifest.platform === 'win32-x64' && manifest.entry === 'endpoint.mjs' &&
     manifest.qualification === 'not-for-production-release' && manifest.official_components === 'referenced-existing-installations-not-bundled' &&
     manifest.source_repository === 'particleflow/windows-endpoint' && /^[a-f0-9]{40}$/.test(manifest.source_commit) &&
-    manifest.producer_repository === 'particleflow/Memoh' && manifest.producer_commit === catalog.components.transfer.revision, 'candidate_kind_or_producer_mismatch')
+    manifest.producer_repository === 'particleflow/Memoh' && (manifest.producer_commit === catalog.components.transfer.revision ||
+      recorded && manifest.producer_commit === historicalProducer && manifest.source_commit === historicalProgram), 'candidate_kind_or_producer_mismatch')
   demand(manifest.state_profile === programStateProfile, 'candidate_state_profile_incompatible')
   if (manifest.native_transfer_directory_pair !== undefined) demand(manifest.native_transfer_directory_pair === true && manifest.native_runtime, 'candidate_configuration_support_invalid')
   if (manifest.native_runtime_project_root !== undefined) demand(manifest.native_runtime_project_root === true && manifest.native_runtime, 'candidate_configuration_support_invalid')

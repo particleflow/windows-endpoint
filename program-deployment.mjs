@@ -1,5 +1,6 @@
 // Connect the existing transaction journal to the portable foreground program.
-// Official component paths, configuration and producer data are never switched.
+// Official Agent installations stay external. Producer reference changes use
+// the separate stopped, journaled host/producer transaction below.
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -10,7 +11,8 @@ import { acquireLeases } from './lifecycle.mjs'
 import { boundedRead, readSessionHistory } from './session-diagnostics.mjs'
 import { captureSessionContinuation, verifySessionContinuation } from './session-continuation.mjs'
 import { validateRuntimeRequest } from './runtime.mjs'
-import { verifyCandidate, stageCandidate, programProfileHash } from './candidate.mjs'
+import { verifyCandidate, verifyRecordedCandidate, stageCandidate, programProfileHash } from './candidate.mjs'
+import { producerPendingName, transactProducerUpgrade, verifyProducerTransition } from './producer-upgrade.mjs'
 import { attemptEvidence, nativeRecoveryEvidence, recoveryConfigurationHash } from './host-recovery.mjs'
 import { inspectInstalled } from './installed.mjs'
 import { nativePiCatalogHostOptions, prepareNativePiCatalogReference } from './pi-native-catalog-profile.mjs'
@@ -393,11 +395,23 @@ const describe = (result, retained = null) => ({ ...result, evidence: 'endpoint_
   ...(retained ? { taskHistory: 'preserved_unreconciled', retainedAttemptEvidenceSha256: retained.attempts, businessReplayed: false, stopAuthority: false } : {}) })
 
 export class ProgramDeployment extends DeploymentTransactions {
+  maintenanceEligible(state) {
+    return super.maintenanceEligible(state) || this.handlingProducer === true && state.phase === 'stopped' && state.attention === 'producer_upgrade_pending'
+  }
   async locked(operation) {
     return super.locked(async()=>{
+      demand(this.handlingProducer === true || !await exists(path.join(this.lifecycleDirectory, producerPendingName)), 'deployment_producer_recovery_required')
       demand(this.preparingNativeCatalog===true||!await exists(path.join(this.lifecycleDirectory,nativeCatalogPendingName)),'deployment_pi_catalog_recovery_required')
       return operation()
     })
+  }
+  async owned(state, expectedHash) {
+    const record = state.packages.find(item => item.hash === expectedHash)
+    demand(record, 'deployment_package_not_owned')
+    const verified = await verifyRecordedCandidate(path.join(this.layout.packages, expectedHash), record)
+    demand(verified.manifest.native_runtime, 'deployment_native_connector_missing')
+    if (this.config.transferConfigDir) demand(verified.manifest.native_transfer_directory_pair === true && verified.manifest.native_transfer_direct_cli === true, 'deployment_transfer_directories_unsupported')
+    return record
   }
   herdrMarker() {
     return this.config.session === 'default' ? path.join(this.config.herdrConfigRoot, 'herdr.sock') :
@@ -423,8 +437,9 @@ export class ProgramDeployment extends DeploymentTransactions {
     // tasks. Consume only the original durable infrastructure-recovery digest,
     // never a caller-supplied owner/idle declaration or an unverified handoff.
     const recovery = state.infrastructureRecovery
-    if (!isNativeRuntimeConfig(this.config) || !state.sessionContinuation || !recovery ||
-        recovery.configuration !== recoveryConfigurationHash(this.configRaw, this.runtimeRaw)) return 'task_handoff_unverified'
+    if (!isNativeRuntimeConfig(this.config) || !state.sessionContinuation || !recovery) return 'task_handoff_unverified'
+    if (recovery.configuration !== recoveryConfigurationHash(this.configRaw, this.runtimeRaw) &&
+        !await verifyProducerTransition(this, state)) return 'task_handoff_unverified'
     if (await attemptEvidence(this.config) !== recovery.attempts) return 'task_handoff_unverified'
     const files = { root: this.root, config: this.configFile, runtime: this.runtimeFile,
       state: this.lifecycleStore.file, status: path.join(this.lifecycleDirectory, 'host-status.json') }
@@ -501,6 +516,8 @@ export class ProgramDeployment extends DeploymentTransactions {
     // Otherwise adding this requirement would also prevent upgrading the old
     // home-mapped version to the corrected program.
     await this.projectRoot(target)
+    if (state.current !== null && (await this.owned(state, state.current)).profile !== programProfileHash)
+      return { state: 'deferred', reason: 'producer_transaction_required', activation: 'blocked', businessReplayed: false }
     return super.selectionCheck(state, target, mode)
   }
   async unchanged() {
@@ -609,6 +626,7 @@ export async function runSelectedProgram(root, { input = process.stdin, output =
     await manager.unchanged()
     demand(!await exists(path.join(manager.lifecycleDirectory,'profile-switch-pending.json')),'deployment_profile_switch_recovery_required')
     demand(!await exists(path.join(manager.lifecycleDirectory,nativeCatalogPendingName)),'deployment_pi_catalog_recovery_required')
+    demand(!await exists(path.join(manager.lifecycleDirectory,producerPendingName)),'deployment_producer_recovery_required')
     const state = await manager.read()
     demand(state.pending === null, 'deployment_recovery_required')
     demand(state.current !== null, 'deployment_not_installed')
@@ -635,14 +653,16 @@ export async function programDeploymentMain(args) {
     demand(/^--[a-z][a-z0-9-]*$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'deployment_arguments_invalid')
     options[rest[i]] = rest[i + 1]
   }
-  const fields = ['install', 'update'].includes(action) ? ['--root', '--source', '--manifest-sha256'] : action === 'rollback' ? ['--root', '--manifest-sha256'] : action === 'prepare-pi-catalog' ? ['--root','--request-id','--provider'] : action === 'prepare-profile' ? ['--root', '--request-id', '--profile', '--configuration-sha256', '--lifecycle-sha256', '--continuation-sha256', '--attempts-sha256'] : ['archive-profile','commit-profile','rollback-profile'].includes(action) ? ['--root', '--request-id'] : ['--root']
+  const fields = ['install', 'update'].includes(action) ? ['--root', '--source', '--manifest-sha256'] : ['plan-producer','upgrade-producer'].includes(action) ? ['--root','--manifest-sha256','--request-id','--configuration-sha256','--lifecycle-sha256','--selection-sha256'] : ['recover-producer','rollback-producer'].includes(action) ? ['--root','--request-id'] : action === 'rollback' ? ['--root', '--manifest-sha256'] : action === 'prepare-pi-catalog' ? ['--root','--request-id','--provider'] : action === 'prepare-profile' ? ['--root', '--request-id', '--profile', '--configuration-sha256', '--lifecycle-sha256', '--continuation-sha256', '--attempts-sha256'] : ['archive-profile','commit-profile','rollback-profile'].includes(action) ? ['--root', '--request-id'] : ['--root']
   if (action === 'run' && Object.hasOwn(options, '--pi-catalog-provider')) {
     demand(/^[A-Za-z0-9_.-]{1,100}$/.test(options['--pi-catalog-provider']), 'deployment_arguments_invalid')
     fields.push('--pi-catalog-provider')
   }
   if(action==='prepare-pi-catalog'&&Object.hasOwn(options,'--interval-ms'))fields.push('--interval-ms')
-  demand(['install', 'update', 'rollback', 'recover', 'status', 'run', 'prepare-pi-catalog', 'prepare-profile', 'archive-profile', 'commit-profile', 'rollback-profile'].includes(action) && Object.keys(options).sort().join(',') === fields.sort().join(','), 'deployment_arguments_invalid')
+  demand(['install', 'update', 'rollback', 'recover', 'status', 'run', 'plan-producer','upgrade-producer','recover-producer','rollback-producer', 'prepare-pi-catalog', 'prepare-profile', 'archive-profile', 'commit-profile', 'rollback-profile'].includes(action) && Object.keys(options).sort().join(',') === fields.sort().join(','), 'deployment_arguments_invalid')
   const root = options['--root'], target = options['--manifest-sha256']
+  if (['plan-producer','upgrade-producer','recover-producer','rollback-producer'].includes(action)) return transactProducerUpgrade(await programDeployment(root), {
+    action, requestId: options['--request-id'], target, configurationSha256: options['--configuration-sha256'], lifecycleSha256: options['--lifecycle-sha256'], selectionSha256: options['--selection-sha256'] })
   if (action === 'prepare-profile') return prepareProfileSwitch({ root, requestId: options['--request-id'], profile: options['--profile'], configurationSha256: options['--configuration-sha256'], lifecycleSha256: options['--lifecycle-sha256'], continuationSha256: options['--continuation-sha256'], attemptsSha256: options['--attempts-sha256'] })
   if (action === 'archive-profile') return archiveProfileSwitch({ root, requestId: options['--request-id'] })
   if (action === 'commit-profile') return commitProfileSwitch({ root, requestId: options['--request-id'] })

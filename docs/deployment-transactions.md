@@ -50,6 +50,13 @@ a recorded compatible previous candidate after the same checks. A historical
 ownership receipt does not waive these checks or restore a retired executable.
 No producer queue, RootHash, raw HostBinding or saved task is rewritten.
 
+A producer revision change is outside ordinary `update`/`rollback`. These
+commands defer with `producer_transaction_required` when the recorded current
+profile belongs to the old producer. The separate
+[host/producer transaction](producer-upgrade.md) preserves old package evidence
+and requires an unchanged actual ordinary snapshot before changing its program
+reference. It does not use the Pi profile preparation authority.
+
 ## Durable transaction history
 
 The bounded journal records packages/profiles, current/previous selection and at

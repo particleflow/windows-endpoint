@@ -9,6 +9,7 @@ import { acquireLeases, LifecycleError, StateStore } from './lifecycle.mjs'
 import { createExplicitRuntime, validateRuntimeRequest, RuntimeError } from './runtime.mjs'
 import { nativePiCatalogHostOptions } from './pi-native-catalog-profile.mjs'
 import { nativeCatalogPendingName } from './pi-native-catalog-transaction.mjs'
+import { producerPendingName } from './producer-upgrade.mjs'
 
 export const piNativeCatalogBindingVersion=1
 
@@ -160,7 +161,7 @@ export class ForegroundHost {
     await ensureDirectory(this.layout.logs); await ensureDirectory(this.logDirectory)
     this.release = this.inheritedHostLease || await acquireLeases([`host:${this.root}`], this.stateDirectory)
     try {
-      for(const [name,code] of [['profile-switch-pending.json','host_profile_switch_recovery_required'],[nativeCatalogPendingName,'host_pi_catalog_recovery_required']]) {
+      for(const [name,code] of [['profile-switch-pending.json','host_profile_switch_recovery_required'],[nativeCatalogPendingName,'host_pi_catalog_recovery_required'],[producerPendingName,'host_producer_recovery_required']]) {
         try{await fs.lstat(path.join(this.stateDirectory,name));throw new HostError(code)}catch(error){if(error.code!=='ENOENT')throw error}
       }
     }catch(error){await this.release();this.release=null;throw error}
