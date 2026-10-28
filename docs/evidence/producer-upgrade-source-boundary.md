@@ -46,3 +46,14 @@ remain required. See the [transaction contract](../producer-upgrade.md) for exac
 commands, retained files and refusal conditions. An external producer path is
 explicitly unsupported until its original ownership and safe publication contract
 are established; this checkpoint does not close that field acceptance item.
+
+CI `40667963322`, source `012a1af16ef6a81c6a7c545028128c9ff94886c1`, passed
+Windows 662/662 and Linux 655/655 with zero skips, both packaging groups and the
+actual PowerShell product entry. Its real native reconnect fixture failed at
+the stale Herdr marker positive case with `host_recovery_herdr_marker_owner_present`,
+before the TLS acceptance gate. The original marker's Herdr PID was not held
+against reuse, although the old host PID was. The fixture correction retains
+the ping-verified original Herdr process handle before normal stop and observes
+its absence while retaining that handle through recovery. Production PID reuse
+and marker refusal checks are unchanged. The original failure is retained; this
+fixture correction still needs its own exact-head real Windows CI result.

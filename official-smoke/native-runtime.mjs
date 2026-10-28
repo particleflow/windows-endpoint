@@ -131,6 +131,9 @@ async function retainFixtureProcess(host) {
   assert.equal(host.child.exitCode, null)
   const pid = host.child.pid
   assert.equal(host.states.at(-1).pid, pid)
+  return retainFixtureProcessId(pid)
+}
+async function retainFixtureProcessId(pid, label = 'original_fixture') {
   assert.ok(Number.isSafeInteger(pid) && pid > 0)
   const script = `$ErrorActionPreference='Stop'; $p=[Diagnostics.Process]::GetProcessById(${pid}); try { $h=$p.Handle; [Console]::Out.WriteLine('retained'); if ([Console]::ReadLine() -ne 'release') { throw 'fixture handle release missing' } } finally { $p.Dispose() }`
   const child = spawn(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], { stdio: ['pipe','pipe','pipe'], windowsHide: true })
@@ -150,7 +153,7 @@ async function retainFixtureProcess(host) {
     const script = `$ErrorActionPreference='Stop'; $end=[DateTime]::UtcNow.AddSeconds(10); do { $rows=@(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' -OperationTimeoutSec 3); if ($rows.Count -eq 0) { [Console]::Out.WriteLine('observed_absent'); exit 0 }; Start-Sleep -Milliseconds 100 } while ([DateTime]::UtcNow -lt $end); throw 'original fixture host still observed'`
     const result = await promisify(execFile)(powershell, ['-NoProfile','-NonInteractive','-Command',script], { timeout: 15000, maxBuffer: 1024, windowsHide: true, shell: false })
     assert.equal(result.stdout.trim(), 'observed_absent')
-    process.stdout.write(JSON.stringify({ nativeRuntimeRecoveryPrerequisite: 'original_fixture_pid_absent_with_handle_retained' }) + '\n')
+    process.stdout.write(JSON.stringify({ nativeRuntimeRecoveryPrerequisite: `${label}_pid_absent_with_handle_retained` }) + '\n')
   } }
 }
 function launch() {
@@ -369,9 +372,15 @@ try {
   assert.deepEqual(refused.transfer, idleConsumer)
   assert.ok(peer.counts.rejected > 0)
   assert.equal(await fs.readFile(marker, 'utf8'), generation); await ping(generation)
+  // The later stale-marker positive case also requires this exact Herdr PID
+  // absent, not reused by a probe/unrelated fixture. Hold its kernel handle
+  // while it is still our ping-verified generation, through the absence proof.
+  const retainedOriginalHerdr = await retainFixtureProcessId(Number(generation.split(':')[0]), 'owned_herdr')
+  assert.equal(await fs.readFile(marker, 'utf8'), generation); await ping(generation)
   const refusedProgress = await progress()
   await eventually(async () => await progress() > refusedProgress, 'Herdr workload was stopped by connector authorization failure')
   assert.equal(await host.stop(), 2)
+  await retainedOriginalHerdr.observeAbsent()
   checked('native_runtime_401_is_authorization_required_and_owned_host_stops_gracefully')
   const attempts = peer.counts.attempts, restarted = launch()
   await restarted.until(s => s.phase === 'running' && s.attention === 'connector_authentication_required')
