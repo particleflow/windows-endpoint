@@ -23,9 +23,22 @@ export function replaceReceiptChild(source){
   need(typeof source==='string'&&source.split(anchor).length===2,'formal_receipt_fixture_anchor_changed')
   return source.replace(anchor,()=>replacement)
 }
+export function receiptSourceCopy(raw){
+  need(Buffer.isBuffer(raw),'formal_receipt_fixture_source_changed')
+  const text=raw.toString('utf8'),canonical=text.replaceAll('\r\n','\n')
+  need(raw.equals(Buffer.from(text))&&(text===canonical||text===canonical.replaceAll('\n','\r\n')),'formal_receipt_fixture_source_changed')
+  return {text,canonical,lineEndings:text===canonical?'LF':'CRLF'}
+}
 export function pinnedReceiptOverlay(raw){
-  need(Buffer.isBuffer(raw)&&hash(raw)===receiptFixtureSha256,'formal_receipt_fixture_source_changed')
-  return replaceReceiptChild(raw.toString('utf8'))
+  const copy=receiptSourceCopy(raw)
+  // Only the known Git text copy may differ by its normal checkout EOL. Queue,
+  // configuration and HostBinding bytes are never normalized here.
+  need(hash(copy.canonical)===receiptFixtureSha256,'formal_receipt_fixture_source_changed')
+  return replaceReceiptChild(copy.text)
+}
+export function formalReceiptArguments(args){
+  need(args.length===3&&args.every(p=>typeof p==='string'&&p.length>0),'formal_receipt_arguments_invalid')
+  return args.map(p=>path.resolve(p))
 }
 export function receiptTestPlan({source,overlay,exe,env=process.env}){
   return {args:['test','-v','-mod=readonly','-overlay='+overlay,'./cmd/transferqueue','-run=^'+receiptFixtureTest+'$','-count=1','-timeout=90s'],
@@ -55,13 +68,22 @@ export async function verifyFormalReceipt(candidate,summaryFile,source,go){
     await fs.writeFile(backing,modified,{flag:'wx'})
     await fs.writeFile(overlay,JSON.stringify({Replace:{[file]:backing}}),{flag:'wx'})
     const plan=receiptTestPlan({source,overlay,exe})
-    const result=await run(go,plan.args,plan.options)
+    let result
+    try{result=await run(go,plan.args,plan.options)}
+    catch(error){
+      // This exact fixture contains only synthetic data. Keep bounded compiler
+      // and assertion diagnostics; never replace them with a bare exit code.
+      if(typeof error.stdout==='string')process.stdout.write(error.stdout)
+      if(typeof error.stderr==='string')process.stderr.write(error.stderr)
+      throw error
+    }
     process.stdout.write(result.stdout)
     need(result.stderr==='','formal_receipt_stderr_unexpected')
     completedTests(result.stdout,[receiptFixtureTest])
     need(await boundedRead(file,32768)===original&&await digest(exe)===member.sha256,'formal_receipt_inputs_changed')
     const evidence={formalReceiptBinding:'passed',sourceCommit:manifest.source_commit,producerCommit:manifest.producer_commit,
       manifestSha256:summary.manifest_sha256,executableSha256:member.sha256,originalFixtureSha256:receiptFixtureSha256,
+      originalWorkingFileSha256:hash(original),fixtureLineEndings:receiptSourceCopy(Buffer.from(original)).lineEndings,
       testOverlaySha256:hash(modified),test:receiptFixtureTest,tests:1,skipped:0,testedEntry:'production_exe',
       fixture:'one_launch_line_overlay_original_assertions_retained',additionalFixtureRequests:0,
       producerSourceModified:false,deliveryProven:false,systemTrustPositiveUpload:'unverified',releaseGateChanged:false}
@@ -71,6 +93,6 @@ export async function verifyFormalReceipt(candidate,summaryFile,source,go){
 }
 
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
-  try{need(process.argv.length===6,'formal_receipt_arguments_invalid');await verifyFormalReceipt(...process.argv.slice(2).map(p=>path.resolve(p)))}
-  catch(error){process.stderr.write(JSON.stringify({formalReceiptBinding:'unverified',reason:/^formal_receipt_[a-z_]+$/.test(error.message)?error.message:'formal_receipt_execution_failed',exitCode:error.code??null,releaseGateChanged:false})+'\n');process.exitCode=1}
+  try{await verifyFormalReceipt(...formalReceiptArguments(process.argv.slice(2)),'go')}
+  catch(error){process.stderr.write(JSON.stringify({formalReceiptBinding:'unverified',reason:/^(formal_receipt|candidate)_[a-z_]+$/.test(error.message)?error.message:'formal_receipt_execution_failed',exitCode:Number.isInteger(error.code)?error.code:null,argumentCount:process.argv.length-2,releaseGateChanged:false})+'\n');process.exitCode=1}
 }

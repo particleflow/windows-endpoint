@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {replaceReceiptChild,pinnedReceiptOverlay,receiptFixtureTest,receiptTestPlan} from './formal-receipt.mjs'
+import path from 'node:path'
+import {replaceReceiptChild,pinnedReceiptOverlay,receiptFixtureTest,receiptTestPlan,receiptSourceCopy,formalReceiptArguments} from './formal-receipt.mjs'
 
 test('formal receipt overlay changes exactly the child launch, retaining every surrounding assertion',()=>{
   const old='cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestReceiptBindingCommandChild$") //nolint:gosec // This exact test executable, fixed helper only.'
@@ -23,4 +24,18 @@ test('formal receipt compiler invocation is bounded, offline and selects only th
   assert.equal(plan.options.env.ENDPOINT_RECEIPT_EXE,'C:/verified candidate/transferqueue.exe')
   assert.equal(plan.options.env.EXISTING,'kept')
   assert.equal(Object.keys(plan.options.env).some(k=>/CERT|TLS|TOKEN|CREDENTIAL/.test(k)),false)
+})
+
+test('formal receipt invocation takes three paths and resolves the compiler through the existing tool PATH',()=>{
+  const args=['candidate with spaces','summary.json','producer-source']
+  assert.deepEqual(formalReceiptArguments(args),args.map(p=>path.resolve(p)))
+  for(const bad of [[],args.slice(1),[...args,'extra compiler expression']])assert.throws(()=>formalReceiptArguments(bad),/arguments_invalid/)
+})
+
+test('only normal Git LF or CRLF fixture copies are admitted and original working bytes are retained',()=>{
+  for(const [text,eol] of [['first\nsecond\n','LF'],['first\r\nsecond\r\n','CRLF']]){
+    const copy=receiptSourceCopy(Buffer.from(text))
+    assert.equal(copy.text,text);assert.equal(copy.canonical,'first\nsecond\n');assert.equal(copy.lineEndings,eol)
+  }
+  for(const bad of [Buffer.from('first\r\nsecond\n'),Buffer.from([0xff])])assert.throws(()=>receiptSourceCopy(bad),/source_changed/)
 })
