@@ -5,9 +5,12 @@ gate, installation, trust store, credential, queue format or task identity. No
 production NAS/Windows call was made while developing it. Offline tests exercise
 the evidence checks and bounded driver; they are not positive TLS acceptance.
 
-## Exact existing candidate
+## Current source and recorded prior candidate
 
-Use the already-built candidate from source
+Current source pins published producer
+`d25a7fcc4ad05ae43a5c42d3c7e79cfb99535d91`. Use its new exact-head CI
+candidate summary's manifest hash; do not mix it with an old candidate capture.
+The prior already-built candidate remains recorded separately, from source
 `890131d277e8d44301d4b4304f3054b761a4b38b`, run
 [40834351440](https://github.com/particleflow/windows-endpoint/actions/runs/40834351440),
 artifact `12879724489`. No rebuild is needed for this tool.
@@ -59,7 +62,7 @@ are existing local references, not new configuration fields or secret values:
 ```powershell
 & $Node (Join-Path $ReviewedSource 'acceptance/native-upload.mjs') capture `
   --candidate $VerifiedCandidate `
-  --manifest-sha256 ad050a0d1772481b5d70ef235e4da921dd7ddd74a8d6933a4d97605977145396 `
+  --manifest-sha256 $VerifiedManifestSha256 `
   --config $ExistingEndpointConfig --expected $OriginalClosedManifest `
   --out $NewNativeCaptureFile
 ```
@@ -144,8 +147,12 @@ config-byte HostBinding and source-root hash. Missing receipt is not inferred
 server absence. Wrong binding/direction, missing/busy/corrupt/incompatible state
 or an unknown schema is refused, without trying a write-capable reader.
 
-After the source companion is qualified, published with its own exact producer
-revision and adopted through the existing candidate pin/build process:
+The source companion is published as d25a7fcc. Its original owner verified the
+exact previous tree and ran the new real-dispatcher CLI-child positive case once
+on Linux with Go1.25.7: exit0, package 0.093s, original identity/receipt and bytes
+retained. Reader-child connect/source/credential opens were zero; the parent's
+one fixture preparation connection is separate. This is not Windows EXE or NAS
+upload qualification. After the normal exact candidate pin/build qualification:
 
 ```powershell
 & $Node (Join-Path $ReviewedSource 'acceptance/native-upload.mjs') receipt `
@@ -163,10 +170,12 @@ the original receipt GET and committed task-result checks remain required.
 **Current binary boundary:** existing 890/0813 EXE does not contain this new
 capability. It returns unsupported-action exit 2 and the wrapper reports
 `acceptance_receipt_export_unsupported`; it never falls back to recovery or
-pretends the old EXE supports it. No producer pin, package, manifest or gate was
-changed for this source work. The companion's Go tests/runtime qualification and
-a future normally paired producer build remain outstanding; do not execute it
-against a production queue to qualify the source.
+pretends the old EXE supports it. Current source updates the pin through the
+existing build process and preserves the old package identity; no trust or gate
+is changed. The Windows formal-EXE check uses the d25 fixture's exact SHA256 and
+a Go test-only overlay replacing only its child launch with the verified EXE.
+It retains all original assertions and records the overlay digest separately;
+it never changes or relabels producer product bytes. No production queue is used.
 
 No additional NAS owner-export API is required by this alternative. The existing
 authorized receipt GET can still record a ready proof; that server effect is

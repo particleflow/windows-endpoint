@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
 import { catalog, digest } from './endpoint.mjs'
-import { verifyCandidate, verifyRecordedCandidate, historicalProducer, profileForProducer, programProfileHash } from './candidate.mjs'
+import { verifyCandidate, verifyRecordedCandidate, historicalProducer, receiptObservationProducer, profileForProducer, programProfileHash } from './candidate.mjs'
 import { programDeployment, runSelectedProgram } from './program-deployment.mjs'
 import { captureSessionContinuation, producerSessionTransition } from './session-continuation.mjs'
 import { transactProducerUpgrade, producerPendingName, producerStateEvidence } from './producer-upgrade.mjs'
@@ -54,10 +54,10 @@ test('the existing raw lifecycle attention fence prevents validation and compone
   assert.deepEqual(calls,[])
   assert.equal(state.attention,'producer_upgrade_pending')
 })
-async function fixture(t,{snapshot=true,agent=false,external=false,externalRecorded=false,baseline8351=false,transfer='disabled',preexistingV6=false}={}) {
+async function fixture(t,{snapshot=true,agent=false,external=false,externalRecorded=false,baseline8351=false,baseline890=false,transfer='disabled',preexistingV6=false}={}) {
   const f=await nativeInstalledFixture(t), root=path.join(f.base,'host')
-  const old=await packageFixture(path.join(f.base,'old'),true,baseline8351?'8351b9c433922762f579c1c7b70e755d45b6ed2c':undefined,
-    baseline8351?'1b7200d768c1231179725cfa2f85c8c3452882fb':historicalProducer), next=await packageFixture(path.join(f.base,'new'),false)
+  const old=await packageFixture(path.join(f.base,'old'),true,baseline890?'890131d277e8d44301d4b4304f3054b761a4b38b':baseline8351?'8351b9c433922762f579c1c7b70e755d45b6ed2c':undefined,
+    baseline890?receiptObservationProducer:baseline8351?'1b7200d768c1231179725cfa2f85c8c3452882fb':historicalProducer), next=await packageFixture(path.join(f.base,'new'),false)
   const source=externalRecorded?await packageFixture(path.join(f.base,'original candidate'),true,externalProducerIdentity.sourceCommit):null
   const securityOverrides=new Map(),securityDefault={ownerSid:'S-1-5-21-1-2-3-1001',groupSid:'S-1-5-32-545',descriptorSha256:sha('inert fixture descriptor')}
   const reference=source?createProducerReferenceAdapter({identity:{...externalProducerIdentity,manifestSha256:source.hash,
@@ -221,12 +221,29 @@ test('8351 recorded package retains its original 1b profile but cannot be newly 
   await assert.rejects(verifyRecordedCandidate(f.old.directory,{hash:changedHash,profile:record.profile}),{code:'candidate_kind_or_producer_mismatch'})
 })
 
+test('890 receipt-observation package keeps its original profile and history through the stopped producer transaction',async t=>{
+  const f=await fixture(t,{baseline890:true})
+  const record={hash:f.old.hash,profile:profileForProducer(receiptObservationProducer)}
+  assert.equal((await verifyRecordedCandidate(f.old.directory,record)).manifest.producer_commit,receiptObservationProducer)
+  await assert.rejects(verifyCandidate(f.old.directory,f.old.hash),{code:'candidate_kind_or_producer_mismatch'})
+  assert.equal((await f.manager.select(f.next.hash,'update')).reason,'producer_transaction_required')
+  const plan=await f.run({action:'plan-producer'})
+  assert.equal(plan.oldProducer,receiptObservationProducer)
+  assert.equal(plan.newProducer,catalog.components.transfer.revision)
+  assert.equal((await f.run()).state,'host_producer_selected')
+  await f.preservedCheck()
+  assert.equal((await f.run({action:'rollback-producer'})).state,'producer_rolled_back')
+  assert.equal(await fs.readFile(f.manager.configFile,'utf8'),f.oldRaw.configuration)
+  assert.equal(await fs.readFile(f.manager.lifecycleStore.file,'utf8'),f.oldRaw.lifecycle)
+  await f.preservedCheck()
+})
+
 test('8351 to v6 producer uses the joint transaction and permits exact rollback only before queue work',async t=>{
   const f=await fixture(t,{baseline8351:true})
   assert.equal((await f.manager.select(f.next.hash,'update')).reason,'producer_transaction_required')
   const plan=await f.run({action:'plan-producer'})
   assert.equal(plan.oldProducer,'1b7200d768c1231179725cfa2f85c8c3452882fb')
-  assert.equal(plan.newProducer,'0813c7127faa2f6383b723d5f81ec05487c4e446')
+  assert.equal(plan.newProducer,catalog.components.transfer.revision)
   assert.equal((await f.run()).state,'host_producer_selected')
   assert.equal((await f.run({action:'rollback-producer'})).state,'producer_rolled_back')
   assert.equal(await fs.readFile(f.manager.configFile,'utf8'),f.oldRaw.configuration)

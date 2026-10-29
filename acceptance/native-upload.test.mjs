@@ -6,6 +6,7 @@ import os from 'node:os'
 import {createHash} from 'node:crypto'
 import {spawnSync} from 'node:child_process'
 import {fileURLToPath} from 'node:url'
+import {catalog} from '../endpoint.mjs'
 import {expectedFile,nativeStatus,nativeReceiptBinding,readSelectedReceipt,sourceEvidence,verifyCaptures,driveSelectedDelivery} from './native-upload.mjs'
 
 const bytes=Buffer.from('synthetic acceptance bytes; no model or NAS call\n')
@@ -19,7 +20,7 @@ function fixture(){
   const before={status:0,value:{delivery_id,phase:'queued',offset:0,admitted:true,registered:true,associated:false,feedback_status:'recorded'}}
   const ready={status:0,value:{delivery_id,phase:'ready',offset:bytes.length,admitted:true,registered:true,associated:true,
     feedback_status:'recorded',association_state:'committed',reference}}
-  const capture={schema:1,kind:'windows_native_upload_capture',producer_commit:'0813c7127faa2f6383b723d5f81ec05487c4e446',
+  const capture={schema:1,kind:'windows_native_upload_capture',producer_commit:catalog.components.transfer.revision,
     manifest_sha256:'d'.repeat(64),executable_sha256:'e'.repeat(64),source:{sha256:sum,size_bytes:bytes.length},
     before,steps:[structuredClone(ready)],after:ready,completed:true}
   const owner={recovery_request:{version:1,plan:{version:1,task:closed.task,artifact:closed.artifact},source_ref:closed.artifact.source_ref,

@@ -7,13 +7,14 @@ against the NAS. The c036 artifact is unchanged and does not contain this code.
 ## Version and ownership boundary
 
 New candidates and new staging retain the exact `dependencies.json` producer
-pin `0813c7127faa2f6383b723d5f81ec05487c4e446`. Read-only verification of an
+pin `d25a7fcc4ad05ae43a5c42d3c7e79cfb99535d91`. Read-only verification of an
 already-recorded package additionally accepts only these native historical pairs:
 
 | Program source | Producer source | Purpose |
 | --- | --- | --- |
 | `57ae131eff3fb675a51b6ea5ee945bfa0b9de837` | `0894a6eb8ff69c8796e2da5450fa172d4cd5ef81` | Verify the owned old package, original manifest digest, complete inventory, original producer-derived profile and pinned Runtime provenance. |
 | `8351b9c433922762f579c1c7b70e755d45b6ed2c` | `1b7200d768c1231179725cfa2f85c8c3452882fb` | Verify the already-recorded explicit-filename candidate and its original profile before a package-local joint producer upgrade. |
+| `890131d277e8d44301d4b4304f3054b761a4b38b` | `0813c7127faa2f6383b723d5f81ec05487c4e446` | Retain the already-recorded receipt-GET candidate/profile for a stopped package-local transaction; never stage or silently select it as the new producer. |
 
 This exception does not stage or execute historical programs. It does not accept
 arbitrary old revisions, an invented profile or a substituted producer. Legacy

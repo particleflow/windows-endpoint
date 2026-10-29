@@ -154,7 +154,7 @@ transfer.json. Explicit IPs are tried in order; only TCP connection failure fall
 back to the original authority's IPv6. Certificate/auth failures never select
 another route. An invalid policy or conflicting proxy fails visibly.
 
-This candidate pins producer 0813c7127faa2f6383b723d5f81ec05487c4e446, plugin
+This candidate pins producer d25a7fcc4ad05ae43a5c42d3c7e79cfb99535d91, plugin
 0.10.1. It retains explicit future result filenames such as `result.png`;
 Server declarations must follow installation of a compatible producer. It does
 not automatically repair, rename, regenerate or upload a completed result with an old declaration.
@@ -168,9 +168,19 @@ Go/CLI fixtures are required before treating this pin as verified. See the
 [qualification record](../docs/evidence/closed-snapshot-producer-qualification.md). The prior 648/a51/c292 candidates remain separate checkpoints. Endpoint program
 update does not replace/relink an external producer, and ordinary cross-producer
 switches remain rejected by the existing compatibility profile. The separate
-stopped joint transaction requires exact recorded 57 or 8351 ownership evidence.
+stopped joint transaction requires exact recorded 57, 8351 or 890 ownership evidence.
 Do not present
 this new build as an automatic upgrade of a running old plugin.
+
+The additive `receipt-binding -delivery ID` command reads the original local
+receipt binding without credentials, source bytes, feedback or HTTP. It is not
+delivery proof. The 890/0813 package is retained as a recorded historical pair;
+new staging stays pinned and ordinary cross-producer selection remains blocked.
+CI checks the actual packaged EXE using a hash-pinned test-only Go overlay of
+the original producer fixture's child-launch line, retaining all assertions.
+The original dispatcher fixture and formal-EXE fixture are separate evidence;
+neither qualifies system-trust TLS upload. See
+[native upload acceptance](../docs/native-upload-acceptance.md).
 
 This producer registers downloads as metadata and empty parts, without a total
 payload-size/backlog allowance. Existing streaming/worker bounds and actual disk
