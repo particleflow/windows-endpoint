@@ -17,11 +17,13 @@ export const programProfileHash = profileForProducer(catalog.components.transfer
 export const historicalProducer = '0894a6eb8ff69c8796e2da5450fa172d4cd5ef81'
 export const explicitFilenameProducer = '1b7200d768c1231179725cfa2f85c8c3452882fb'
 export const receiptObservationProducer = '0813c7127faa2f6383b723d5f81ec05487c4e446'
+export const receiptBindingProducer = 'd25a7fcc4ad05ae43a5c42d3c7e79cfb99535d91'
 const historicalProgram = '57ae131eff3fb675a51b6ea5ee945bfa0b9de837'
 const recordedProducerPrograms = new Map([
   [historicalProgram,historicalProducer],
   ['8351b9c433922762f579c1c7b70e755d45b6ed2c',explicitFilenameProducer],
   ['890131d277e8d44301d4b4304f3054b761a4b38b',receiptObservationProducer],
+  ['b2b0bfc1e963db90af6f6faeb480833c31cb1916',receiptBindingProducer],
 ])
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 const demand = (ok, code) => { if (!ok) throw Object.assign(new Error(code), { code }) }

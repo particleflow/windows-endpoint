@@ -8,7 +8,7 @@ the evidence checks and bounded driver; they are not positive TLS acceptance.
 ## Current source and recorded prior candidate
 
 Current source pins published producer
-`d25a7fcc4ad05ae43a5c42d3c7e79cfb99535d91`. Use its new exact-head CI
+`212ae2445fe7a5fbe95479a4f2024069bf83332b`. Use its new exact-head CI
 candidate summary's manifest hash; do not mix it with an old candidate capture.
 The prior already-built candidate remains recorded separately, from source
 `890131d277e8d44301d4b4304f3054b761a4b38b`, run
@@ -26,6 +26,24 @@ The candidate remains `not-for-production-release`. The Explicit job failed at
 the explicit unfulfilled-acceptance throw, before the following trusted-TLS
 step. That is not an observed TLS handshake failure. The Windows delivery job's
 cancellation cause remains unknown; passing tests do not identify its actor.
+
+The d25 source and its b2 candidate remain historical evidence for receipt
+export. The current pin retains those exact CLI/receipt/recovery sources and
+adds the shared v2 physical endpoint implementation. The existing private
+`transfer-network.json` can declare version 2 with
+`endpoint: {logical_origin, physical_origin}`; those values contain only the
+canonical scheme/host/port. Keep `transfer.json` and its original bytes, task
+roots, queues and identities unchanged. Old v1-only consumers reject this
+policy; deploy compatible consumers before activating it. A physical HTTP
+loopback qualification does not satisfy the retained positive system-trust
+HTTPS upload gate, authorize real credential transmission or activate a route.
+
+The additional formal-EXE `--endpoint` check reuses the pinned original CLI
+fixture and all original completion/identity/byte assertions. A test-only Go
+overlay provides an explicit HTTP loopback destination, invokes the packaged
+EXE in each fresh child and waits for the actual persisted backoff. It injects
+no trust or clock into the product. The unchanged original fixture source and
+EXE are checked again after execution; the overlay is removed in `finally`.
 
 ## Inputs and execution boundary
 
