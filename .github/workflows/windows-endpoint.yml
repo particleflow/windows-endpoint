@@ -195,7 +195,7 @@ jobs:
       - name: Verify production EXE read-only receipt binding with unchanged fixture assertions
         shell: pwsh
         run: |
-          node ./official-smoke/formal-receipt.mjs '${{ runner.temp }}/endpoint extracted candidate Unicode 空格' '${{ runner.temp }}/endpoint-candidate-output/candidate-summary.json' ./producer-source (Join-Path $env:GOROOT 'bin/go.exe') | Tee-Object -FilePath '${{ runner.temp }}/endpoint-candidate-output/formal-receipt.log'
+          node ./official-smoke/formal-receipt.mjs '${{ runner.temp }}/endpoint extracted candidate Unicode 空格' '${{ runner.temp }}/endpoint-candidate-output/candidate-summary.json' ./producer-source (Get-Command go -CommandType Application -ErrorAction Stop).Source | Tee-Object -FilePath '${{ runner.temp }}/endpoint-candidate-output/formal-receipt.log'
           if ($LASTEXITCODE -ne 0) { throw 'Production EXE receipt binding failed' }
       - name: Retain verified portable candidate for review only
         uses: actions/upload-artifact@v4
