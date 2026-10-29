@@ -6,7 +6,7 @@ import os from 'node:os'
 import {createHash} from 'node:crypto'
 import {spawnSync} from 'node:child_process'
 import {fileURLToPath} from 'node:url'
-import {expectedFile,nativeStatus,sourceEvidence,verifyCaptures,driveSelectedDelivery} from './native-upload.mjs'
+import {expectedFile,nativeStatus,nativeReceiptBinding,readSelectedReceipt,sourceEvidence,verifyCaptures,driveSelectedDelivery} from './native-upload.mjs'
 
 const bytes=Buffer.from('synthetic acceptance bytes; no model or NAS call\n')
 const sum=createHash('sha256').update(bytes).digest('hex')
@@ -132,4 +132,62 @@ test('CLI offline verification runs without credential or network input and inva
   assert.equal(invalid.stdout,'')
   assert.equal(JSON.parse(invalid.stderr).error,'acceptance_arguments_invalid')
   assert.equal(invalid.stderr.includes('SYNTHETIC-MUST-NOT-APPEAR'),false)
+})
+
+function localReceipt(f){
+  f.capture.host_binding='f'.repeat(64)
+  return {schema:1,kind:'windows_native_receipt_capture',producer_commit:f.capture.producer_commit,
+    manifest_sha256:f.capture.manifest_sha256,executable_sha256:f.capture.executable_sha256,
+    result:{status:0,value:{schema:'memoh.delivery.receipt-binding.v1',state:'local_receipt_binding',scope:'local_queue_read_only',server_effects:'none',
+      delivery_id:expectedFile(f.closed).delivery_id,task:structuredClone(f.closed.task),host_binding:f.capture.host_binding,
+      source_ref:f.closed.artifact.source_ref,content_hash:sum,size_bytes:bytes.length,mime:f.closed.artifact.mime,
+      known_receipt:'synthetic-receipt',phase:'ready',associated:true,association_state:'committed'}}}
+}
+
+test('local receipt binding replaces nonexistent owner export without invoking recovery',()=>{
+  const f=fixture();f.owner.local_receipt_capture=localReceipt(f);delete f.owner.recovery_request
+  const out=verifyCaptures(f)
+  assert.equal(out.receipt_id,'synthetic-receipt')
+  assert.equal(out.authorizationGranted,false);assert.equal(out.releaseGateChanged,false)
+  // A receipt ID is correlation only, even when the local phase says ready.
+  f.owner.task_result.delivery.state='pending'
+  assert.throws(()=>verifyCaptures(f),/acceptance_owner_commit_unverified/)
+})
+
+test('local receipt binding rejects changed identity/config/hash, server-effect claims and unknown fields',()=>{
+  for(const mutate of [
+    v=>{v.task.attempt='0'.repeat(32)},v=>{v.task.target_id=id(9)},v=>{v.task.root_hash='0'.repeat(64)},
+    v=>{v.delivery_id='0'.repeat(64)},v=>{v.host_binding='0'.repeat(64)},v=>{v.source_ref='another.bin'},
+    v=>{v.content_hash='0'.repeat(64)},v=>{v.size_bytes++},v=>{v.mime='text/plain'},
+    v=>{v.scope='receipt_get_only'},v=>{v.server_effects='ready_proof_may_be_recorded'},v=>{v.credential='SYNTHETIC'},
+  ]){
+    const f=fixture(),local=localReceipt(f);mutate(local.result.value)
+    assert.throws(()=>nativeReceiptBinding(local.result,f.closed,f.capture.host_binding),/acceptance_receipt_binding_mismatch/)
+  }
+  for(const mutate of [v=>{v.executable_sha256='0'.repeat(64)},v=>{v.producer_commit='0'.repeat(40)},v=>{v.manifest_sha256='0'.repeat(64)}]){
+    const f=fixture();f.owner.local_receipt_capture=localReceipt(f);delete f.owner.recovery_request
+    mutate(f.owner.local_receipt_capture)
+    assert.throws(()=>verifyCaptures(f),/acceptance_receipt_capture_mismatch/)
+  }
+})
+
+test('local receipt binding reports unsupported 0813, missing receipt or failed query without falling back',()=>{
+  const f=fixture(),local=localReceipt(f)
+  assert.throws(()=>nativeReceiptBinding({status:2},f.closed,f.capture.host_binding),/acceptance_receipt_export_unsupported/)
+  for(const value of [{status:1},{status:null,error:'unknown'},{status:0,signal:'SIGTERM'},
+    {status:0,value:{state:'receipt_observed',recovery_scope:'receipt_get_only',server_effects:'ready_proof_may_be_recorded'}}])
+    assert.throws(()=>nativeReceiptBinding(value,f.closed,f.capture.host_binding),/acceptance_receipt_/)
+  delete local.result.value.known_receipt
+  assert.throws(()=>nativeReceiptBinding(local.result,f.closed,f.capture.host_binding),/acceptance_receipt_not_recorded/)
+})
+
+test('local receipt binding issues exactly one selected read and never falls back to inspect/recovery/advance',async()=>{
+  const f=fixture(),local=localReceipt(f)
+  for(const response of [local.result,{status:2},{status:1},{status:null,error:'unknown'}]){
+    const calls=[]
+    const action=readSelectedReceipt(async(...args)=>{calls.push(args);return response},f.closed,f.capture.host_binding)
+    if(response===local.result)assert.equal(await action,response)
+    else await assert.rejects(action,/acceptance_receipt_/)
+    assert.deepEqual(calls,[['receipt-binding',expectedFile(f.closed).delivery_id]])
+  }
 })

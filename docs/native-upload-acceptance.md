@@ -91,7 +91,12 @@ The current formal EXE does **not** expose its receipt ID in `inspect` or
 `advance` stdout. It cannot independently supply this remaining owner evidence.
 Use the existing authorized owner to obtain:
 
-1. `recovery_request`: the unchanged output of existing internal
+1. Prefer `local_receipt_capture`: the output of the `receipt` command below,
+   using the native read-only `receipt-binding` capability. This exports only
+   the original queue record's receipt binding; it performs no server GET and
+   never creates a receipt, repairs a journal or publishes feedback.
+   For an already available authorized owner export, the previous
+   `recovery_request` input also remains supported: the unchanged output of internal
    `Service.PrepareProducerResultRecovery` for this original operation/file,
    **not** a call to `RecoverProducerResult`. Its `remote_outcome` must be
    `existing`; `known_receipt` is the upload ID from the original ledger.
@@ -111,7 +116,7 @@ or new authorization source:
 
 ```json
 {
-  "recovery_request": "EXACT EXISTING OWNER METHOD RESULT OBJECT",
+  "local_receipt_capture": "EXACT LOCAL RECEIPT CAPTURE OBJECT",
   "receipt_response": {"status": 200, "body": "EXACT RECEIPT GET BODY OBJECT"},
   "task_result": "EXACT ORIGINAL TASK RESULT OBJECT"
 }
@@ -120,13 +125,53 @@ or new authorization source:
 The strings above denote actual captured objects, not literal accepted values.
 No credential or Authorization header belongs in this wrapper.
 
-**Remaining integration input:** `PrepareProducerResultRecovery` is intentionally
-internal in 0813; no supported public export command for its return value was
-found. The unified owner must connect its existing authorized owner invocation
-to this capture input, or provide its existing authorized export. Do not invent
-an HTTP endpoint, infer a receipt ID, scan the private queue or run recovery to
-manufacture this evidence. Until that input exists, full verification is blocked
-at `acceptance_receipt_binding_missing`, even after a native committed capture.
+### Minimal native receipt export
+
+0813 has no existing public receipt-ID export. Ordinary `inspect` opens the queue
+writable and can publish feedback; `recover-result` is not a substitute read.
+The source companion adds only `-action receipt-binding -delivery ORIGINAL_ID`
+to the existing transferqueue host, plus `ReadReceiptBinding` and focused tests.
+It reuses `openHerdrQueue(..., true)` and `Inspect` on that read-only queue,
+including existing checksum/checkpoint/release/history readers and OS locks.
+Read-only mode opens only existing lock/locator/journal/history files; it never
+initializes, migrates, truncates, syncs or reclaims them. No private queue parsing
+is added to JavaScript. The reader does not load `device.credential`, open source
+bytes, call HTTP, publish feedback, perform recovery or record NAS ready proof.
+
+Receipt source is the validated original record's `Job.ReceiptID`, retained
+through existing terminal history. It is bound to the original task, exact
+config-byte HostBinding and source-root hash. Missing receipt is not inferred
+server absence. Wrong binding/direction, missing/busy/corrupt/incompatible state
+or an unknown schema is refused, without trying a write-capable reader.
+
+After the source companion is qualified, published with its own exact producer
+revision and adopted through the existing candidate pin/build process:
+
+```powershell
+& $Node (Join-Path $ReviewedSource 'acceptance/native-upload.mjs') receipt `
+  --candidate $VerifiedCandidate --manifest-sha256 $VerifiedManifestSha256 `
+  --config $ExistingEndpointConfig --expected $OriginalClosedManifest `
+  --out $NewLocalReceiptCaptureFile
+```
+
+This wrapper uses the normal fixed plugin directory pair, verifies the candidate
+and native output, and checks HostBinding against unchanged `transfer.json`
+bytes. It reads no credential or source body and cannot change server state.
+Its capture must match the upload capture's producer, EXE and manifest hashes;
+the original receipt GET and committed task-result checks remain required.
+
+**Current binary boundary:** existing 890/0813 EXE does not contain this new
+capability. It returns unsupported-action exit 2 and the wrapper reports
+`acceptance_receipt_export_unsupported`; it never falls back to recovery or
+pretends the old EXE supports it. No producer pin, package, manifest or gate was
+changed for this source work. The companion's Go tests/runtime qualification and
+a future normally paired producer build remain outstanding; do not execute it
+against a production queue to qualify the source.
+
+No additional NAS owner-export API is required by this alternative. The existing
+authorized receipt GET can still record a ready proof; that server effect is
+separate from the local export's `server_effects:none`. A local receipt ID never
+proves ready, committed, authenticated remote access or successful delivery.
 
 Offline comparison, on any supported Node platform:
 
