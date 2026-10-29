@@ -4,7 +4,10 @@ import * as fs from 'node:fs/promises'
 import { productEntryProbe, parseEntryProbe } from './product-entry-probe.mjs'
 
 test('probe only inserts stages into the exact launcher and retains its original checks and catch', async () => {
-  const source = await fs.readFile(new URL('../WindowsEndpoint.ps1', import.meta.url))
+  // The fe893 probe remains tied to the original failed 8351 bytes; it is not
+  // instrumentation of the repaired product or an executable package member.
+  const historical = new URL('./fixtures/windows-endpoint-8351.ps1.txt', import.meta.url)
+  const source = await fs.readFile(historical)
   const probe = productEntryProbe(source)
   const lines = probe.split('\n')
   let cursor = 0
@@ -19,7 +22,9 @@ test('probe only inserts stages into the exact launcher and retains its original
   assert.ok(probe.includes('Save-FixtureEntryProbe $_\n    $code ='))
   assert.ok(probe.indexOf("$script:fixtureEntryStage = 'node.exit'") > probe.indexOf('$result = $LASTEXITCODE'))
   assert.throws(() => productEntryProbe(Buffer.concat([source, Buffer.from('\n')])), /entry_probe_source_mismatch/)
-  assert.deepEqual(await fs.readFile(new URL('../WindowsEndpoint.ps1', import.meta.url)), source)
+  assert.deepEqual(await fs.readFile(historical), source)
+  const current = await fs.readFile(new URL('../WindowsEndpoint.ps1', import.meta.url))
+  assert.throws(() => productEntryProbe(current), /entry_probe_source_mismatch/)
 })
 
 test('probe output admits only bounded typed stage metadata and rejects message or path fields', () => {
