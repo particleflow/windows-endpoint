@@ -7,7 +7,7 @@ against the NAS. The c036 artifact is unchanged and does not contain this code.
 ## Version and ownership boundary
 
 New candidates and new staging retain the exact `dependencies.json` producer
-pin `212ae2445fe7a5fbe95479a4f2024069bf83332b`. Read-only verification of an
+pin `bbdb0e2748bb5611827803daffa1302e67a2c624`. Read-only verification of an
 already-recorded package additionally accepts only these native historical pairs:
 
 | Program source | Producer source | Purpose |
@@ -16,10 +16,19 @@ already-recorded package additionally accepts only these native historical pairs
 | `8351b9c433922762f579c1c7b70e755d45b6ed2c` | `1b7200d768c1231179725cfa2f85c8c3452882fb` | Verify the already-recorded explicit-filename candidate and its original profile before a package-local joint producer upgrade. |
 | `890131d277e8d44301d4b4304f3054b761a4b38b` | `0813c7127faa2f6383b723d5f81ec05487c4e446` | Retain the already-recorded receipt-GET candidate/profile for a stopped package-local transaction; never stage or silently select it as the new producer. |
 | `b2b0bfc1e963db90af6f6faeb480833c31cb1916` | `d25a7fcc4ad05ae43a5c42d3c7e79cfb99535d91` | Preserve the recorded read-only receipt-export candidate/profile before the same stopped transaction to the v2 endpoint-capable producer. |
+| `c879d1622eeadcf02ec4b16590ade2cee6e1ac85` | `212ae2445fe7a5fbe95479a4f2024069bf83332b` | Preserve the recorded v2 route candidate/profile before the stopped retry-state producer upgrade. |
 
 This exception does not stage or execute historical programs. It does not accept
 arbitrary old revisions, an invented profile or a substituted producer. Legacy
 schema 1/2 execution remains retired. Historical task records remain readable.
+
+The bbdb producer preserves original queue/receipt/root identities but can retain
+diagnostic retry counters above 12. Old Go readers reject those records even
+though the journal version is unchanged. Existing-queue reverse publication
+still requires format proof and remains refused without it; never edit, cap or
+delete records to make an old reader accept them. A new runtime request with
+`restartPolicy` also needs a supporting endpoint reader; old strict request
+parsers cannot be made compatible by modifying a manifest or clearing attention.
 
 `pluginRoot` inside `packages/<old-hash>/transfer` is an immutable package
 reference. Replacing that EXE in place would invalidate the old manifest, so this

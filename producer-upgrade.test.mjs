@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
 import { catalog, digest } from './endpoint.mjs'
-import { verifyCandidate, verifyRecordedCandidate, historicalProducer, receiptObservationProducer, receiptBindingProducer, profileForProducer, programProfileHash } from './candidate.mjs'
+import { verifyCandidate, verifyRecordedCandidate, historicalProducer, receiptObservationProducer, receiptBindingProducer, endpointRouteProducer, profileForProducer, programProfileHash } from './candidate.mjs'
 import { programDeployment, runSelectedProgram } from './program-deployment.mjs'
 import { captureSessionContinuation, producerSessionTransition } from './session-continuation.mjs'
 import { transactProducerUpgrade, producerPendingName, producerStateEvidence } from './producer-upgrade.mjs'
@@ -54,10 +54,10 @@ test('the existing raw lifecycle attention fence prevents validation and compone
   assert.deepEqual(calls,[])
   assert.equal(state.attention,'producer_upgrade_pending')
 })
-async function fixture(t,{snapshot=true,agent=false,external=false,externalRecorded=false,baseline8351=false,baseline890=false,baselineB2=false,transfer='disabled',preexistingV6=false}={}) {
+async function fixture(t,{snapshot=true,agent=false,external=false,externalRecorded=false,baseline8351=false,baseline890=false,baselineB2=false,baselineC879=false,transfer='disabled',preexistingV6=false}={}) {
   const f=await nativeInstalledFixture(t), root=path.join(f.base,'host')
-  const old=await packageFixture(path.join(f.base,'old'),true,baselineB2?'b2b0bfc1e963db90af6f6faeb480833c31cb1916':baseline890?'890131d277e8d44301d4b4304f3054b761a4b38b':baseline8351?'8351b9c433922762f579c1c7b70e755d45b6ed2c':undefined,
-    baselineB2?receiptBindingProducer:baseline890?receiptObservationProducer:baseline8351?'1b7200d768c1231179725cfa2f85c8c3452882fb':historicalProducer), next=await packageFixture(path.join(f.base,'new'),false)
+  const old=await packageFixture(path.join(f.base,'old'),true,baselineC879?'c879d1622eeadcf02ec4b16590ade2cee6e1ac85':baselineB2?'b2b0bfc1e963db90af6f6faeb480833c31cb1916':baseline890?'890131d277e8d44301d4b4304f3054b761a4b38b':baseline8351?'8351b9c433922762f579c1c7b70e755d45b6ed2c':undefined,
+    baselineC879?endpointRouteProducer:baselineB2?receiptBindingProducer:baseline890?receiptObservationProducer:baseline8351?'1b7200d768c1231179725cfa2f85c8c3452882fb':historicalProducer), next=await packageFixture(path.join(f.base,'new'),false)
   const source=externalRecorded?await packageFixture(path.join(f.base,'original candidate'),true,externalProducerIdentity.sourceCommit):null
   const securityOverrides=new Map(),securityDefault={ownerSid:'S-1-5-21-1-2-3-1001',groupSid:'S-1-5-32-545',descriptorSha256:sha('inert fixture descriptor')}
   const reference=source?createProducerReferenceAdapter({identity:{...externalProducerIdentity,manifestSha256:source.hash,
@@ -235,6 +235,17 @@ test('890 receipt-observation package keeps its original profile and history thr
   assert.equal((await f.run({action:'rollback-producer'})).state,'producer_rolled_back')
   assert.equal(await fs.readFile(f.manager.configFile,'utf8'),f.oldRaw.configuration)
   assert.equal(await fs.readFile(f.manager.lifecycleStore.file,'utf8'),f.oldRaw.lifecycle)
+  await f.preservedCheck()
+})
+
+test('c879 stopped retry upgrade retains history and refuses existing-queue downgrade without format proof',async t=>{
+  const f=await fixture(t,{baselineC879:true,transfer:'existing-queue'})
+  assert.equal((await verifyRecordedCandidate(f.old.directory,{hash:f.old.hash,profile:profileForProducer(endpointRouteProducer)})).manifest.producer_commit,endpointRouteProducer)
+  await assert.rejects(verifyCandidate(f.old.directory,f.old.hash),{code:'candidate_kind_or_producer_mismatch'})
+  assert.equal((await f.manager.select(f.next.hash,'update')).reason,'producer_transaction_required')
+  assert.equal((await f.run()).state,'host_producer_selected')
+  await f.preservedCheck()
+  await assert.rejects(f.run({action:'rollback-producer'}),{code:'producer_upgrade_rollback_queue_compatibility_unverified'})
   await f.preservedCheck()
 })
 

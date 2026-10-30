@@ -8,7 +8,7 @@ the evidence checks and bounded driver; they are not positive TLS acceptance.
 ## Current source and recorded prior candidate
 
 Current source pins published producer
-`212ae2445fe7a5fbe95479a4f2024069bf83332b`. Use its new exact-head CI
+`bbdb0e2748bb5611827803daffa1302e67a2c624`. Use its new exact-head CI
 candidate summary's manifest hash; do not mix it with an old candidate capture.
 The prior already-built candidate remains recorded separately, from source
 `890131d277e8d44301d4b4304f3054b761a4b38b`, run
@@ -28,8 +28,9 @@ step. That is not an observed TLS handshake failure. The Windows delivery job's
 cancellation cause remains unknown; passing tests do not identify its actor.
 
 The d25 source and its b2 candidate remain historical evidence for receipt
-export. The current pin retains those exact CLI/receipt/recovery sources and
-adds the shared v2 physical endpoint implementation. The existing private
+export. The current pin retains those CLI/receipt/recovery sources and the
+212ae v2 endpoint implementation while adopting persisted retry-state recovery.
+The existing private
 `transfer-network.json` can declare version 2 with
 `endpoint: {logical_origin, physical_origin}`; those values contain only the
 canonical scheme/host/port. Keep `transfer.json` and its original bytes, task
@@ -44,6 +45,17 @@ overlay provides an explicit HTTP loopback destination, invokes the packaged
 EXE in each fresh child and waits for the actual persisted backoff. It injects
 no trust or clock into the product. The unchanged original fixture source and
 EXE are checked again after execution; the overlay is removed in `finally`.
+
+The `--retry-transfer` and `--retry-association` modes prepare actual persisted
+queues with more than twelve failures using the original test-only dispatcher
+clock. Two fresh Node processes then use the verified candidate's consumer and
+production EXE to observe the original not-before and receipt, without an early
+advance or network request. The transfer case retains the original read-only
+byte/mtime assertions. The association case continues via the original Resolve
+port and requires Commit=1, Resolve=16 and the original bytes. This qualifies a
+synthetic queue/CLI/consumer seam; it neither changes the production clock nor
+proves a real NAS upload/system-trust TLS handshake. Existing TLS and revocation
+guards remain required. Do not run these fixtures on a production/private queue.
 
 ## Inputs and execution boundary
 

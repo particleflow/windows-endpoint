@@ -29,6 +29,37 @@ test('due hints coalesce to one finite advance and immediate ticks cannot spin',
   assert.ok(calls.every(x => ['lifecycle-summary', 'advance-results'].includes(x)))
 })
 
+test('bbdb retry contract keeps fifteen persisted waits recoverable without a local total-attempt budget',async()=>{
+  let due
+  const f=fixture(action=>output(action,action==='lifecycle-summary'?decision('due'):decision('waiting',{next_due_at:due,error_class:'transient'})))
+  for(let i=0;i<15;i++){
+    f.time(i*3600000);due=new Date(start+(i+1)*3600000).toISOString()
+    await f.transfer.tick()
+    assert.equal(f.transfer.snapshot().state,'waiting');assert.equal(f.transfer.snapshot().attention,null)
+  }
+  assert.equal(f.calls.filter(c=>c==='advance-results').length,15)
+  const before=f.calls.length
+  await f.transfer.stop();f.transfer.start()
+  f.transfer.driver.invoke=async action=>{f.calls.push(action);return output(action,decision('waiting',{next_due_at:due,error_class:'transient'}))}
+  await f.transfer.tick();f.time(15*3600000-1);await f.transfer.tick()
+  assert.deepEqual(f.calls.slice(before),['lifecycle-summary'])
+  assert.equal(f.transfer.snapshot().decision.next_due_at,due)
+})
+
+test('bbdb year-3000 not-before and unknown association remain producer-owned across restart and hints',async()=>{
+  const due='3000-01-01T00:00:00.000000001Z'
+  const waiting=decision('waiting',{next_due_at:due,error_class:'transient'})
+  const f=fixture(action=>output(action,action==='lifecycle-summary'?decision('due'):waiting))
+  await f.transfer.tick();assert.equal(f.transfer.snapshot().decision.next_due_at,due)
+  f.transfer.driver.invoke=async action=>{f.calls.push(action);assert.equal(action,'lifecycle-summary');return output(action,waiting)}
+  await f.transfer.stop();f.transfer.start();await f.transfer.tick()
+  for(let i=0;i<15;i++){f.time((i+1)*3600000);f.transfer.hint('network');await f.transfer.tick()}
+  assert.equal(f.calls.filter(c=>c==='advance-results').length,1)
+  assert.equal(f.transfer.snapshot().attention,null)
+  assert.equal(f.transfer.snapshot().decision.next_due_at,due)
+  assert.equal(f.transfer.snapshot().businessCompletion,'not_inferred')
+})
+
 for (const status of [0, 1]) {
   test(`waiting from advance exit ${status} honors its durable deadline then reads summary again`, async () => {
     const due = '2026-10-22T18:00:05.123456789Z'

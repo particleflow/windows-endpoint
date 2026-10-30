@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import path from 'node:path'
 import {replaceReceiptChild,pinnedReceiptOverlay,receiptFixtureTest,receiptTestPlan,receiptSourceCopy,formalReceiptArguments,
   replaceEndpointFixture,pinnedEndpointOverlay,endpointFixtureTest} from './formal-receipt.mjs'
+import {retryFixtures,retryPairOverlay} from './retry-pair-overlays.mjs'
 
 test('formal receipt overlay changes exactly the child launch, retaining every surrounding assertion',()=>{
   const old='cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestReceiptBindingCommandChild$") //nolint:gosec // This exact test executable, fixed helper only.'
@@ -77,4 +78,16 @@ test('formal endpoint compiler selection is finite and cannot select arbitrary t
   assert.equal(plan.options.timeout,120000)
   assert.deepEqual(plan.options.env,{GOSUMDB:'sum.golang.org',GOTOOLCHAIN:'local',GOPROXY:'off',ENDPOINT_RECEIPT_EXE:'verified.exe'})
   assert.throws(()=>receiptTestPlan({source:'source',overlay:'overlay',exe:'verified.exe',test:'arbitrary'}),/test_invalid/)
+})
+
+test('retry pair selects only the two pinned fixtures and refuses changed source before execution',()=>{
+  for(const [mode,fixture]of Object.entries(retryFixtures)){
+    assert.throws(()=>retryPairOverlay(Buffer.from('not the pinned producer fixture'),mode),/fixture_changed/)
+    const plan=receiptTestPlan({source:'source',overlay:'test-overlay',exe:'verified',test:fixture.test,env:{GOSUMDB:'sum.golang.org'}})
+    assert.ok(plan.args.includes('-run=^'+fixture.test+'$'))
+    assert.equal(plan.options.timeout,120000);assert.ok(plan.args.includes('-timeout=90s'))
+    assert.equal(plan.options.env.GOPROXY,'off');assert.equal(plan.options.env.GOSUMDB,'sum.golang.org')
+    assert.equal(Object.keys(plan.options.env).some(key=>/CERT|TLS|TOKEN|CREDENTIAL/.test(key)),false)
+  }
+  assert.throws(()=>retryPairOverlay(Buffer.from(''), 'other'),/fixture_changed/)
 })

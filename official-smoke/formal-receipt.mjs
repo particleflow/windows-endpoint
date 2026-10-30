@@ -11,6 +11,7 @@ import {verifyCandidate} from '../candidate.mjs'
 import {catalog,digest,validateDirectory} from '../endpoint.mjs'
 import {boundedRead} from '../session-diagnostics.mjs'
 import {completedTests} from './producer-fixtures.mjs'
+import {retryFixtures,retryPairOverlay} from './retry-pair-overlays.mjs'
 
 const hash=raw=>createHash('sha256').update(raw).digest('hex')
 const need=(ok,code)=>{if(!ok)throw Error(code)}
@@ -73,37 +74,39 @@ export function formalReceiptArguments(args){
   return args.map(p=>path.resolve(p))
 }
 export function receiptTestPlan({source,overlay,exe,env=process.env,test=receiptFixtureTest}){
-  need([receiptFixtureTest,endpointFixtureTest].includes(test),'formal_receipt_test_invalid')
+  need([receiptFixtureTest,endpointFixtureTest,...Object.values(retryFixtures).map(f=>f.test)].includes(test),'formal_receipt_test_invalid')
   return {args:['test','-v','-mod=readonly','-overlay='+overlay,'./cmd/transferqueue','-run=^'+test+'$','-count=1','-timeout=90s'],
     options:{cwd:source,env:{...env,GOTOOLCHAIN:'local',GOPROXY:'off',ENDPOINT_RECEIPT_EXE:exe},
       shell:false,windowsHide:true,encoding:'utf8',timeout:120000,maxBuffer:1024**2}}
 }
 
 export async function verifyFormalReceipt(candidate,summaryFile,source,go,mode='receipt'){
-  need(['receipt','endpoint'].includes(mode),'formal_receipt_mode_invalid')
-  const endpoint=mode==='endpoint',test=endpoint?endpointFixtureTest:receiptFixtureTest
+  need(['receipt','endpoint',...Object.keys(retryFixtures)].includes(mode),'formal_receipt_mode_invalid')
+  const endpoint=mode==='endpoint',retry=retryFixtures[mode],test=retry?.test??(endpoint?endpointFixtureTest:receiptFixtureTest)
   need(process.platform==='win32'&&process.arch==='x64','formal_receipt_windows_required')
   need(process.env.GITHUB_ACTIONS==='true'&&process.env.RUNNER_ENVIRONMENT==='github-hosted','formal_receipt_disposable_ci_required')
   const summary=JSON.parse(await boundedRead(summaryFile,65536))
   const {manifest}=await verifyCandidate(candidate,summary.manifest_sha256)
   need(summary.source_commit===manifest.source_commit&&summary.producer_commit===manifest.producer_commit,'formal_receipt_summary_mismatch')
-  need(manifest.producer_commit==='212ae2445fe7a5fbe95479a4f2024069bf83332b'&&manifest.producer_commit===catalog.components.transfer.revision,'formal_receipt_producer_mismatch')
+  need(manifest.producer_commit==='bbdb0e2748bb5611827803daffa1302e67a2c624'&&manifest.producer_commit===catalog.components.transfer.revision,'formal_receipt_producer_mismatch')
   await validateDirectory(source)
   const run=promisify(execFile)
   const ref=await run('git',['-C',source,'rev-parse','HEAD'],{encoding:'utf8',timeout:15000,windowsHide:true,shell:false})
   need(ref.stdout.trim()===manifest.producer_commit,'formal_receipt_source_mismatch')
   const version=await run(go,['version'],{encoding:'utf8',timeout:15000,windowsHide:true,shell:false})
   need(version.stdout.trim()==='go version go1.25.7 windows/amd64','formal_receipt_go_version_mismatch')
-  const filename=endpoint?'cli_path_test.go':'receipt_binding_positive_test.go'
+  const filename=retry?.file??(endpoint?'cli_path_test.go':'receipt_binding_positive_test.go')
   const file=path.join(source,'cmd/transferqueue',filename)
-  const original=await boundedRead(file,32768),modified=(endpoint?pinnedEndpointOverlay:pinnedReceiptOverlay)(Buffer.from(original))
+  const original=await boundedRead(file,32768),modified=retry?retryPairOverlay(Buffer.from(original),mode):(endpoint?pinnedEndpointOverlay:pinnedReceiptOverlay)(Buffer.from(original))
   const exe=path.join(candidate,'transfer/transferqueue.exe'),member=manifest.files.find(f=>f.path==='transfer/transferqueue.exe')
   const temporary=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'endpoint-formal-receipt-')))
   try{
     const backing=path.join(temporary,filename),overlay=path.join(temporary,'overlay.json')
     await fs.writeFile(backing,modified,{flag:'wx'})
     await fs.writeFile(overlay,JSON.stringify({Replace:{[file]:backing}}),{flag:'wx'})
-    const plan=receiptTestPlan({source,overlay,exe,test})
+    const plan=receiptTestPlan({source,overlay,exe,test,env:{...process.env,...(retry?{
+      ENDPOINT_CONSUMER_NODE:process.execPath,ENDPOINT_RETRY_CONSUMER:fileURLToPath(new URL('./retry-consumer.mjs',import.meta.url)),
+    }:{})}})
     let result
     try{result=await run(go,plan.args,plan.options)}
     catch(error){
@@ -117,11 +120,12 @@ export async function verifyFormalReceipt(candidate,summaryFile,source,go,mode='
     need(result.stderr==='','formal_receipt_stderr_unexpected')
     completedTests(result.stdout,[test])
     need(await boundedRead(file,32768)===original&&await digest(exe)===member.sha256,'formal_receipt_inputs_changed')
-    const evidence={...(endpoint?{formalEndpointRouting:'passed'}:{formalReceiptBinding:'passed'}),sourceCommit:manifest.source_commit,producerCommit:manifest.producer_commit,
-      manifestSha256:summary.manifest_sha256,executableSha256:member.sha256,originalFixtureSha256:endpoint?endpointFixtureSha256:receiptFixtureSha256,
+    const evidence={...(retry?{formalRetryPairing:'passed',retryMode:mode}:endpoint?{formalEndpointRouting:'passed'}:{formalReceiptBinding:'passed'}),sourceCommit:manifest.source_commit,producerCommit:manifest.producer_commit,
+      manifestSha256:summary.manifest_sha256,executableSha256:member.sha256,originalFixtureSha256:retry?.sha256??(endpoint?endpointFixtureSha256:receiptFixtureSha256),
       originalWorkingFileSha256:hash(original),fixtureLineEndings:receiptSourceCopy(Buffer.from(original)).lineEndings,
       testOverlaySha256:hash(modified),test,tests:1,skipped:0,testedEntry:'production_exe',
-      ...(endpoint?{fixture:'original_cli_assertions_explicit_v2_http_real_clock',bytes:7,create:1,complete:1,commit:1,resolve:1,freshProcessPerCommand:true,logicalBindingPreserved:true}:
+      ...(retry?{fixture:'persisted_retry_parent_fixture_clock_native_readers_real_clock',failures:15,freshConsumerProcesses:2,earlyNetwork:0,unknownCommitReplayed:false}:
+        endpoint?{fixture:'original_cli_assertions_explicit_v2_http_real_clock',bytes:7,create:1,complete:1,commit:1,resolve:1,freshProcessPerCommand:true,logicalBindingPreserved:true}:
         {fixture:'one_launch_line_overlay_original_assertions_retained',additionalFixtureRequests:0}),
       producerSourceModified:false,deliveryProven:false,systemTrustPositiveUpload:'unverified',releaseGateChanged:false}
     process.stdout.write(JSON.stringify(evidence)+'\n')
@@ -130,8 +134,8 @@ export async function verifyFormalReceipt(candidate,summaryFile,source,go,mode='
 }
 
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
-  const args=process.argv.slice(2),mode=args.at(-1)==='--endpoint'?'endpoint':'receipt'
-  if(mode==='endpoint')args.pop()
+  const args=process.argv.slice(2),flag=args.at(-1),mode=flag==='--endpoint'?'endpoint':flag==='--retry-transfer'?'retry-transfer':flag==='--retry-association'?'retry-association':'receipt'
+  if(mode!=='receipt')args.pop()
   try{await verifyFormalReceipt(...formalReceiptArguments(args),'go',mode)}
   catch(error){process.stderr.write(JSON.stringify({formalReceiptBinding:'unverified',reason:/^(formal_receipt|candidate)_[a-z_]+$/.test(error.message)?error.message:'formal_receipt_execution_failed',exitCode:Number.isInteger(error.code)?error.code:null,argumentCount:process.argv.length-2,releaseGateChanged:false})+'\n');process.exitCode=1}
 }

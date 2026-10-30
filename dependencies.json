@@ -46,7 +46,7 @@
     "transfer": {
       "version": "0.10.1",
       "source": "https://github.com/particleflow/Memoh",
-      "revision": "212ae2445fe7a5fbe95479a4f2024069bf83332b",
+      "revision": "bbdb0e2748bb5611827803daffa1302e67a2c624",
       "entry": "transfer/transferqueue.exe"
     }
   },
