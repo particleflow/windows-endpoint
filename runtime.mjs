@@ -1,5 +1,5 @@
 import { validateConfig, isNativeRuntimeConfig, EndpointError } from './endpoint.mjs'
-import { NativeDriver, EndpointLifecycle, StateStore, acquireLeases, leaseKeys, LifecycleError } from './lifecycle.mjs'
+import { NativeDriver, EndpointLifecycle, StateStore, acquireLeases, leaseKeys, LifecycleError, validateRestartPolicy } from './lifecycle.mjs'
 import { NativeTransferDriver, TransferLifecycle } from './transfer-lifecycle.mjs'
 import { inspectInstalled, inspectInstalledTransfer, validateInstalledConfiguration } from './installed.mjs'
 
@@ -12,9 +12,16 @@ const requireRuntime = (ok, code) => { if (!ok) throw new RuntimeError(code) }
 // arguments, shell commands, credentials, or a test driver.
 export function validateRuntimeRequest(value, config) {
   requireRuntime(isNativeRuntimeConfig(config), 'legacy_execution_retired')
-  requireRuntime(value && typeof value === 'object' && Object.keys(value).sort().join(',') === 'mode,schema,transfer' && value.schema === 2 && value.mode === 'existing-installations' && ['disabled', 'existing-queue'].includes(value.transfer), 'runtime_request_invalid')
+  requireRuntime(value && typeof value === 'object' && ['mode','schema','transfer'].every(key => Object.hasOwn(value,key)) &&
+    Object.keys(value).every(key => ['mode','schema','transfer','restartPolicy'].includes(key)) && value.schema === 2 && value.mode === 'existing-installations' && ['disabled', 'existing-queue'].includes(value.transfer), 'runtime_request_invalid')
   requireRuntime(value.transfer !== 'existing-queue' || config.transfer, 'transfer_reference_required')
-  return Object.freeze({ ...value })
+  let restartPolicy
+  if (Object.hasOwn(value, 'restartPolicy')) {
+    requireRuntime(value.restartPolicy !== undefined, 'runtime_restart_policy_invalid')
+    try { restartPolicy = validateRestartPolicy(value.restartPolicy) }
+    catch { throw new RuntimeError('runtime_restart_policy_invalid') }
+  }
+  return Object.freeze({ ...value, ...(restartPolicy ? { restartPolicy } : {}) })
 }
 
 export async function validateRuntimeConfiguration(config, request) {
@@ -24,7 +31,7 @@ export async function validateRuntimeConfiguration(config, request) {
 }
 
 export async function createExplicitRuntime({ config, stateDirectory, request }) {
-  validateRuntimeRequest(request, config)
+  request = validateRuntimeRequest(request, config)
   // Resolve only local configuration here, without probing or starting a child.
   // Freeze the effective path for this runtime; official changes need a new run.
   config = (await validateInstalledConfiguration(config, { inspectHistoryOnly: true })).config
@@ -60,5 +67,5 @@ export async function createExplicitRuntime({ config, stateDirectory, request })
     try { installation.assertUnchanged(scope) } catch (error) { throw new RuntimeError(error.code) }
   } })
   return new EndpointLifecycle({ driver,
-    store: new StateStore(stateDirectory, config.deviceId), acquire: () => acquireLeases(leaseKeys(config), stateDirectory), transfer })
+    store: new StateStore(stateDirectory, config.deviceId), acquire: () => acquireLeases(leaseKeys(config), stateDirectory), transfer, policy: request.restartPolicy })
 }

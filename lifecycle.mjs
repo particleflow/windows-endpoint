@@ -17,6 +17,19 @@ export class LifecycleError extends Error {
   constructor(code) { super(code); this.code = code }
 }
 function demand(ok, code) { if (!ok) throw new LifecycleError(code) }
+// Preserve the existing journal's maximum history and Node's timer range.
+// These are representation bounds, not a replacement restart policy.
+const restartHistoryLimit = 100
+const timerDelayLimit = 2 ** 31 - 1
+export function validateRestartPolicy(value = {}) {
+  demand(value && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).every(key => ['maxRestarts', 'windowMs', 'retryMs'].includes(key)), 'restart_policy_invalid')
+  const policy = { maxRestarts: 3, windowMs: 600000, retryMs: 1000, ...value }
+  demand(Number.isSafeInteger(policy.maxRestarts) && policy.maxRestarts >= 0 && policy.maxRestarts <= restartHistoryLimit &&
+    Number.isSafeInteger(policy.windowMs) && policy.windowMs > 0 && Number.isSafeInteger(policy.retryMs) && policy.retryMs > 0 &&
+    policy.retryMs <= Math.floor(timerDelayLimit / Math.max(1, policy.maxRestarts)), 'restart_policy_invalid')
+  return Object.freeze(policy)
+}
 function code(error) { return error instanceof LifecycleError ? error.code : 'lifecycle_operation_failed' }
 function connectorFailure(error) {
   return new LifecycleError(typeof error?.code === 'string' && /^(native_connector|connector)_[a-z_]+$/.test(error.code) ? error.code : 'connector_operation_failed')
@@ -79,7 +92,7 @@ export class StateStore {
     try { data = await readJSON(this.file) } catch (e) { if (e.code !== 'ENOENT') throw new LifecycleError('lifecycle_state_unreadable'); missing = true }
     if (missing) return { schema: 1, identity: this.identity, phase: 'stopped', restarts: [], attention: null }
     demand(data && typeof data === 'object' && !Array.isArray(data), 'lifecycle_state_mismatch')
-    demand([1, 2].includes(data.schema) && data.identity === this.identity && Array.isArray(data.restarts) && data.restarts.length <= 100 && data.restarts.every(t => Number.isSafeInteger(t) && t >= 0), 'lifecycle_state_mismatch')
+    demand([1, 2].includes(data.schema) && data.identity === this.identity && Array.isArray(data.restarts) && data.restarts.length <= restartHistoryLimit && data.restarts.every(t => Number.isSafeInteger(t) && t >= 0), 'lifecycle_state_mismatch')
     demand(['stopped', 'starting', 'running', 'stopping', 'needs_attention'].includes(data.phase) && (data.attention === null || /^[a-z_]{1,80}$/.test(data.attention)), 'lifecycle_state_mismatch')
     demand(data.sessionContinuation === undefined || validSessionContinuation(data.sessionContinuation), 'lifecycle_state_mismatch')
     if (data.producerUpgrade !== undefined) {
@@ -421,7 +434,7 @@ export class EndpointLifecycle {
     this.driver = driver; this.store = store; this.acquire = acquire
     this.transfer = transfer
     this.clock = clock; this.delay = delay
-    this.policy = { maxRestarts: 3, windowMs: 600000, retryMs: 1000, ...policy }
+    this.policy = validateRestartPolicy(policy)
     this.active = null; this.stopping = false; this.release = null
     this.observedConnection = 'unverified'
   }
@@ -512,7 +525,12 @@ export class EndpointLifecycle {
     this.state.restarts.push(now); await this.save() // budget survives coordinator restart
     if (component === 'herdr') await this.driver.stop('connector')
     else await this.driver.recoverConnector()
-    await this.delay(this.policy.retryMs * this.state.restarts.length)
+    if (this.stopping) return
+    const waiting = new AbortController()
+    this.recoveryWait = waiting
+    try { await this.delay(this.policy.retryMs * this.state.restarts.length, undefined, { signal: waiting.signal }) }
+    catch (error) { if (!this.stopping || !waiting.signal.aborted || error.name !== 'AbortError') throw error }
+    finally { if (this.recoveryWait === waiting) this.recoveryWait = null }
     if (this.stopping) return
     await this.driver.validate()
     if (this.stopping) return
@@ -601,6 +619,7 @@ export class EndpointLifecycle {
   }
   async stop() {
     this.stopping = true
+    this.recoveryWait?.abort()
     this.transfer?.requestStop()
     if (this.closing) return this.closing
     this.closing = this.stopOwned()
