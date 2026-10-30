@@ -162,6 +162,10 @@ export class NativeRuntimeConnector {
     await this.waitClosed(timeoutMs)
     // Exit/close is evidence about this exact child, not a global PID lookup or
     // permission to clean any external process. Unknown outcomes retain record.
-    if (this.record !== c || !this.cleanupConfirmed()) fail('connector_stop_unknown')
+    // A stop retry after this exact child's observed exit and resource closure
+    // can never obtain a missing official publication and must not wedge the
+    // owning lifecycle forever. Only that fully observed death is accepted; a
+    // live child, a failed process operation or unclosed resources stay closed.
+    if (this.record !== c || !this.cleanupConfirmed() && !(c.exitObserved && c.closed && !c.error && Number.isSafeInteger(c.process.pid))) fail('connector_stop_unknown')
   }
 }
