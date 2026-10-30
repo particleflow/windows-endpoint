@@ -203,7 +203,10 @@ export async function recoverHost({root,expectedRun,expectedState,expectedConfig
     // A later rejected launch must not stand in for the original running run.
     if (orphanedRunning) demand(status.phase === 'running' && status.attention === null, 'host_recovery_status_not_eligible')
     if (stoppedObservation) demand(status.phase === 'stopped' && status.attention === state.attention, 'host_recovery_status_not_eligible')
-    if (connectorStopUnknown) demand(status.attention === state.attention && ['running','stopping','stop_failed','stopped'].includes(status.phase), 'host_recovery_status_not_eligible')
+    // Host stopOwned publishes (failed, attention) when the lifecycle released
+    // its lease but the stop still surfaced the original failure; the same real
+    // pairing is accepted alongside the wedge's stop_failed and crash shapes.
+    if (connectorStopUnknown) demand(status.attention === state.attention && ['running','stopping','failed','stop_failed','stopped'].includes(status.phase), 'host_recovery_status_not_eligible')
     const inspected = await inspect(config,undefined,{inspectHistoryOnly:true})
     const effective = inspected.config
     demand(path.resolve(process.execPath).toLowerCase() === path.resolve(effective.programs.node).toLowerCase() || observe !== nativeRecoveryEvidence,'host_recovery_node_mismatch')
