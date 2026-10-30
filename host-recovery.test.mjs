@@ -412,3 +412,34 @@ for(const kind of ['starting_status','different_attention','unknown_process','ch
  await assert.rejects(recoverHost(f.options,f.deps))
  assert.deepEqual(await fs.readFile(f.stateFile),kind==='changed_state'?Buffer.concat([before,Buffer.from(' ')]):before)
 })
+for(const statusPhase of ['running','stopping','failed'])test(`connector stop recovery accepts a ${statusPhase} host status`,async t=>{
+ const f=await connectorStopUnknownFixture(t)
+ f.status.phase=statusPhase;await fs.writeFile(f.statusFile,JSON.stringify(f.status))
+ assert.equal((await recoverHost(f.options,f.deps)).state,'infrastructure_rechecked')
+ assert.equal((await new StateStore(f.dir,f.config.deviceId).load()).infrastructureRecovery.previousPhase,'needs_attention')
+})
+test('status failed also pairs with a journal already stopped on connector_stop_unknown',async t=>{
+ const f=await connectorStopUnknownFixture(t,'stopped')
+ f.status.phase='failed';await fs.writeFile(f.statusFile,JSON.stringify(f.status))
+ assert.equal((await recoverHost(f.options,f.deps)).state,'infrastructure_rechecked')
+ assert.equal((await new StateStore(f.dir,f.config.deviceId).load()).infrastructureRecovery.previousPhase,'stopped')
+})
+test('status failed is not accepted for the other eligible journal kinds',async t=>{
+ for(const f of [await runningFixture(t),await stoppedObservationFixture(t)]) {
+  f.status.phase='failed';f.status.attention=f.state.attention
+  await fs.writeFile(f.statusFile,JSON.stringify(f.status))
+  await assert.rejects(recoverHost(f.options,f.deps),{code:'host_recovery_status_not_eligible'})
+ }
+})
+test('connector stop recovery keeps the handoff and live-lease guards',async t=>{
+ const handoff=await connectorStopUnknownFixture(t)
+ const {payload}=JSON.parse(await fs.readFile(new URL('./test-support/handoff-v1.json',import.meta.url)))
+ payload.native.device_id=handoff.config.deviceId;payload.gate.device_id=handoff.config.deviceId
+ await new StateStore(handoff.dir,handoff.config.deviceId).recordHandoff(payload)
+ handoff.options.expectedState=hash(await fs.readFile(handoff.stateFile))
+ await assert.rejects(recoverHost(handoff.options,handoff.deps),{code:'host_recovery_state_not_eligible'})
+ const lease=await connectorStopUnknownFixture(t)
+ const release=await acquireLeases([`host:${lease.root}`,...leaseKeys(lease.config)],lease.dir)
+ try{await assert.rejects(recoverHost(lease.options,lease.deps),{code:'endpoint_already_owned'})}
+ finally{await release()}
+})
