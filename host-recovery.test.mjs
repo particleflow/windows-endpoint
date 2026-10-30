@@ -375,3 +375,71 @@ for(const kind of ['running_status','different_attention','related_process','unk
  assert.deepEqual(await fs.readFile(f.stateFile),kind==='changed_state'?Buffer.concat([before,Buffer.from(' ')]):before)
  assert.deepEqual(await fs.readFile(f.receipt),receipt)
 })
+async function connectorStopUnknownFixture(t,phase='needs_attention'){
+ const f=await fixture(t)
+ f.state.attention='connector_stop_unknown'
+ if(phase==='stopped')f.state.phase='stopped'
+ f.raw=JSON.stringify(f.state)
+ await fs.writeFile(f.stateFile,f.raw);f.options.expectedState=hash(f.raw)
+ f.status.phase=phase==='stopped'?'stopped':'stop_failed';f.status.attention='connector_stop_unknown'
+ await fs.writeFile(f.statusFile,JSON.stringify(f.status))
+ return f
+}
+test('stop-wedge journal with connector_stop_unknown is reconciled by absence-proven recovery and reloads',async t=>{
+ const f=await connectorStopUnknownFixture(t)
+ const result=await recoverHost(f.options,f.deps)
+ assert.equal(result.state,'infrastructure_rechecked');assert.equal(result.started,false);assert.equal(result.businessReplayed,false)
+ const saved=await new StateStore(f.dir,f.config.deviceId).load()
+ assert.equal(saved.phase,'stopped');assert.equal(saved.attention,null)
+ assert.equal(saved.infrastructureRecovery.previousPhase,'needs_attention');assert.equal(saved.infrastructureRecovery.previousAttention,'connector_stop_unknown')
+ assert.equal(await fs.readFile(path.join(f.dir,`lifecycle-before-recheck-${f.options.expectedState}.json`),'utf8'),f.raw)
+ assert.equal((await recoverHost(f.options,f.deps)).state,'already_rechecked')
+})
+test('journal already stopped while retaining connector_stop_unknown is equally eligible',async t=>{
+ const f=await connectorStopUnknownFixture(t,'stopped')
+ assert.equal((await recoverHost(f.options,f.deps)).state,'infrastructure_rechecked')
+ const saved=await new StateStore(f.dir,f.config.deviceId).load()
+ assert.equal(saved.infrastructureRecovery.previousPhase,'stopped');assert.equal(saved.infrastructureRecovery.previousAttention,'connector_stop_unknown')
+})
+for(const kind of ['starting_status','different_attention','unknown_process','changed_state'])test(`connector stop recovery refuses ${kind}`,async t=>{
+ const f=await connectorStopUnknownFixture(t)
+ if(kind==='starting_status')f.status.phase='starting'
+ if(kind==='different_attention')f.status.attention='connector_authentication_required'
+ await fs.writeFile(f.statusFile,JSON.stringify(f.status))
+ if(kind==='unknown_process')f.deps.observe=async()=>{throw Object.assign(new Error('native absence unverified'),{code:'host_recovery_process_evidence_unavailable'})}
+ if(kind==='changed_state')f.deps.checkpoint=async stage=>{if(stage==='before_publish')await fs.appendFile(f.stateFile,' ')}
+ const before=await fs.readFile(f.stateFile)
+ await assert.rejects(recoverHost(f.options,f.deps))
+ assert.deepEqual(await fs.readFile(f.stateFile),kind==='changed_state'?Buffer.concat([before,Buffer.from(' ')]):before)
+})
+for(const statusPhase of ['running','stopping','failed'])test(`connector stop recovery accepts a ${statusPhase} host status`,async t=>{
+ const f=await connectorStopUnknownFixture(t)
+ f.status.phase=statusPhase;await fs.writeFile(f.statusFile,JSON.stringify(f.status))
+ assert.equal((await recoverHost(f.options,f.deps)).state,'infrastructure_rechecked')
+ assert.equal((await new StateStore(f.dir,f.config.deviceId).load()).infrastructureRecovery.previousPhase,'needs_attention')
+})
+test('status failed also pairs with a journal already stopped on connector_stop_unknown',async t=>{
+ const f=await connectorStopUnknownFixture(t,'stopped')
+ f.status.phase='failed';await fs.writeFile(f.statusFile,JSON.stringify(f.status))
+ assert.equal((await recoverHost(f.options,f.deps)).state,'infrastructure_rechecked')
+ assert.equal((await new StateStore(f.dir,f.config.deviceId).load()).infrastructureRecovery.previousPhase,'stopped')
+})
+test('status failed is not accepted for the other eligible journal kinds',async t=>{
+ for(const f of [await runningFixture(t),await stoppedObservationFixture(t)]) {
+  f.status.phase='failed';f.status.attention=f.state.attention
+  await fs.writeFile(f.statusFile,JSON.stringify(f.status))
+  await assert.rejects(recoverHost(f.options,f.deps),{code:'host_recovery_status_not_eligible'})
+ }
+})
+test('connector stop recovery keeps the handoff and live-lease guards',async t=>{
+ const handoff=await connectorStopUnknownFixture(t)
+ const {payload}=JSON.parse(await fs.readFile(new URL('./test-support/handoff-v1.json',import.meta.url)))
+ payload.native.device_id=handoff.config.deviceId;payload.gate.device_id=handoff.config.deviceId
+ await new StateStore(handoff.dir,handoff.config.deviceId).recordHandoff(payload)
+ handoff.options.expectedState=hash(await fs.readFile(handoff.stateFile))
+ await assert.rejects(recoverHost(handoff.options,handoff.deps),{code:'host_recovery_state_not_eligible'})
+ const lease=await connectorStopUnknownFixture(t)
+ const release=await acquireLeases([`host:${lease.root}`,...leaseKeys(lease.config)],lease.dir)
+ try{await assert.rejects(recoverHost(lease.options,lease.deps),{code:'endpoint_already_owned'})}
+ finally{await release()}
+})

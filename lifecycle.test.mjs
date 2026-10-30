@@ -381,6 +381,26 @@ test('native failed graceful stop keeps the lifecycle lease until explicit stop 
   }
 })
 
+test('stop completes cleanly once the owned connector child is verifiably dead without publishing stopped', async t => {
+  const { directory, driver, child } = await nativeConnectorFixture(t)
+  const store = new StateStore(directory, 'synthetic-dead-connector')
+  const lifecycle = new EndpointLifecycle({ driver, store, acquire: () => acquireLeases([directory], directory) })
+  lifecycle.state = await store.load(); lifecycle.state.phase = 'running'
+  lifecycle.release = await lifecycle.acquire()
+  try {
+    // Abrupt external death: no official stopped publication can ever arrive.
+    child.process.kill('SIGKILL'); await child.done
+    assert.equal(child.stoppedObserved, false); assert.equal(child.exitObserved, true)
+    await driver.stop('connector')
+    await lifecycle.stop()
+    assert.equal(lifecycle.release, null)
+    const saved = await store.load()
+    assert.equal(saved.phase, 'stopped'); assert.equal(saved.attention, null)
+  } finally {
+    if (lifecycle.release) await lifecycle.stop()
+  }
+})
+
 test('native spawn failure without a PID remains a completed failed start', async t => {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'endpoint-spawn-failure-')))
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
