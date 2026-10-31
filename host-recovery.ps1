@@ -22,7 +22,11 @@ try {
     $trusted = @($sid, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
     $additional = @()
     if ($AdditionalEvidenceJson) {
-        $additional = @($AdditionalEvidenceJson | ConvertFrom-Json)
+        # Piping the string to ConvertFrom-Json delivers the parsed array as one
+        # pipeline object on Windows PowerShell 5.1, so @() keeps it nested and
+        # every element fails the string check below. Bind by parameter and
+        # enumerate explicitly instead.
+        $additional = @(ConvertFrom-Json -InputObject $AdditionalEvidenceJson | ForEach-Object { $_ })
         if ($additional.Count -gt 10) { throw 'evidence_inventory_too_large' }
         foreach ($file in $additional) { if ($file -isnot [string] -or -not [IO.Path]::IsPathRooted($file)) { throw 'evidence_path_invalid' } }
     }
