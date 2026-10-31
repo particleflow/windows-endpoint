@@ -200,7 +200,10 @@ for (const exitCode of [0, 1]) {
     assert.equal(c.exitObserved, true); assert.equal(c.closed, true); assert.equal(c.sessionStarted, true)
     assert.equal(c.stoppedObserved, false); assert.equal(connector.cleanupConfirmed(), false); assert.equal(connector.confirmedExit(), false)
     assert.equal(connector.status().state, 'needs_attention'); assert.equal(connector.status().lastError, 'native_cleanup_unknown')
-    await assert.rejects(connector.stop(), { code: 'connector_stop_unknown' })
+    // The child is verifiably dead: stop must complete cleanly instead of
+    // wedging every owning-lifecycle retry on a publication a dead process can
+    // never emit. Restart refusal and the unknown-cleanup evidence are retained.
+    await connector.stop(); await connector.stop()
     assert.throws(() => connector.start(), { code: 'component_previous_cleanup_unknown' })
     assert.equal(connector.record, c)
   })

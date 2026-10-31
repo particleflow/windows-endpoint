@@ -1,12 +1,11 @@
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { stageBundle, validateConfig, validateDirectory, verifyBundle, transferLocations, componentRoots, isNativeRuntimeConfig } from './endpoint.mjs'
+import { validateConfig, validateDirectory, transferLocations, componentRoots, isNativeRuntimeConfig } from './endpoint.mjs'
 import { acquireLeases, leaseKeys, StateStore } from './lifecycle.mjs'
 
-// Internal offline transaction engine. No public activation command consumes
-// this selection yet: official path approval and state/quiescence proofs remain
-// unimplemented. Tests supply explicit synthetic proof providers.
+// Shared program selection journal and recovery. The native program adapter
+// supplies its verifier, staging and original-work checks; no component installer.
 export class DeploymentError extends Error {
   constructor(code) { super(code); this.code = code }
 }
@@ -79,7 +78,7 @@ export function deploymentReferences(root, references) {
 }
 
 export class DeploymentTransactions {
-  constructor({ root, config, lifecycleDirectory, inspectWork, qualify, verify = verifyBundle, stage = stageBundle, io = fs, checkpoint = async () => {} }) {
+  constructor({ root, config, lifecycleDirectory, inspectWork, qualify, verify, stage, io = fs, checkpoint = async () => {} }) {
     this.root = root; this.layout = deploymentLayout(root); this.config = structuredClone(config)
     this.lifecycleDirectory = lifecycleDirectory
     this.lifecycleStore = new StateStore(lifecycleDirectory, config.deviceId)
@@ -102,35 +101,17 @@ export class DeploymentTransactions {
     catch (error) { if (error.code === 'endpoint_already_owned') return report('deferred', { reason: 'endpoint_owned' }); throw error }
     try {
       const lifecycle = await this.lifecycleStore.load()
-      if (lifecycle.phase !== 'stopped' || lifecycle.attention) return report('deferred', { reason: lifecycle.attention ? 'endpoint_attention' : 'endpoint_stop_unverified' })
+      if (!this.maintenanceEligible(lifecycle)) return report('deferred', { reason: lifecycle.attention ? 'endpoint_attention' : 'endpoint_stop_unverified' })
       return await operation()
     } catch (error) {
       if (error instanceof DeploymentError) throw error
-      if (/^candidate_[a-z_]+$/.test(error.code)) throw new DeploymentError(error.code)
+      if (/^(?:candidate|producer_upgrade|producer_session)_[a-z_]+$/.test(error.code)) throw new DeploymentError(error.code)
       const reason = ['EACCES', 'EPERM', 'EROFS'].includes(error.code) ? 'deployment_storage_read_only' : error.code === 'ENOSPC' ? 'deployment_space_unavailable' : 'deployment_operation_failed'
       throw new DeploymentError(reason)
     } finally { await release() }
   }
-  async read() {
-    for (const directory of Object.values(this.layout)) await validateDirectory(directory)
-    const st = await this.io.lstat(this.file)
-    demand(st.isFile() && !st.isSymbolicLink() && st.nlink === 1 && st.size <= 65536, 'deployment_journal_unsafe')
-    let state
-    try { state = JSON.parse(await this.io.readFile(this.file, 'utf8')) } catch { throw new DeploymentError('deployment_journal_unreadable') }
-    demand(exact(state, ['schema', 'owner', 'packages', 'current', 'previous', 'pending']) && state.schema === 1 && state.owner === this.config.deviceId, 'deployment_journal_incompatible')
-    demand(Array.isArray(state.packages) && state.packages.length <= 128 && state.packages.every(p => exact(p, ['hash', 'profile']) && hash(p.hash) && hash(p.profile)), 'deployment_journal_incompatible')
-    demand(new Set(state.packages.map(p => p.hash)).size === state.packages.length, 'deployment_journal_incompatible')
-    for (const key of ['current', 'previous']) demand(state[key] === null || state.packages.some(p => p.hash === state[key]), 'deployment_journal_incompatible')
-    const p = state.pending
-    if (p !== null) {
-      if (p.kind === 'stage') demand(exact(p, ['kind', 'hash', 'profile']) && hash(p.hash) && hash(p.profile) && state.packages.length < 128 && !state.packages.some(item => item.hash === p.hash), 'deployment_journal_incompatible')
-      else {
-        demand(exact(p, ['kind', 'from', 'to', 'phase']) && p.kind === 'switch' && ['prepared', 'selected'].includes(p.phase) && (p.from === null || state.packages.some(item => item.hash === p.from)) && state.packages.some(item => item.hash === p.to), 'deployment_journal_incompatible')
-        demand(state.current === (p.phase === 'prepared' ? p.from : p.to) && (p.phase !== 'selected' || state.previous === p.from), 'deployment_journal_incompatible')
-      }
-    }
-    return state
-  }
+  maintenanceEligible(lifecycle) { return lifecycle.phase === 'stopped' && lifecycle.attention === null }
+  async read() { return readDeploymentState(this.layout, this.config.deviceId, this.io) }
   async write(state) {
     // Flush the complete small journal before same-directory atomic rename.
     // Leftover temporary files are retained and reported, never wildcard-deleted.
@@ -162,6 +143,7 @@ export class DeploymentTransactions {
     })
   }
   async proof(directory, expectedHash) {
+    demand(typeof this.verify === 'function' && typeof this.stagePayload === 'function', 'deployment_candidate_adapter_required')
     const verified = await this.verify(directory, expectedHash)
     demand(typeof this.qualify === 'function', 'deployment_component_qualification_missing')
     const value = await this.qualify(directory, expectedHash, verified)
@@ -276,7 +258,7 @@ export class DeploymentTransactions {
       for (const entry of await this.io.readdir(this.layout.packages)) if (!state.packages.some(p => p.hash === entry)) unknown.push(`packages/${entry}`)
       for (const entry of await this.io.readdir(this.layout.control)) if (entry !== 'deployment.json') unknown.push(`control/${entry}`)
       for (const item of state.packages) {
-        try { await this.verify(path.join(this.layout.packages, item.hash), item.hash) }
+        try { await this.owned(state, item.hash) }
         catch { unverifiedOwnedPackages.push(item.hash) }
       }
       // No cleanup implementation in this first batch: even known old packages
@@ -285,4 +267,25 @@ export class DeploymentTransactions {
       return report('inventory', { selected: state.current, ownedPackages: state.packages.map(p => p.hash), retainedUnknownEntries: unknown.sort(), unverifiedOwnedPackages, deletionImplemented: false })
     })
   }
+}
+
+export async function readDeploymentState(layout, owner, io = fs) {
+  for (const directory of Object.values(layout)) await validateDirectory(directory)
+  const st = await io.lstat(path.join(layout.control, 'deployment.json'))
+  demand(st.isFile() && !st.isSymbolicLink() && st.nlink === 1 && st.size <= 65536, 'deployment_journal_unsafe')
+  let state
+  try { state = JSON.parse(await io.readFile(path.join(layout.control, 'deployment.json'), 'utf8')) } catch { throw new DeploymentError('deployment_journal_unreadable') }
+  demand(exact(state, ['schema', 'owner', 'packages', 'current', 'previous', 'pending']) && state.schema === 1 && state.owner === owner, 'deployment_journal_incompatible')
+  demand(Array.isArray(state.packages) && state.packages.length <= 128 && state.packages.every(p => exact(p, ['hash', 'profile']) && hash(p.hash) && hash(p.profile)), 'deployment_journal_incompatible')
+  demand(new Set(state.packages.map(p => p.hash)).size === state.packages.length, 'deployment_journal_incompatible')
+  for (const key of ['current', 'previous']) demand(state[key] === null || state.packages.some(p => p.hash === state[key]), 'deployment_journal_incompatible')
+  const p = state.pending
+  if (p !== null) {
+    if (p.kind === 'stage') demand(exact(p, ['kind', 'hash', 'profile']) && hash(p.hash) && hash(p.profile) && state.packages.length < 128 && !state.packages.some(item => item.hash === p.hash), 'deployment_journal_incompatible')
+    else {
+      demand(exact(p, ['kind', 'from', 'to', 'phase']) && p.kind === 'switch' && ['prepared', 'selected'].includes(p.phase) && (p.from === null || state.packages.some(item => item.hash === p.from)) && state.packages.some(item => item.hash === p.to), 'deployment_journal_incompatible')
+      demand(state.current === (p.phase === 'prepared' ? p.from : p.to) && (p.phase !== 'selected' || state.previous === p.from), 'deployment_journal_incompatible')
+    }
+  }
+  return state
 }

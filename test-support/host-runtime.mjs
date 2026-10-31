@@ -67,7 +67,7 @@ const code = await runForeground({ root, tickMs: 100, createTestRuntime: async (
         await new Promise(resolve => { releaseReady = resolve; notify({ event: 'ready_waiting' }) })
       }
     },
-    recoverConnectorLock: async () => { notify({ event: 'synthetic_lock_recovery' }) },
+    recoverConnector: async () => { notify({ event: 'synthetic_connector_recovery' }) },
     stop: async component => {
       if (failStop && component === 'connector') throw new LifecycleError('connector_stop_unknown')
       const owned = children.get(component)

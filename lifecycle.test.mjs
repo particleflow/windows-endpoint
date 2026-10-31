@@ -7,6 +7,12 @@ import { EndpointLifecycle, LifecycleError, StateStore, NativeDriver, acquireLea
 import { managedEnvironment } from './endpoint.mjs'
 import { TransferError, TransferLifecycle } from './transfer-lifecycle.mjs'
 
+function driverConfig(directory) {
+  return { schema: 3, programs: { node: process.execPath, herdr: path.join(directory, 'herdr.exe'), piPackage: directory, piBin: directory, gitRoot: directory, connectorPackage: path.join(directory, 'runtime') },
+    connector: { kind: 'memoh-runtime', enrollmentFile: path.join(directory, 'enrollment.json') },
+    sourceRoot: directory, herdrConfigRoot: directory, herdrStateRoot: directory, piConfigDir: directory, session: 'default', deviceId: 'fixture-device', runtimeId: 'fixture-runtime' }
+}
+
 async function fixture(t, options = {}) {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'endpoint-life-')))
   const calls = [], alive = new Set()
@@ -20,7 +26,7 @@ async function fixture(t, options = {}) {
     start: async c => { calls.push(`start:${c}`); alive.add(c) },
     waitReady: async c => { calls.push(`ready:${c}`) },
     stop: async c => { calls.push(`stop:${c}`); alive.delete(c) },
-    recoverConnectorLock: async () => { calls.push('recover:lock') },
+    recoverConnector: async () => { calls.push('recover:connector') },
   }
   const store = new StateStore(directory, 'fixture-device')
   const create = (overrides = {}) => new EndpointLifecycle({ driver, store, acquire: () => acquireLeases([directory], directory), clock: () => 1000000, delay: async () => {}, ...options, ...overrides })
@@ -263,7 +269,7 @@ test('confirmed exit still respects the original recovery budget and external-se
 
 test('native exit proof needs an exit event plus a previously captured generation on that child', async t => {
   const { directory } = await fixture(t)
-  const config = { bundleRoot: directory, sourceRoot: directory, herdrConfigRoot: directory, herdrStateRoot: directory, agenvoConfigDir: directory, piConfigDir: directory, session: 'default' }
+  const config = driverConfig(directory)
   const driver = new NativeDriver(config)
   const owned = { process: { pid: 123, killed: true }, generation: '123:456', exited: false, error: false, exitObserved: false }
   driver.children.set('herdr', owned)
@@ -282,7 +288,7 @@ test('native exit proof needs an exit event plus a previously captured generatio
 
 test('native runtime status probe lets pending process events run before reporting command failure', async t => {
   const { directory } = await fixture(t)
-  const driver = new NativeDriver({ bundleRoot: directory, sourceRoot: directory, herdrConfigRoot: directory, herdrStateRoot: directory, agenvoConfigDir: directory, piConfigDir: directory, session: 'default' })
+  const driver = new NativeDriver(driverConfig(directory))
   // Node deliberately rejects Herdr's --session argv. This is a real finite
   // subprocess but not a mock claim about Herdr or Windows named pipes.
   driver.herdr = process.execPath
@@ -307,23 +313,27 @@ test('native runtime status probe lets pending process events run before reporti
 })
 
 async function nativeConnectorFixture(t) {
-  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'endpoint-child-error-')))
-  const script = path.join(directory, 'inert-component.mjs')
-  await fs.writeFile(script, 'setInterval(() => {}, 1000)\n')
-  const driver = new NativeDriver({ bundleRoot: directory, sourceRoot: directory, herdrConfigRoot: directory, herdrStateRoot: directory, agenvoConfigDir: directory, piConfigDir: directory, session: 'default' })
-  driver.node = process.execPath; driver.connector = script
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'endpoint-native-child-')))
+  const config = driverConfig(directory), api = path.join(config.programs.connectorPackage, 'dist/endpoint-host-api.mjs')
+  await fs.mkdir(path.dirname(api), { recursive: true })
+  await fs.writeFile(api, `
+export class RuntimeSession {}
+export const formatCLIError = e => e.message;
+export function runCLI() {
+  const timer = setInterval(() => {}, 1000);
+  process.once('SIGTERM', () => { clearInterval(timer); console.log('stopped') });
+  console.log('connected'); return Promise.resolve(0);
+}
+`)
+  const driver = new NativeDriver(config)
   await driver.start('connector')
-  const child = driver.children.get('connector'), kill = child.process.kill.bind(child.process)
-  let closed = false
-  const close = new Promise(resolve => child.process.once('close', () => { closed = true; resolve() }))
+  const child = driver.nativeConnector.record, kill = child.process.kill.bind(child.process)
   t.after(async () => {
-    child.process.kill = kill
-    if (!closed) kill()
-    await close
+    if (!child.closed) { kill(); await child.done }
     await fs.rm(directory, { recursive: true, force: true })
   })
-  assert.ok(Number.isSafeInteger(child.process.pid))
-  return { directory, driver, child, kill, close }
+  await driver.waitReady('connector')
+  return { directory, driver, child }
 }
 
 test('native child error after spawn cannot authorize a duplicate component or satisfy exit', async t => {
@@ -338,23 +348,21 @@ test('native child error after spawn cannot authorize a duplicate component or s
   assert.equal(done, false)
   assert.equal(driver.alive('connector'), true)
   await assert.rejects(driver.start('connector'), { code: 'component_already_owned' })
-  assert.equal(driver.children.get('connector'), child)
-  await driver.stop('connector')
+  assert.equal(driver.nativeConnector.record, child)
+  await assert.rejects(driver.stop('connector'), { code: 'connector_stop_unknown' })
   assert.equal(child.exitObserved, true)
 })
 
-test('native failed kill keeps the lifecycle lease until explicit stop confirms actual exit', async t => {
-  const { directory, driver, child, kill } = await nativeConnectorFixture(t)
+test('native failed graceful stop keeps the lifecycle lease until explicit stop confirms actual cleanup', async t => {
+  const { directory, driver, child } = await nativeConnectorFixture(t)
   const store = new StateStore(directory, 'synthetic-kill-failure')
   const lifecycle = new EndpointLifecycle({ driver, store, acquire: () => acquireLeases([directory], directory) })
   lifecycle.state = await store.load(); lifecycle.state.phase = 'running'
   lifecycle.release = await lifecycle.acquire()
   let checkpoints = 0
   driver.captureContinuation = async () => { checkpoints++; return null }
-  child.process.kill = () => {
-    child.process.emit('error', Object.assign(new Error('synthetic kill failure'), { code: 'EPERM' }))
-    return false
-  }
+  const stop = driver.nativeConnector.stop.bind(driver.nativeConnector)
+  driver.nativeConnector.stop = async () => { throw new LifecycleError('connector_stop_unknown') }
   try {
     await assert.rejects(lifecycle.stop(), { code: 'connector_stop_unknown' })
     assert.equal(child.exitObserved, false); assert.equal(child.exited, false)
@@ -363,12 +371,32 @@ test('native failed kill keeps the lifecycle lease until explicit stop confirms 
     await assert.rejects(acquireLeases([directory], directory), { code: 'endpoint_already_owned' })
     // Repeated failure remains handled and cannot release the same lease.
     await assert.rejects(lifecycle.stop(), { code: 'connector_stop_unknown' })
-    child.process.kill = kill
+    driver.nativeConnector.stop = stop
     await lifecycle.stop()
     assert.equal(child.exitObserved, true); assert.equal(lifecycle.release, null)
     const release = await acquireLeases([directory], directory); await release()
   } finally {
-    child.process.kill = kill
+    driver.nativeConnector.stop = stop
+    if (lifecycle.release) await lifecycle.stop()
+  }
+})
+
+test('stop completes cleanly once the owned connector child is verifiably dead without publishing stopped', async t => {
+  const { directory, driver, child } = await nativeConnectorFixture(t)
+  const store = new StateStore(directory, 'synthetic-dead-connector')
+  const lifecycle = new EndpointLifecycle({ driver, store, acquire: () => acquireLeases([directory], directory) })
+  lifecycle.state = await store.load(); lifecycle.state.phase = 'running'
+  lifecycle.release = await lifecycle.acquire()
+  try {
+    // Abrupt external death: no official stopped publication can ever arrive.
+    child.process.kill('SIGKILL'); await child.done
+    assert.equal(child.stoppedObserved, false); assert.equal(child.exitObserved, true)
+    await driver.stop('connector')
+    await lifecycle.stop()
+    assert.equal(lifecycle.release, null)
+    const saved = await store.load()
+    assert.equal(saved.phase, 'stopped'); assert.equal(saved.attention, null)
+  } finally {
     if (lifecycle.release) await lifecycle.stop()
   }
 })
@@ -376,10 +404,10 @@ test('native failed kill keeps the lifecycle lease until explicit stop confirms 
 test('native spawn failure without a PID remains a completed failed start', async t => {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'endpoint-spawn-failure-')))
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
-  const driver = new NativeDriver({ bundleRoot: directory, sourceRoot: directory, herdrConfigRoot: directory, herdrStateRoot: directory, agenvoConfigDir: directory, piConfigDir: directory, session: 'default' })
-  driver.node = path.join(directory, 'missing-node.exe')
+  const driver = new NativeDriver(driverConfig(directory))
+  driver.nativeConnector.options.node = path.join(directory, 'missing-node.exe')
   await driver.start('connector')
-  const child = driver.children.get('connector')
+  const child = driver.nativeConnector.record
   await child.done
   assert.equal(child.process.pid, undefined)
   assert.equal(driver.alive('connector'), false)
@@ -390,7 +418,7 @@ test('native spawn failure without a PID remains a completed failed start', asyn
 test('native startup preserves a classified configuration or authentication failure after the child has exited', async t => {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'endpoint-native-start-')))
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
-  const driver = new NativeDriver({ bundleRoot: directory, sourceRoot: directory, herdrConfigRoot: directory, herdrStateRoot: directory, agenvoConfigDir: directory, piConfigDir: directory, session: 'default' })
+  const driver = new NativeDriver(driverConfig(directory))
   for (const [lastError, expected] of [['native_configuration_invalid', 'connector_configuration_invalid'], ['handshake_403', 'connector_authentication_required'], ['native_tls_verification_failed', 'connector_tls_verification_failed']]) {
     driver.nativeConnector = { alive: () => false, status: () => ({ state: 'needs_attention', lastError }) }
     await assert.rejects(driver.waitReady('connector'), { code: expected })
@@ -436,7 +464,7 @@ test('shared managed environment removes all reserved pollution, not just overla
   const env = managedEnvironment(config, { PATH: 'polluted', NODE_OPTIONS: '--require=bad', NODE_PATH: '/bad', BASH_ENV: '/bad', ENV: '/bad', HERDR_SESSION: 'bad', HERDR_SOCKET: '/bad', AGENVO_SECRET: 'bad', BASH_FUNC_bad: 'bad', SystemRoot: 'C:\\Windows' })
   for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'BASH_ENV', 'ENV', 'HERDR_SESSION', 'HERDR_SOCKET', 'AGENVO_SECRET', 'BASH_FUNC_bad']) assert.equal(env[key], undefined)
   assert.equal(env.PATH.includes('polluted'), false)
-  assert.equal(env.AGENVO_CONFIG_DIR, '/agenvo')
+  assert.equal(env.AGENVO_CONFIG_DIR, undefined)
 })
 
 
@@ -556,7 +584,7 @@ test('stop still cleans children when awaited active tick cannot persist attenti
 
 test('owned Herdr generation rejects replaced endpoint without sending stop', async t => {
   const { directory } = await fixture(t)
-  const config = { bundleRoot: directory, sourceRoot: directory, herdrConfigRoot: directory, herdrStateRoot: directory, agenvoConfigDir: directory, piConfigDir: directory, session: 'default' }
+  const config = driverConfig(directory)
   const driver = new NativeDriver(config)
   driver.children.set('herdr', { process: { pid: 123 }, exited: false, generation: '123:456' })
   await fs.writeFile(driver.marker, '123:456')

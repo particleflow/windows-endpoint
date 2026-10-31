@@ -12,7 +12,9 @@ import zipfile
 
 RUNTIME_FILES = (
     'endpoint.mjs', 'endpoint.ps1', 'WindowsEndpoint.ps1', 'product-installation.mjs', 'host.mjs', 'runtime.mjs', 'installed.mjs',
-    'pi-catalog-sync.mjs', 'pi-catalog-store.mjs', 'pi-catalog-lifecycle.mjs', 'pi-catalog-replace.ps1', 'pi-magpie-catalog.mjs',
+    'pi-catalog-sync.mjs', 'pi-magpie-catalog.mjs',
+    'pi-magpie-native-extension.mjs', 'pi-magpie-native-profile-entry.mjs', 'pi-native-catalog-profile.mjs',
+    'pi-native-catalog-transaction.mjs', 'producer-upgrade.mjs', 'producer-reference.mjs', 'producer-reference.ps1',
     'native-connector.mjs', 'native-connector-child.mjs', 'setup.mjs', 'host-recovery.mjs', 'host-recovery.ps1',
     'directory-selection.mjs', 'directory-selection.ps1',
     'lifecycle.mjs', 'handoff.mjs', 'owned-herdr.ps1', 'session-continuation.mjs',
@@ -26,7 +28,6 @@ PRODUCER_FILES = (
 )
 TEMPLATES = {
     'packaging/README.md': 'README.md',
-    'packaging/endpoint.references.example.json': 'examples/endpoint.references.example.json',
     'packaging/runtime.example.json': 'examples/runtime.example.json',
     'packaging/endpoint.native-runtime.example.json': 'examples/endpoint.native-runtime.example.json',
 }
@@ -158,6 +159,10 @@ def build(source, commit, producer, producer_source, output, native_runtime=None
         'central_component_data': True,
         'stable_installation_entry': 1,
         'state_profile': 'endpoint-program-v1',
+        'native_pi_catalog': {'schema': 1, 'mode': 'pi-in-process', 'piVersion': '1.4.0',
+                              'entry': 'pi-magpie-native-profile-entry.mjs',
+                              'settingsKey': 'windowsEndpointPiCatalog', 'legacyFileSync': False,
+                              'bindingVersion': 1, 'profileReference': 'extensions/windows-endpoint-magpie.js'},
         'files': [{'path': name, 'size': len(data), 'sha256': sha(data)} for name, data in sorted(payload.items())],
     }
     if native:
@@ -165,6 +170,7 @@ def build(source, commit, producer, producer_source, output, native_runtime=None
                                       'entry': native['entry'], 'provenance': 'runtime-connector/SHA256SUMS.json'}
         manifest['native_transfer_directory_pair'] = True
         manifest['native_transfer_direct_cli'] = True
+        manifest['native_producer_reference'] = 1
         manifest['native_runtime_project_root'] = True
         manifest['native_running_recovery'] = True
         manifest['native_stopped_observation_recovery'] = True

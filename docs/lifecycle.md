@@ -2,7 +2,7 @@
 
 Automatic recovery must work without an open chat, repeated result queries or a
 user clicking a transfer action. This is owned by the **one Windows endpoint's
-lifecycle coordinator**, alongside official Herdr and Agenvo process management.
+lifecycle coordinator**, alongside official Herdr and Memoh Runtime process management.
 It does not belong to a separately installed transfer server or a duplicate task
 queue. The internal `lifecycle.mjs` coordinator now implements bounded component
 management. Product activation remains gated; transfer wake is not wired while
@@ -15,8 +15,6 @@ the finite status contract is missing. It reports `ready:false` and
 | --- | --- | --- |
 | [Herdr plugin startup](https://github.com/herdrdev/herdr/blob/5bd900d88c80d95f5b145397e45bbeea398b8165/docs/next/website/src/content/docs/plugins.mdx#startup-hooks), [implementation](https://github.com/herdrdev/herdr/blob/5bd900d88c80d95f5b145397e45bbeea398b8165/src/app/api/plugins/runtime.rs) | One-shot after session restoration/API readiness; again for a new server during Unix live handoff. Existing plugin config/state environment is supplied. | Live handoff is unsupported on Windows. No rerun on client attach, config reload, linking or enabling a plugin. Asynchronous failure does not stop Herdr. The hook is not a supervised daemon. |
 | [Herdr event hooks](https://github.com/herdrdev/herdr/blob/5bd900d88c80d95f5b145397e45bbeea398b8165/src/api/schema/events.rs) | Workspace/worktree/tab/pane events, including pane exit and Agent status changes. | No idle timer, queue-next-due event, Windows network-restored event or guaranteed event replay in this hook contract. Pane exit does not prove a closed delivery manifest exists. Concurrent plugin commands are capped at 32; a hook can fail rather than wait. |
-| [Agenvo connector](https://github.com/Xuanwo/agenvo/blob/a89415e557c415faf5626354f8e87233eb69d877/packages/connector/src/main.ts) | In-process WebSocket reconnect/backoff and heartbeat; status snapshots. | Does not launch/supervise Herdr or call transfer actions. 401/403/426 and terminal socket closes stop network retries and need attention. Restarting the connector must not erase those states. |
-| [Agenvo Herdr events](https://github.com/Xuanwo/agenvo/blob/a89415e557c415faf5626354f8e87233eb69d877/apps/herdr/src/herdr-events.ts) | Reconnect native subscriptions and publish `agenvo.resync_required`. | A remote observer notification, not a local transfer wake. A missed subscription needs resync; it cannot be the sole durable wake source. |
 | [PR47 plugin](https://github.com/particleflow/Memoh/blob/6ddf61dcd8199758e4110398645c556a3d6d7375/contrib/herdr/memoh-delivery/herdr-plugin.toml) | Finite `collect-result`, `advance-results` and storage-check actions via the official host. | Current manifest contains no startup or event hook. No independent timer or worker is registered. |
 | [PR47 nextDue](https://github.com/particleflow/Memoh/blob/6ddf61dcd8199758e4110398645c556a3d6d7375/internal/transferclient/host_action.go), [bounded advancement](https://github.com/particleflow/Memoh/blob/6ddf61dcd8199758e4110398645c556a3d6d7375/internal/transferclient/producer.go) | Existing queue chooses an eligible persisted job, preserves IDs/backoff, serializes workers. `advance-results` performs up to 64 steps on one job and exits within two minutes. | Nothing invokes it when the endpoint is idle. `idle` also covers jobs not yet due; blocked/create-unknown jobs are deliberately skipped. Repeated task queries are a current trigger, not unattended recovery. |
 
@@ -57,7 +55,7 @@ per existing endpoint identity:
    may use an exposed next-due timestamp; a conservative bounded interval is a
    fallback only after error classification is available. The queue checks its
    persisted due times, so this is not a second transfer scheduler.
-5. Network/relay availability recovery can request an early wake; it must not
+5. Network/Runtime availability recovery can request an early wake; it must not
    reset existing queue due times or repeatedly restart a working connector.
 
 Each invocation has an execution/output limit, no overlapping instance, bounded
@@ -121,8 +119,9 @@ removal of inherited NODE_PATH, HERDR_* and AGENVO_* pollution. Launch-plan
 
 Only owned child handles can be stopped. Preexisting hosts and stale locks without
 saved ownership proof require handoff; there is no PID-based adoption or kill.
-An exited owned connector's exact PID and saved lock nonce are checked before
-invoking official `doctor --recover-lock`; the coordinator never deletes its lock.
+The Runtime connector uses the existing owned IPC stop request and its official
+stopped observation. Unknown cleanup retains the child and lease. Legacy schema
+1/2 starts and stale-lock recovery return `legacy_execution_retired`.
 Herdr uses the official `server.stop` API through `owned-herdr.ps1`. The finite
 client verifies the actual named-pipe server PID using Windows
 `GetNamedPipeServerProcessId`, checks the official `PID:creation-time` generation,
@@ -131,14 +130,14 @@ reopens a session endpoint after the ownership check. Readiness first probes the
 owned peer; periodic read-only checks bracket status with generation checks.
 PowerShell 5.1 and its standard .NET runtime are OS dependencies; no execution
 policy is changed or bypassed. Distribution signing/policy qualification remains
-pending. This is a client helper, not a service or Agent/core modification. Windows termination of the owned connector is
-not claimed to execute POSIX shutdown handlers; official stale-lock recovery is
-part of stopping it. Failed/uncertain cleanup retains the lease and attention.
+pending. This is a client helper, not a service or Agent/core modification. The
+Runtime child receives graceful stop through IPC; OS kill is not a normal
+connector stop or an alternative cleanup confirmation. Failed/uncertain cleanup retains the lease and attention.
 
 One coalesced check recovers components in dependency order, after requalification
 and unchanged official config fingerprints. Three restart attempts per ten-minute
 window are persisted in the endpoint-owned small journal. Offline live connector
-network retries remain owned by Agenvo. 401/403, protocol upgrade, config changes,
+network retries remain owned by the official Memoh Runtime. 401/403, protocol upgrade, config changes,
 a published clean connector stop (including credential deletion), unknown host
 observations and exhausted budgets suspend component recovery. An
 explicit attention acknowledgement never clears the persisted restart budget.
@@ -159,16 +158,14 @@ ledger and unknown outcomes remain authoritative; lifecycle never redispatches.
 
 ## Evidence and current boundaries
 
-The unit suite covers ownership, order, coalescing, persisted budgets, auth and
-unknown states, shutdown/backoff and data preservation. Windows CI additionally
-assembles unchanged official binaries from fixed archive hashes/npm integrity,
-uses a loopback TLS relay with an ephemeral synthetic registration, and exercises
-component crashes through the coordinator's own foreground run loop (observation
-polls do not drive recovery), original connector network reconnect, real HTTP 401, normal
-stop, a lease-holder process death, and restoration of one ordinary shell command
-without replay. TLS validation stays enabled; no system trust store is changed.
-Results must be read from the exact commit's CI, not inferred from fixture code.
-This is no full Agent business/transfer/GUI/physical-power-loss acceptance test.
+The unit suite covers ownership, order, coalescing, persisted budgets, auth,
+unknown states, shutdown/backoff, data preservation and retired execution denial.
+The actual fixed-source Windows native Runtime/Herdr fixture and standalone
+Herdr/Pi checks remain in CI. The prior Agenvo crash/relay/reference scenarios
+are withdrawn; their earlier results are historical evidence, not this head's
+qualification. Native packaged transfer upload/authentication/TLS acceptance is
+an explicit failing gate. No current Windows, production NAS or physical-power
+loss success is inferred from source inspection or Linux fixtures.
 
 Locking the desktop does not establish desktop capability readiness. Logging out
 stops the ordinary user session; no startup registration or service is installed.

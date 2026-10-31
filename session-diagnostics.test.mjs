@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { readSessionHistory, observeExistingSession } from './session-diagnostics.mjs'
 import { inspectInstalled } from './installed.mjs'
-import { installedFixture } from './test-support/installed-fixture.mjs'
+import { installedFixture, nativeInstalledFixture } from './test-support/installed-fixture.mjs'
 
 const savedFile = c => path.join(c.herdrConfigRoot, 'sessions', c.session, 'session.json')
 const pi = { source: 'herdr:pi', agent: 'pi', kind: 'path', value: 'PRIVATE_SYNTHETIC_PI_SESSION' }
@@ -38,19 +38,19 @@ test('oversized and linked snapshot files are uninspected rather than classified
   assert.equal(await fs.readFile(original, 'utf8'), JSON.stringify(history))
 })
 test('diagnostic preflight may inspect history while the normal runtime gate remains closed', async t => {
-  const f = await installedFixture(t)
+  const f = await nativeInstalledFixture(t)
   await f.write(savedFile(f.config), JSON.stringify(history))
   await assert.rejects(inspectInstalled(f.config, f.run), { code: 'existing_herdr_session_requires_handoff' })
   assert.equal(f.calls.length, 0)
   const inspected = await inspectInstalled(f.config, f.run, { inspectHistoryOnly: true })
-  assert.equal(inspected.history.state, 'history_present'); assert.equal(f.calls.length, 8)
+  assert.equal(inspected.history.state, 'history_present'); assert.equal(f.calls.length, 9)
   await assert.rejects(inspectInstalled(f.config, f.run), { code: 'existing_herdr_session_requires_handoff' })
   await f.write(savedFile(f.config), JSON.stringify({ version: 3, workspaces: [], annotation: 'x'.repeat(65536) }))
   assert.equal((await readSessionHistory(f.config)).state, 'empty_current_format')
   await assert.rejects(inspectInstalled(f.config, f.run), { code: 'existing_herdr_session_requires_handoff' })
 })
 async function observationFixture(t) {
-  const f = await installedFixture(t), calls = [], marker = path.join(f.config.herdrConfigRoot, 'sessions', f.config.session, 'herdr.sock')
+  const f = await nativeInstalledFixture(t), calls = [], marker = path.join(f.config.herdrConfigRoot, 'sessions', f.config.session, 'herdr.sock')
   await f.write(marker, '123:456')
   const inspected = await inspectInstalled(f.config, f.run)
   const status = { running: true, version: '0.9.5', protocol: 1, session: f.config.session, compatible: true, endpoint_compatible: true }

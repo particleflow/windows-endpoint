@@ -48,3 +48,19 @@ export async function verifySessionContinuation(config, checkpoint) {
   if (current.configuration !== checkpoint.configuration || current.snapshot !== checkpoint.snapshot) reject('session_continuation_changed')
   if (!checkpoint.ordinary || !current.ordinary) reject('existing_herdr_session_requires_handoff')
 }
+
+// A producer reference change has its own offline transaction. Never use this
+// for a Pi profile, task root, enrollment, origin or credential-reference change.
+// Both bindings are calculated from real, unchanged ordinary saved workspaces.
+export async function producerSessionTransition(before, after, checkpoint) {
+  if (!before.transfer || !after.transfer || before.transfer.pluginRoot === after.transfer.pluginRoot) reject('producer_session_reference_invalid')
+  const expected = structuredClone(before)
+  expected.transfer.pluginRoot = after.transfer.pluginRoot
+  if (JSON.stringify(expected) !== JSON.stringify(after)) reject('producer_session_identity_changed')
+  await verifySessionContinuation(before, checkpoint)
+  if (checkpoint.snapshot === null) reject('producer_session_snapshot_required')
+  const next = await captureSessionContinuation(after)
+  if (!next.ordinary || next.snapshot !== checkpoint.snapshot || next.configuration !== checkpoint.configuration) reject('producer_session_snapshot_changed')
+  await verifySessionContinuation(before, checkpoint)
+  return next
+}

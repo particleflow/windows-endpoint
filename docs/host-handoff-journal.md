@@ -23,9 +23,10 @@ node <configured-endpoint-entry> host handoff-status --root <configured-hostRoot
 
 It uses the existing configuration's device identity and existing
 `data/endpoint/lifecycle.json`. It creates no directory, starts no runtime and
-does not acquire or steal a writer lease. The established owner -> MCP -> Agenvo
--> Herdr `pane.run/read` path can execute this finite query when its original
-control pane is usable. The owner must configure both entry and hostRoot;
+does not acquire or steal a writer lease. Delivery of this finite query must
+use the existing authenticated native Memoh Runtime and the verified original
+Herdr control pane; the retired MCP/Agenvo path is not a delivery option. This
+readback contract alone does not establish that transport acceptance. The owner must configure both entry and hostRoot;
 workspace paths and labels cannot supply either. A query does not authenticate
 the declarations in the record or prove the current host/native process is live.
 

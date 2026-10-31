@@ -1,10 +1,19 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { parseLifecycleSummary, parseAdvanceDecision, parseSnapshotAdvance, deadlineMilliseconds } from './transfer-contract.mjs'
+import { transferCommand } from './transfer-lifecycle.mjs'
 
 const now = Date.parse('2026-10-22T18:00:00Z')
 const summary = overrides => ({ schema: 'memoh.delivery.lifecycle.v1', state: 'idle', next_due_at: null, error_class: 'none', ...overrides })
 const parse = value => parseLifecycleSummary(JSON.stringify(value), now)
+
+test('0813 receipt observation exit0 is neither a lifecycle decision nor committed completion', () => {
+  const raw=JSON.stringify({state:'receipt_observed',recovery_scope:'receipt_get_only',server_effects:'ready_proof_may_be_recorded'})
+  assert.throws(()=>parseLifecycleSummary(raw,now))
+  assert.throws(()=>parseAdvanceDecision(raw,now))
+  assert.throws(()=>parseSnapshotAdvance(raw,0))
+  assert.throws(()=>transferCommand({},'recover-result'),{code:'transfer_action_rejected'})
+})
 
 test('requested summary contract accepts explicit owner decisions without creating work', () => {
   for (const state of ['due', 'idle', 'blocked', 'unknown']) {

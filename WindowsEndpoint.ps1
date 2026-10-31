@@ -36,7 +36,7 @@ function Verify-Package([string]$Directory, [string]$ExpectedHash) {
     if ($ExpectedHash -notmatch '^[a-f0-9]{64}$') { throw 'installation_manifest_hash_required' }
     $file = Join-Path $Directory 'candidate.json'
     $manifest = Read-SmallJson $file
-    if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne $ExpectedHash) { throw 'installation_manifest_changed' }
+    if ((Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $file -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -ne $ExpectedHash) { throw 'installation_manifest_changed' }
     if ($manifest.entry -ne 'endpoint.mjs' -or $manifest.schema -ne 1 -or $manifest.files.Count -gt 256) { throw 'installation_inventory_invalid' }
     foreach ($entry in $manifest.files) {
         $segments = $entry.path -split '/'
@@ -45,7 +45,7 @@ function Verify-Package([string]$Directory, [string]$ExpectedHash) {
         }
         $payload = Join-Path $Directory $entry.path
         $item = Require-RegularPath $payload
-        if ($item.Length -ne $entry.size -or (Get-FileHash -LiteralPath $payload -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.sha256) { throw 'installation_payload_changed' }
+        if ($item.Length -ne $entry.size -or (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $payload -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -ne $entry.sha256) { throw 'installation_payload_changed' }
     }
     if (-not ($manifest.files | Where-Object { $_.path -eq 'endpoint.mjs' })) { throw 'installation_inventory_invalid' }
     return $manifest
@@ -53,6 +53,9 @@ function Verify-Package([string]$Directory, [string]$ExpectedHash) {
 $savedOptions = $env:NODE_OPTIONS
 $savedPath = $env:NODE_PATH
 try {
+    # Hash authority is the Utility shipped with this PowerShell, independent
+    # of inherited module discovery. Loader failure retains the existing catch.
+    Import-Module -Name "$PSHOME\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1" -ErrorAction Stop
     $installedEntry = (Split-Path -Leaf $PSScriptRoot) -eq 'control' -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'installation.json'))
     $fresh = $Action -in @('Install','MigrationPlan') -or ($Action -eq 'Dependencies' -and -not $installedEntry)
     if ($fresh) {
@@ -76,7 +79,7 @@ try {
         $ProductRoot = $root
         $receipt = Read-SmallJson (Join-Path $ProductRoot 'control/installation.json')
         if ($receipt.schema -ne 1 -or $receipt.protocol -ne 1 -or $receipt.phase -ne 'complete' -or
-            (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $receipt.launcher_sha256) { throw 'installation_entry_recovery_required' }
+            (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -ne $receipt.launcher_sha256) { throw 'installation_entry_recovery_required' }
         if ($Action -eq 'UninstallPlan') {
             @{state='uninstall_plan_only'; deletionImplemented=$false; filesChanged=$false; retained=@('config','data','logs','queues','workspaces','sessions','credentials','unknown_files','external_official_installations')} | ConvertTo-Json -Compress
             exit 0

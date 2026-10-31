@@ -1,9 +1,10 @@
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
-import os from 'node:os'
-import { randomUUID } from 'node:crypto'
 import { catalog, digest } from '../endpoint.mjs'
 import { DeploymentTransactions } from '../deployment.mjs'
+import { verifyCandidate, stageCandidate } from '../candidate.mjs'
+import { programPackage } from './program-package.mjs'
+import { nativeInstalledFixture } from './installed-fixture.mjs'
 import { StateStore } from '../lifecycle.mjs'
 
 export async function syntheticBundle(directory, revision, format = 1) {
@@ -31,30 +32,35 @@ export async function syntheticBundle(directory, revision, format = 1) {
 
 export function fixtureManager(settings, options = {}) {
   return new DeploymentTransactions({ ...settings,
+    verify: verifyCandidate, stage: stageCandidate,
     qualify: async directory => ({ schema: 1, stateProfileSha256: await digest(path.join(directory, 'fixture-state-profile.json')) }),
     inspectWork: async () => ({ schema: 1, admission: 'closed', tasks: 'idle', transfers: 'idle', stateProfileSha256: settings.profile }),
     ...options })
 }
 
+export async function syntheticCandidate(directory, revision, format = 1) {
+  const candidate = await programPackage(directory, revision, { native: true })
+  const name = 'fixture-state-profile.json', file = path.join(directory, name)
+  await fs.writeFile(file, JSON.stringify({ syntheticQueueFormat: format }))
+  const profile = await digest(file)
+  candidate.manifest.files.push({ path: name, size: (await fs.stat(file)).size, sha256: profile })
+  await fs.writeFile(path.join(directory, 'candidate.json'), JSON.stringify(candidate.manifest))
+  return { ...candidate, hash: await digest(path.join(directory, 'candidate.json')), profile }
+}
+
 export async function deploymentFixture(t) {
-  const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'endpoint deploy 空格 ')))
-  t.after(() => fs.rm(base, { recursive: true, force: true }))
-  const a = await syntheticBundle(path.join(base, 'source-a'), 'a')
-  const b = await syntheticBundle(path.join(base, 'source-b'), 'b')
-  const root = path.join(base, 'install')
-  const config = { schema: 1, bundleRoot: a.directory, manifestSha256: a.hash, nasOrigin: 'https://nas.example.test',
-    sourceRoot: path.join(root, 'data/exports'), herdrConfigRoot: path.join(root, 'config/herdr'), herdrStateRoot: path.join(root, 'data/herdr'),
-    agenvoConfigDir: path.join(root, 'config/agenvo'), piConfigDir: path.join(root, 'data/pi'),
-    transferConfigDir: path.join(root, 'config/herdr/plugins/config/memoh.delivery'), transferStateDir: path.join(root, 'data/herdr/plugins/memoh.delivery'),
-    // Isolate independent fixture processes without weakening global device
-    // ownership. The same fixture's restarts keep this config/identity.
-    deviceId: randomUUID(), runtimeId: '22222222-2222-4222-8222-222222222222', instanceId: 'fixture-herdr', session: 'default' }
+  const f = await nativeInstalledFixture(t), { base } = f
+  const a = await syntheticCandidate(path.join(base, 'source-a'), 'a')
+  const b = await syntheticCandidate(path.join(base, 'source-b'), 'b')
+  const root = path.join(base, 'install'), config = { ...f.config,
+    transfer: { pluginRoot: path.join(base, 'producer'), nasOrigin: 'https://nas.example.test' },
+    transferConfigDir: path.join(base, 'transfer-config'), transferStateDir: path.join(base, 'transfer-state') }
   const lifecycleDirectory = path.join(root, 'data/endpoint')
-  for (const directory of [lifecycleDirectory, ...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir', 'transferConfigDir', 'transferStateDir'].map(k => config[k])]) await fs.mkdir(directory, { recursive: true })
+  for (const directory of [lifecycleDirectory, ...['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'piConfigDir', 'transferConfigDir', 'transferStateDir'].map(k => config[k])]) await fs.mkdir(directory, { recursive: true })
   const settings = { root, config, lifecycleDirectory, profile: a.profile }
   const store = new StateStore(lifecycleDirectory, config.deviceId)
   await store.save({ schema: 1, identity: config.deviceId, phase: 'stopped', attention: null, restarts: [] })
-  const originals = [path.join(config.sourceRoot, 'original.bin'), path.join(config.transferStateDir, 'queue.jsonl'), path.join(config.herdrConfigRoot, 'config.toml'), path.join(config.agenvoConfigDir, 'credentials.json'),
+  const originals = [path.join(config.sourceRoot, 'original.bin'), path.join(config.transferStateDir, 'queue.jsonl'), path.join(config.herdrConfigRoot, 'config.toml'), config.connector.enrollmentFile,
     path.join(config.herdrStateRoot, 'session.json'), path.join(config.piConfigDir, 'task.json'), path.join(root, 'config/endpoint.json'), path.join(root, 'logs/prior.log')]
   for (const file of originals) { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, 'SYNTHETIC USER FILE: PRESERVE EXACTLY') }
   const manager = fixtureManager(settings)

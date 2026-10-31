@@ -6,63 +6,62 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { PassThrough } from 'node:stream'
 import { programDeployment, programDeploymentMain, runSelectedProgram, prepareProfileSwitch, archiveProfileSwitch, commitProfileSwitch, reconcileProfileSwitch, createOwnerAdmissionReader, reconcileProfileSwitchWithOwner } from './program-deployment.mjs'
-import { verifyCandidate } from './candidate.mjs'
+import { verifyCandidate, programProfileHash } from './candidate.mjs'
 import { digest } from './endpoint.mjs'
 import { StateStore, acquireLeases } from './lifecycle.mjs'
 import { captureSessionContinuation } from './session-continuation.mjs'
 import { ForegroundHost, runForeground } from './host.mjs'
-import { installedFixture, nativeInstalledFixture } from './test-support/installed-fixture.mjs'
+import { nativeInstalledFixture } from './test-support/installed-fixture.mjs'
 import { attemptEvidence, recoveryConfigurationHash } from './host-recovery.mjs'
 import { programPackage } from './test-support/program-package.mjs'
 import { createHash, randomUUID } from 'node:crypto'
 
-async function fixture(t, { native = false } = {}) {
-  const f = await (native ? nativeInstalledFixture(t) : installedFixture(t)), root = path.join(f.base, 'host')
-  if (!native) delete f.config.programs.herdr
+async function fixture(t, { runtimeRequest = false } = {}) {
+  const f = await nativeInstalledFixture(t), root = path.join(f.base, 'host')
   await fs.mkdir(path.join(root, 'config'), { recursive: true })
   const configFile = path.join(root, 'config/endpoint.json')
   await fs.writeFile(configFile, JSON.stringify(f.config))
-  if (native) await fs.writeFile(path.join(root, 'config/runtime.json'), JSON.stringify({ schema: 2, mode: 'existing-installations', transfer: 'disabled' }))
-  const a = await programPackage(path.join(f.base, 'package a'), 'a', { native })
-  const b = await programPackage(path.join(f.base, 'package b'), 'b', { native })
+  if (runtimeRequest) await fs.writeFile(path.join(root, 'config/runtime.json'), JSON.stringify({ schema: 2, mode: 'existing-installations', transfer: 'disabled' }))
+  const a = await programPackage(path.join(f.base, 'package a'), 'a', { native: true })
+  const b = await programPackage(path.join(f.base, 'package b'), 'b', { native: true })
   const manager = await programDeployment(root, { prepare: true })
-  const originalFiles = [configFile, native ? f.config.connector.enrollmentFile : path.join(f.config.agenvoConfigDir, 'config.json'), path.join(f.config.piConfigDir, 'auth.json'), ...(native ? [path.join(root, 'config/runtime.json')] : [])]
+  const originalFiles = [configFile, f.config.connector.enrollmentFile, path.join(f.config.piConfigDir, 'auth.json'), ...(runtimeRequest ? [path.join(root, 'config/runtime.json')] : [])]
   const originals = await Promise.all(originalFiles.map(p => fs.readFile(p)))
   return { ...f, root, a, b, manager, originalFiles, originals }
 }
 const apply = (f, pkg, mode = 'install') => programDeploymentMain([mode, '--root', f.root, '--source', pkg.directory, '--manifest-sha256', pkg.hash])
 async function preserve(f) { assert.deepEqual(await Promise.all(f.originalFiles.map(p => fs.readFile(p))), f.originals) }
 
-test('selected deploy run forwards catalog binding using current profile and keeps pending-profile startup fenced', async t => {
-  const f = await fixture(t, { native: true })
+test('selected deploy run forwards native binding using the current profile, rejects the old writer and fences profile preparation', async t => {
+  const f = await fixture(t, { runtimeRequest: true })
   const profile = path.join(f.base, 'current user Pi profile'); await fs.mkdir(profile)
   await fs.writeFile(path.join(f.root, 'config/endpoint.json'), JSON.stringify({ ...f.config, piConfigDir: profile }))
-  // A selected-package boundary fixture only; no component, credential or model
-  // is loaded. Actual foreground catalog lifecycle has its own host fixture.
+  await fs.writeFile(path.join(profile,'settings.json'),'{}')
+  await fs.writeFile(path.join(profile,'models.json'),JSON.stringify({providers:{'existing-magpie':{models:[{id:'selected'}]}}}))
+  // Selected-package boundary only. The separate deploy/official-Pi integration
+  // runs the actual foreground host and native extension, with zero inference.
   const wrapper = `import fs from 'node:fs/promises'; import path from 'node:path';
-export const piCatalogBindingVersion = 1;
-export async function runForeground({ root, piCatalogBinding }) {
+export const piNativeCatalogBindingVersion = 1;
+export async function runForeground({ root, piNativeCatalog }) {
   const config = JSON.parse(await fs.readFile(path.join(root, 'config/endpoint.json'), 'utf8'));
-  const binding = typeof piCatalogBinding === 'function' ? piCatalogBinding(config) : piCatalogBinding;
-  return binding?.providerId === 'existing-magpie' ? 0 : 3;
+  return piNativeCatalog?.providerId === 'existing-magpie' && piNativeCatalog.profileDir === config.piConfigDir ? 0 : 3;
 }\n`
   const entry = path.join(f.a.directory, 'host.mjs'); await fs.writeFile(entry, wrapper)
   const proof = f.a.manifest.files.find(file => file.path === 'host.mjs'); proof.size = Buffer.byteLength(wrapper); proof.sha256 = await digest(entry)
   await fs.writeFile(path.join(f.a.directory, 'candidate.json'), JSON.stringify(f.a.manifest)); f.a.hash = await digest(path.join(f.a.directory, 'candidate.json'))
   await apply(f, f.a)
-  let seen = null
-  assert.equal(await runSelectedProgram(f.root, { piCatalogBinding: config => { seen = config.piConfigDir; return { providerId: 'existing-magpie' } } }), 0)
-  assert.equal(seen, profile)
+  await assert.rejects(runSelectedProgram(f.root, { piCatalogBinding: () => assert.fail('retired writer must not execute') }), {code:'deployment_pi_catalog_file_sync_retired'})
+  await assert.rejects(programDeploymentMain(['run','--root',f.root,'--pi-catalog-provider','existing-magpie']),{code:'catalog_native_profile_not_prepared'})
+  assert.equal((await programDeploymentMain(['prepare-pi-catalog','--root',f.root,'--request-id',randomUUID(),'--provider','existing-magpie'])).state,'prepared_native_catalog')
+  assert.equal(await runSelectedProgram(f.root),0)
   assert.equal((await programDeploymentMain(['run', '--root', f.root, '--pi-catalog-provider', 'existing-magpie'])).hostExitCode, 0)
   await assert.rejects(programDeploymentMain(['run', '--root', f.root, '--pi-catalog-provider', 'invalid provider']), { code: 'deployment_arguments_invalid' })
-  const oldWrapper = wrapper.replace('piCatalogBindingVersion = 1', 'piCatalogBindingVersion = 0')
-  const oldEntry = path.join(f.b.directory, 'host.mjs'); await fs.writeFile(oldEntry, oldWrapper)
-  const oldProof = f.b.manifest.files.find(file => file.path === 'host.mjs'); oldProof.size = Buffer.byteLength(oldWrapper); oldProof.sha256 = await digest(oldEntry)
-  await fs.writeFile(path.join(f.b.directory, 'candidate.json'), JSON.stringify(f.b.manifest)); f.b.hash = await digest(path.join(f.b.directory, 'candidate.json'))
-  await apply(f, f.b, 'update')
-  await assert.rejects(runSelectedProgram(f.root, { piCatalogBinding: () => assert.fail('unsupported host must not call binding') }), { code: 'deployment_pi_catalog_unsupported' })
-  await fs.writeFile(path.join(f.manager.lifecycleDirectory, 'profile-switch-pending.json'), '{}')
-  await assert.rejects(runSelectedProgram(f.root, { piCatalogBinding: () => assert.fail('pending transaction must fence discovery') }), { code: 'deployment_profile_switch_recovery_required' })
+  f.b.manifest.native_pi_catalog={...f.b.manifest.native_pi_catalog,bindingVersion:0}
+  await fs.writeFile(path.join(f.b.directory,'candidate.json'),JSON.stringify(f.b.manifest));f.b.hash=await digest(path.join(f.b.directory,'candidate.json'))
+  await apply(f,f.b,'update')
+  await assert.rejects(runSelectedProgram(f.root),{code:'catalog_native_package_unsupported'})
+  await fs.writeFile(path.join(f.manager.lifecycleDirectory,'profile-switch-pending.json'),'{}')
+  await assert.rejects(runSelectedProgram(f.root),{code:'deployment_profile_switch_recovery_required'})
 })
 
 test('owner SDK adapter uses only existing GETs and stops on authentication or target mismatch without retry', async () => {
@@ -82,7 +81,7 @@ test('owner SDK adapter uses only existing GETs and stops on authentication or t
 })
 
 test('offline local profile commit resumes after both publications without replaying original unknown', async t => {
-  const f = await fixture(t, { native: true }), store = f.manager.lifecycleStore
+  const f = await fixture(t, { runtimeRequest: true }), store = f.manager.lifecycleStore
   await apply(f, f.a)
   const attempt = path.join(f.config.sourceRoot, '.memoh-computer/attempts/original/receipt.json')
   await fs.mkdir(path.dirname(attempt), { recursive: true }); await fs.writeFile(attempt, 'SYNTHETIC UNKNOWN RECEIPT')
@@ -154,7 +153,7 @@ test('offline local profile commit resumes after both publications without repla
 })
 
 test('profile preparation fixes original hashes, is reentrant, and blocks host startup without changing unknown history', async t => {
-  const f = await fixture(t, { native: true }), store = f.manager.lifecycleStore
+  const f = await fixture(t, { runtimeRequest: true }), store = f.manager.lifecycleStore
   await apply(f, f.a)
   const attempt = path.join(f.config.sourceRoot, '.memoh-computer/attempts/original/receipt.json')
   await fs.mkdir(path.dirname(attempt), { recursive: true }); await fs.writeFile(attempt, 'SYNTHETIC UNKNOWN RECEIPT')
@@ -243,7 +242,8 @@ test('attention, task evidence, external lock and incompatible state defer or re
   assert.equal(await fs.readFile(path.join(attempt, 'receipt.json'), 'utf8'), 'SYNTHETIC UNKNOWN ORIGINAL')
   assert.equal((await f.manager.read()).current, f.a.hash)
   await fs.rm(path.dirname(attempt), { recursive: true }) // remove only this test's fixture
-  const lock = path.join(f.config.agenvoConfigDir, 'run.lock')
+  const lock = f.manager.herdrMarker()
+  await fs.mkdir(path.dirname(lock), { recursive: true })
   await fs.writeFile(lock, 'SYNTHETIC EXTERNAL OWNER')
   assert.equal((await apply(f, f.b, 'update')).reason, 'external_component_state_unverified')
   assert.equal(await fs.readFile(lock, 'utf8'), 'SYNTHETIC EXTERNAL OWNER')
@@ -345,23 +345,24 @@ test('an unresolved handoff acknowledgement prevents program switching without c
   await preserve(f)
 })
 
-test('native configuration refuses rollback to an Agenvo-only candidate without changing selection or external state', async t => {
+test('native configuration refuses rollback to a recorded Agenvo-only candidate without changing selection or external state', async t => {
   const f = await fixture(t)
   await apply(f, f.a); await apply(f, f.b, 'update')
-  const configuration = { ...f.config, schema: 3, runtimeId: f.config.deviceId, programs: { ...f.config.programs, herdr: f.p.herdr },
-    connector: { kind: 'memoh-runtime', enrollmentFile: path.join(f.base, 'native/runtime.json') } }
-  delete configuration.agenvoConfigDir
-  await fs.writeFile(f.manager.configFile, JSON.stringify(configuration))
+  // A historical ownership receipt can still name an old candidate. New staging
+  // must refuse it, and reading that receipt must not authorize rollback.
+  const old = await programPackage(path.join(f.base, 'retired candidate'), 'legacy')
+  await fs.cp(old.directory, path.join(f.manager.layout.packages, old.hash), { recursive: true })
+  const state = await f.manager.read()
+  state.packages.push({ hash: old.hash, profile: programProfileHash }); state.previous = old.hash
+  await f.manager.write(state)
   const before = await fs.readFile(f.manager.file)
-  const references = await Promise.all(f.originalFiles.map(file => fs.readFile(file)))
-  await assert.rejects(programDeploymentMain(['rollback', '--root', f.root, '--manifest-sha256', f.a.hash]), { code: 'deployment_native_connector_missing' })
+  await assert.rejects(programDeploymentMain(['rollback', '--root', f.root, '--manifest-sha256', old.hash]), { code: 'deployment_native_connector_missing' })
   assert.deepEqual(await fs.readFile(f.manager.file), before)
-  assert.deepEqual(await Promise.all(f.originalFiles.map(file => fs.readFile(file))), references)
-  assert.equal((await f.manager.read()).current, f.b.hash)
+  await preserve(f)
 })
 
 test('UNC references refuse an old program reader before any workspace access or selector mutation', async t => {
-  const f = await fixture(t, { native: true }); await apply(f, f.a)
+  const f = await fixture(t, { runtimeRequest: true }); await apply(f, f.a)
   delete f.b.manifest.workspace_unc_source_root
   await fs.writeFile(path.join(f.b.directory, 'candidate.json'), JSON.stringify(f.b.manifest))
   const hash = await digest(path.join(f.b.directory, 'candidate.json'))
@@ -375,7 +376,7 @@ test('UNC references refuse an old program reader before any workspace access or
 })
 
 async function retainedFixture(t) {
-  const f = await fixture(t, { native: true }); await apply(f, f.a)
+  const f = await fixture(t, { runtimeRequest: true }); await apply(f, f.a)
   const attempt = path.join(f.config.sourceRoot, '.memoh-computer/attempts/original/receipt.json')
   const raw = '{"state":"unknown","prompt_submitted":false,"attempt":1,"pi_session":"original","receipt":"retained-original"}'
   await fs.mkdir(path.dirname(attempt), { recursive: true }); await fs.writeFile(attempt, raw)

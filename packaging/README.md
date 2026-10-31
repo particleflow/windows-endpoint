@@ -12,8 +12,9 @@ reviewed CI run. These inventories are build evidence, not release signatures.
 Pi, Herdr, Node and Git are **not copied into this package**. Use their existing
 official installations/configuration. The native connector uses the original
 Memoh Runtime CLI logic and its existing enrollment file; the host owns its foreground
-process, with no separate Runtime daemon registration. The legacy Agenvo mode
-remains available through its existing external installation/configuration.
+process, with no separate Runtime daemon registration. Schema 1/2 legacy execution
+is retired: run requests and launch plans fail with `legacy_execution_retired`.
+Original saved configuration and unknown acknowledgement readers remain available.
 The endpoint build exports the unchanged official `runCLI` session factory and
 `RuntimeSession`. The host sets that session's `workspaceBase` to its already
 configured `sourceRoot`; `/data` therefore maps to the project, not the Windows
@@ -65,8 +66,6 @@ Runtime UUID. The proposed native file contract uses that UUID for both
 source implementation has not yet been released or qualified here. This local
 declaration check does not clear the file-mapping diagnostic below or migrate
 any existing Agenvo identity, credential, HostBinding or queue.
-For legacy Agenvo use `examples/endpoint.references.example.json`; its Herdr
-binary still comes from the single matching instance in Agenvo `config.json`.
 The producer API base must match existing `transfer.json.origin` byte for byte.
 Do not change a populated queue's binding or replace its original IDs.
 
@@ -79,7 +78,7 @@ either `{ "state": "selected", "path": "...", "configurationChanged": false }`
 or `{ "state": "cancelled", "configurationChanged": false }`. Selection alone
 does not save, grant access, start a component or move existing files.
 
-For **fresh** schema 2/3 references, `configure --from FILE --root DIR
+For **fresh** schema 3 references, `configure --from FILE --root DIR
 --browse-source-root native` uses that dialog and saves the chosen `sourceRoot`
 through the existing exclusive configuration writer. Cancel leaves all files
 unchanged. An existing binding is never overwritten; this command is not a
@@ -155,11 +154,33 @@ transfer.json. Explicit IPs are tried in order; only TCP connection failure fall
 back to the original authority's IPv6. Certificate/auth failures never select
 another route. An invalid policy or conflicting proxy fails visibly.
 
-This candidate pins producer 0894a6eb8ff69c8796e2da5450fa172d4cd5ef81, plugin
-0.10.1. The prior 648/a51/c292 candidates remain separate checkpoints. Endpoint program
-update does not replace/relink an external producer, and cross-producer candidate
-switches remain rejected by the existing compatibility profile. Do not present
+This candidate pins producer d25a7fcc4ad05ae43a5c42d3c7e79cfb99535d91, plugin
+0.10.1. It retains explicit future result filenames such as `result.png`;
+Server declarations must follow installation of a compatible producer. It does
+not automatically repair, rename, regenerate or upload a completed result with an old declaration.
+The separate original-owner `recover-result` seam and journal v6 now require
+this producer; 8351/1b and 57/0894 EXEs cannot substitute for it. Its receipt GET
+can record the original server ready proof, and exit0 is only observation, not
+committed delivery. The Windows lifecycle does not call or parse that action.
+See the [0813 contract and downgrade boundary](../docs/evidence/result-recovery-producer-qualification.md).
+Exact-source strict-TLS builds and the retained-snapshot and explicit-filename
+Go/CLI fixtures are required before treating this pin as verified. See the
+[qualification record](../docs/evidence/closed-snapshot-producer-qualification.md). The prior 648/a51/c292 candidates remain separate checkpoints. Endpoint program
+update does not replace/relink an external producer, and ordinary cross-producer
+switches remain rejected by the existing compatibility profile. The separate
+stopped joint transaction requires exact recorded 57, 8351 or 890 ownership evidence.
+Do not present
 this new build as an automatic upgrade of a running old plugin.
+
+The additive `receipt-binding -delivery ID` command reads the original local
+receipt binding without credentials, source bytes, feedback or HTTP. It is not
+delivery proof. The 890/0813 package is retained as a recorded historical pair;
+new staging stays pinned and ordinary cross-producer selection remains blocked.
+CI checks the actual packaged EXE using a hash-pinned test-only Go overlay of
+the original producer fixture's child-launch line, retaining all assertions.
+The original dispatcher fixture and formal-EXE fixture are separate evidence;
+neither qualifies system-trust TLS upload. See
+[native upload acceptance](../docs/native-upload-acceptance.md).
 
 This producer registers downloads as metadata and empty parts, without a total
 payload-size/backlog allowance. Existing streaming/worker bounds and actual disk
@@ -191,13 +212,10 @@ An already-running external Herdr/connector is not adopted or stopped.
 
 ## Updates and preserved data
 
-Official owners/package managers update Pi, Herdr and legacy Agenvo. After a controlled
-stop, restart rechecks the existing program/configuration references. Herdr's
-Windows updater can change its canonical version directory: update only the
-existing Agenvo instance's `binary` mapping and complete any native scope approval
-in legacy mode. Native mode references the official installation directly and
-rechecks its recognized current selection on a fresh run. Same-path version changes are
-not themselves a new Agenvo scope. No session/history is imported or replayed.
+Official owners/package managers update Pi, Herdr, Node and Git. After a
+controlled stop, a new native run rechecks the explicit official installation
+references and Herdr's recognized current selection. No old Agenvo instance
+mapping is consulted for execution. No session/history is imported or replayed.
 
 The existing deployment journal stages and selects the **endpoint program and
 its bundled Runtime connector**
@@ -272,7 +290,9 @@ it is not a user PC installation. A successful untrusted-certificate rejection
 does not establish positive production TLS. The earlier CI CurrentUser-root
 import failed with `UI is not allowed in this operation`; this package neither
 retries that import nor changes the production trust source. The overall TLS gate
-remains unmet. `transferAutomaticRecovery:false` and `ready:false` remain truthful
+remains unmet. Native packaged transfer upload/authentication/TLS acceptance also
+remains a failing gate after withdrawing the old Agenvo host fixtures; the actual
+native empty-queue fixture is not file-upload or TLS acceptance. `transferAutomaticRecovery:false` and `ready:false` remain truthful
 product outputs. This archive must not be labelled production-ready.
 
 

@@ -18,8 +18,9 @@ assert.equal(process.env.GITHUB_ACTIONS, 'true')
 const bundleRoot = await fs.realpath(process.argv[2]), root = path.resolve(process.argv[3]), source = await fs.realpath(process.argv[4])
 assert.equal(execFileSync('git', ['-C', source, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 5000 }).trim(), catalog.components.transfer.revision)
 await fs.mkdir(root) // Must be a fresh fixture, never an existing installation.
-const config = { bundleRoot, sourceRoot: path.join(root, 'work'), herdrConfigRoot: path.join(root, 'config/herdr'), herdrStateRoot: path.join(root, 'state/herdr'), agenvoConfigDir: path.join(root, 'agenvo'), piConfigDir: path.join(root, 'pi'), session: 'joint-pi-fixture', deviceId: randomUUID() }
-for (const key of ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'agenvoConfigDir', 'piConfigDir']) await fs.mkdir(config[key], { recursive: true })
+const runtimeIdentity = randomUUID()
+const config = { schema: 3, programs: { node: path.join(bundleRoot, 'node/node.exe'), herdr: path.join(bundleRoot, 'herdr/herdr.exe'), piPackage: path.join(bundleRoot, 'node_modules/@earendil-works/pi-coding-agent'), piBin: path.join(bundleRoot, 'node_modules/.bin'), gitRoot: path.join(bundleRoot, 'git') }, connector: { kind: 'memoh-runtime', enrollmentFile: path.join(root, 'runtime/enrollment.json') }, sourceRoot: path.join(root, 'work'), herdrConfigRoot: path.join(root, 'config/herdr'), herdrStateRoot: path.join(root, 'state/herdr'), piConfigDir: path.join(root, 'pi'), session: 'joint-pi-fixture', deviceId: runtimeIdentity, runtimeId: runtimeIdentity, instanceId: 'pi-fixture' }
+for (const key of ['sourceRoot', 'herdrConfigRoot', 'herdrStateRoot', 'piConfigDir']) await fs.mkdir(config[key], { recursive: true })
 const programs = programPaths(config), sessions = path.join(root, 'sessions'), session = randomBytes(32).toString('hex')
 await fs.mkdir(sessions)
 await fs.writeFile(path.join(config.herdrConfigRoot, 'config.toml'), '[update]\nversion_check = false\nmanifest_check = false\n')

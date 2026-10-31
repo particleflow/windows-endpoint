@@ -1,21 +1,46 @@
 // The portable endpoint program, not an official-component installer.
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
-import { createHash } from 'node:crypto'
-import { catalog, digest, validateDirectory, stageBundle } from './endpoint.mjs'
+import { createHash, randomUUID } from 'node:crypto'
+import { catalog, digest, validateDirectory } from './endpoint.mjs'
 import { boundedRead } from './session-diagnostics.mjs'
 
 export const programStateProfile = 'endpoint-program-v1'
-export const programProfileHash = createHash('sha256').update(JSON.stringify({
+export const profileForProducer = producer => createHash('sha256').update(JSON.stringify({
   // This format covers our lifecycle/status/continuation/deployment records.
   // No official state is migrated. A producer change needs separate review.
-  program: programStateProfile, producer: catalog.components.transfer.revision,
+  program: programStateProfile, producer,
 })).digest('hex')
+export const programProfileHash = profileForProducer(catalog.components.transfer.revision)
+// Exact released reader pairs, only for inspecting already-recorded packages.
+// New staging remains pinned; cross-producer selection needs its transaction.
+export const historicalProducer = '0894a6eb8ff69c8796e2da5450fa172d4cd5ef81'
+export const explicitFilenameProducer = '1b7200d768c1231179725cfa2f85c8c3452882fb'
+export const receiptObservationProducer = '0813c7127faa2f6383b723d5f81ec05487c4e446'
+export const receiptBindingProducer = 'd25a7fcc4ad05ae43a5c42d3c7e79cfb99535d91'
+export const endpointRouteProducer = '212ae2445fe7a5fbe95479a4f2024069bf83332b'
+const historicalProgram = '57ae131eff3fb675a51b6ea5ee945bfa0b9de837'
+const recordedProducerPrograms = new Map([
+  [historicalProgram,historicalProducer],
+  ['8351b9c433922762f579c1c7b70e755d45b6ed2c',explicitFilenameProducer],
+  ['890131d277e8d44301d4b4304f3054b761a4b38b',receiptObservationProducer],
+  ['b2b0bfc1e963db90af6f6faeb480833c31cb1916',receiptBindingProducer],
+  ['c879d1622eeadcf02ec4b16590ade2cee6e1ac85',endpointRouteProducer],
+])
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 const demand = (ok, code) => { if (!ok) throw Object.assign(new Error(code), { code }) }
 const required = ['endpoint.mjs', 'host.mjs', 'candidate.mjs', 'program-deployment.mjs', 'deployment.mjs', 'lifecycle.mjs', 'handoff.mjs', 'runtime.mjs', 'installed.mjs', 'dependencies.json', 'LICENSE', 'transfer/transferqueue.exe', 'transfer/SHA256SUMS.json']
 
 export async function verifyCandidate(root, expectedHash) {
+  return verifyPackage(root, expectedHash, false)
+}
+export async function verifyRecordedCandidate(root, record) {
+  demand(record && Object.keys(record).sort().join(',') === 'hash,profile' && hash(record.hash) && hash(record.profile), 'candidate_record_invalid')
+  const result = await verifyPackage(root, record.hash, true)
+  demand(record.profile === profileForProducer(result.manifest.producer_commit), 'candidate_record_profile_mismatch')
+  return result
+}
+async function verifyPackage(root, expectedHash, recorded) {
   demand(hash(expectedHash), 'candidate_manifest_hash_required')
   await validateDirectory(root)
   const raw = await boundedRead(path.join(root, 'candidate.json'), 262144)
@@ -25,13 +50,15 @@ export async function verifyCandidate(root, expectedHash) {
   demand(manifest.schema === 1 && manifest.kind === 'portable-existing-installations-review' && manifest.platform === 'win32-x64' && manifest.entry === 'endpoint.mjs' &&
     manifest.qualification === 'not-for-production-release' && manifest.official_components === 'referenced-existing-installations-not-bundled' &&
     manifest.source_repository === 'particleflow/windows-endpoint' && /^[a-f0-9]{40}$/.test(manifest.source_commit) &&
-    manifest.producer_repository === 'particleflow/Memoh' && manifest.producer_commit === catalog.components.transfer.revision, 'candidate_kind_or_producer_mismatch')
+    manifest.producer_repository === 'particleflow/Memoh' && (manifest.producer_commit === catalog.components.transfer.revision ||
+      recorded && recordedProducerPrograms.get(manifest.source_commit) === manifest.producer_commit), 'candidate_kind_or_producer_mismatch')
   demand(manifest.state_profile === programStateProfile, 'candidate_state_profile_incompatible')
   if (manifest.native_transfer_directory_pair !== undefined) demand(manifest.native_transfer_directory_pair === true && manifest.native_runtime, 'candidate_configuration_support_invalid')
   if (manifest.native_runtime_project_root !== undefined) demand(manifest.native_runtime_project_root === true && manifest.native_runtime, 'candidate_configuration_support_invalid')
   if (manifest.native_running_recovery !== undefined) demand(manifest.native_running_recovery === true && manifest.native_runtime, 'candidate_configuration_support_invalid')
   if (manifest.native_stopped_observation_recovery !== undefined) demand(manifest.native_stopped_observation_recovery === true && manifest.native_runtime, 'candidate_configuration_support_invalid')
   if (manifest.native_transfer_direct_cli !== undefined) demand(manifest.native_transfer_direct_cli === true && manifest.native_transfer_directory_pair === true, 'candidate_configuration_support_invalid')
+  if (manifest.native_producer_reference !== undefined) demand(manifest.native_producer_reference === 1 && manifest.native_runtime && manifest.stable_installation_entry === 1, 'candidate_configuration_support_invalid')
   if (manifest.native_runtime !== undefined) {
     const n = manifest.native_runtime, pin = catalog.nativeRuntime
     demand(n && Object.keys(n).sort().join(',') === 'commit,entry,provenance,repository,version' && pin &&
@@ -50,6 +77,7 @@ export async function verifyCandidate(root, expectedHash) {
     demand(totalBytes <= 4 * 1024 ** 3, 'candidate_package_too_large')
   }
   demand(required.every(name => seen.has(name.toLowerCase())), 'candidate_component_missing')
+  if(manifest.native_producer_reference===1)demand(['producer-upgrade.mjs','producer-reference.mjs','producer-reference.ps1'].every(name=>seen.has(name)),'candidate_component_missing')
   if (manifest.stable_installation_entry !== undefined) demand(manifest.stable_installation_entry === 1 &&
     seen.has('windowsendpoint.ps1') && seen.has('product-installation.mjs'), 'candidate_installation_entry_missing')
   const actual = []
@@ -93,6 +121,42 @@ export async function verifyCandidate(root, expectedHash) {
   return { manifest, totalBytes }
 }
 
-export function stageCandidate(source, destination, expectedHash, options = {}) {
-  return stageBundle(source, destination, expectedHash, { ...options, verify: verifyCandidate, manifestName: 'candidate.json' })
+// Stage only a verified native program candidate. Incomplete copies remain inert;
+// no bundle containing retired component installations has a staging adapter.
+export async function stageCandidate(source, destination, expectedHash, { checkpoint = async () => {} } = {}) {
+  const verify = async (...args) => {
+    const result = await verifyCandidate(...args)
+    demand(result.manifest.native_runtime, 'legacy_execution_retired')
+    return result
+  }
+  const manifestName = 'candidate.json'
+  await validateDirectory(destination)
+  demand(![path.relative(source, destination), path.relative(destination, source)].some(r => r === '' || (!path.isAbsolute(r) && r !== '..' && !r.startsWith(`..${path.sep}`))), 'stage_root_overlap')
+  const { manifest, totalBytes } = await verify(source, expectedHash)
+  const target = path.join(destination, expectedHash)
+  try {
+    await fs.lstat(target)
+    await verify(target, expectedHash)
+    return { state: 'already_staged', manifestSha256: expectedHash }
+  } catch (e) { if (e.code !== 'ENOENT') throw e }
+  const space = await fs.statfs(destination)
+  demand(space.bavail * space.bsize >= totalBytes + 64 * 1024 ** 2, 'insufficient_staging_space')
+  const pending = path.join(destination, `.pending-${expectedHash}-${randomUUID()}`)
+  await fs.mkdir(pending)
+  for (const file of [...manifest.files.map(f => f.path), manifestName]) {
+    const output = path.join(pending, file)
+    await fs.mkdir(path.dirname(output), { recursive: true })
+    await fs.copyFile(path.join(source, file), output, 1)
+    const handle = await fs.open(output, 'r+')
+    try { await handle.sync() } finally { await handle.close() }
+    await checkpoint('file_copied')
+  }
+  await verify(pending, expectedHash)
+  try { await fs.rename(pending, target) }
+  catch (error) {
+    if (!['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES'].includes(error.code)) throw error
+    await verify(target, expectedHash)
+    return { state: 'already_staged', manifestSha256: expectedHash, retainedPending: true }
+  }
+  return { state: 'staged_review_only', manifestSha256: expectedHash }
 }

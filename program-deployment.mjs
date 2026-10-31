@@ -1,23 +1,69 @@
 // Connect the existing transaction journal to the portable foreground program.
-// Official component paths, configuration and producer data are never switched.
+// Official Agent installations stay external. Producer reference changes use
+// the separate stopped, journaled host/producer transaction below.
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createHash, randomUUID } from 'node:crypto'
-import { validateConfig, validateDirectory, isNativeRuntimeConfig, isWindowsUNCWorkspacePath } from './endpoint.mjs'
-import { DeploymentTransactions, DeploymentError, deploymentLayout, hostReferenceLayout } from './deployment.mjs'
+import { validateConfig, validateDirectory, isNativeRuntimeConfig, isWindowsUNCWorkspacePath, requireNativeRuntime } from './endpoint.mjs'
+import { DeploymentTransactions, DeploymentError, deploymentLayout, hostReferenceLayout, readDeploymentState } from './deployment.mjs'
 import { acquireLeases } from './lifecycle.mjs'
 import { boundedRead, readSessionHistory } from './session-diagnostics.mjs'
 import { captureSessionContinuation, verifySessionContinuation } from './session-continuation.mjs'
 import { validateRuntimeRequest } from './runtime.mjs'
-import { verifyCandidate, stageCandidate, programProfileHash } from './candidate.mjs'
+import { verifyCandidate, verifyRecordedCandidate, stageCandidate, programProfileHash } from './candidate.mjs'
+import { producerPendingName, transactProducerUpgrade, verifyProducerTransition } from './producer-upgrade.mjs'
 import { attemptEvidence, nativeRecoveryEvidence, recoveryConfigurationHash } from './host-recovery.mjs'
 import { inspectInstalled } from './installed.mjs'
-import { magpieCatalogBinding } from './pi-magpie-catalog.mjs'
+import { nativePiCatalogHostOptions, prepareNativePiCatalogReference } from './pi-native-catalog-profile.mjs'
+import { nativeCatalogPendingName, publishNativeCatalogReference } from './pi-native-catalog-transaction.mjs'
 
 const demand = (ok, code) => { if (!ok) throw new DeploymentError(code) }
 const sha256 = value => createHash('sha256').update(value).digest('hex')
 const hashValue = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
+
+const piCatalogDigest = value => createHash('sha256').update(value).digest('hex')
+
+// Explicit stopped transaction: install only a nonsecret native resource
+// reference in the ALREADY selected profile. Never repair/start/replace a Pi.
+export async function prepareNativePiCatalog({root,requestId,providerId,intervalMs=60000}, {checkpoint=async()=>{},...options}={}) {
+  demand(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(requestId||'') &&
+    /^[A-Za-z0-9_.-]{1,100}$/.test(providerId||'') && Number.isSafeInteger(intervalMs) && intervalMs>=1000,'deployment_pi_catalog_arguments_invalid')
+  const manager=await programDeployment(root,options)
+  manager.preparingNativeCatalog=true
+  return manager.locked(async()=>{
+    try {
+      await manager.unchanged()
+      demand(!await exists(path.join(manager.lifecycleDirectory,'profile-switch-pending.json')),'deployment_profile_switch_recovery_required')
+      const state=await manager.read()
+      demand(state.pending===null&&state.current!==null,'deployment_recovery_required')
+      const owned=await manager.owned(state,state.current)
+      demand(owned.profile===programProfileHash,'deployment_state_profile_changed')
+      const reason=await manager.work(programProfileHash)
+      if(reason)return {state:'deferred',reason,activation:'blocked',businessReplayed:false}
+      const packageRoot=path.join(manager.layout.packages,state.current)
+      const verified=await manager.verify(packageRoot,state.current)
+      const settingsFile=path.join(manager.config.piConfigDir,'settings.json'),modelsFile=path.join(manager.config.piConfigDir,'models.json')
+      const settingsOriginal=await optional(settingsFile,262144),modelsRaw=await optional(modelsFile,1048576)
+      demand(modelsRaw!==null,'catalog_existing_provider_required')
+      const plan=await prepareNativePiCatalogReference({profileDir:manager.config.piConfigDir,packageRoot,manifest:verified.manifest,
+        settingsRaw:settingsOriginal??'{}',modelsRaw,providerId,intervalMs})
+      const selectionRaw=await boundedRead(manager.file,262144),lifecycleRaw=await optional(manager.lifecycleStore.file,262144)
+      const record={requestId,selected:state.current,profileDir:manager.config.piConfigDir,providerId,intervalMs,
+        settingsSha256:settingsOriginal===null?null:piCatalogDigest(settingsOriginal),modelsSha256:piCatalogDigest(modelsRaw),
+        configurationSha256:piCatalogDigest(manager.configRaw),lifecycleSha256:lifecycleRaw===null?null:piCatalogDigest(lifecycleRaw),selectionSha256:piCatalogDigest(selectionRaw)}
+      const assertUnchanged=async()=>{
+        await manager.unchanged();await manager.workBaseline?.();await manager.retained?.reobserve()
+        demand(!await exists(path.join(manager.lifecycleDirectory,'profile-switch-pending.json')),'deployment_profile_switch_recovery_required')
+        demand(await boundedRead(manager.file,262144)===selectionRaw&&await optional(manager.lifecycleStore.file,262144)===lifecycleRaw&&
+          await optional(settingsFile,262144)===settingsOriginal&&await boundedRead(modelsFile,1048576)===modelsRaw,'catalog_native_preparation_changed')
+        await manager.verify(packageRoot,state.current)
+      }
+      const result=await publishNativeCatalogReference({lifecycleDirectory:manager.lifecycleDirectory,plan,record,assertUnchanged,checkpoint})
+      return {state:result,providerId,profile:manager.config.piConfigDir,activation:'future_pi_invocations_only',processStarted:false,businessReplayed:false}
+    }catch(error){if(/^catalog_[a-z_]+$/.test(error.code??error.message))throw new DeploymentError(error.code??error.message);throw error}
+  })
+}
 
 // Preparing is not a permit to switch profile or start work. The owner must
 // complete the later offline transition with the original evidence intact.
@@ -349,6 +395,24 @@ const describe = (result, retained = null) => ({ ...result, evidence: 'endpoint_
   ...(retained ? { taskHistory: 'preserved_unreconciled', retainedAttemptEvidenceSha256: retained.attempts, businessReplayed: false, stopAuthority: false } : {}) })
 
 export class ProgramDeployment extends DeploymentTransactions {
+  maintenanceEligible(state) {
+    return super.maintenanceEligible(state) || this.handlingProducer === true && state.phase === 'stopped' && state.attention === 'producer_upgrade_pending'
+  }
+  async locked(operation) {
+    return super.locked(async()=>{
+      demand(this.handlingProducer === true || !await exists(path.join(this.lifecycleDirectory, producerPendingName)), 'deployment_producer_recovery_required')
+      demand(this.preparingNativeCatalog===true||!await exists(path.join(this.lifecycleDirectory,nativeCatalogPendingName)),'deployment_pi_catalog_recovery_required')
+      return operation()
+    })
+  }
+  async owned(state, expectedHash) {
+    const record = state.packages.find(item => item.hash === expectedHash)
+    demand(record, 'deployment_package_not_owned')
+    const verified = await verifyRecordedCandidate(path.join(this.layout.packages, expectedHash), record)
+    demand(verified.manifest.native_runtime, 'deployment_native_connector_missing')
+    if (this.config.transferConfigDir) demand(verified.manifest.native_transfer_directory_pair === true && verified.manifest.native_transfer_direct_cli === true, 'deployment_transfer_directories_unsupported')
+    return record
+  }
   herdrMarker() {
     return this.config.session === 'default' ? path.join(this.config.herdrConfigRoot, 'herdr.sock') :
       path.join(this.config.herdrConfigRoot, 'sessions', this.config.session, 'herdr.sock')
@@ -373,8 +437,9 @@ export class ProgramDeployment extends DeploymentTransactions {
     // tasks. Consume only the original durable infrastructure-recovery digest,
     // never a caller-supplied owner/idle declaration or an unverified handoff.
     const recovery = state.infrastructureRecovery
-    if (!isNativeRuntimeConfig(this.config) || !state.sessionContinuation || !recovery ||
-        recovery.configuration !== recoveryConfigurationHash(this.configRaw, this.runtimeRaw)) return 'task_handoff_unverified'
+    if (!isNativeRuntimeConfig(this.config) || !state.sessionContinuation || !recovery) return 'task_handoff_unverified'
+    if (recovery.configuration !== recoveryConfigurationHash(this.configRaw, this.runtimeRaw) &&
+        !await verifyProducerTransition(this, state)) return 'task_handoff_unverified'
     if (await attemptEvidence(this.config) !== recovery.attempts) return 'task_handoff_unverified'
     const files = { root: this.root, config: this.configFile, runtime: this.runtimeFile,
       state: this.lifecycleStore.file, status: path.join(this.lifecycleDirectory, 'host-status.json') }
@@ -451,6 +516,8 @@ export class ProgramDeployment extends DeploymentTransactions {
     // Otherwise adding this requirement would also prevent upgrading the old
     // home-mapped version to the corrected program.
     await this.projectRoot(target)
+    if (state.current !== null && (await this.owned(state, state.current)).profile !== programProfileHash)
+      return { state: 'deferred', reason: 'producer_transaction_required', activation: 'blocked', businessReplayed: false }
     return super.selectionCheck(state, target, mode)
   }
   async unchanged() {
@@ -494,8 +561,6 @@ export class ProgramDeployment extends DeploymentTransactions {
     // Windows herdr.sock is a PID:nonce marker, not the named-pipe listener.
     // Only the existing native recovery/identity/process/status proof can retain
     // it across a program-only switch. Never remove it or infer task completion.
-    if (marker !== null && !retainedMarker ||
-        !isNativeRuntimeConfig(this.config) && await exists(path.join(this.config.agenvoConfigDir, 'run.lock'))) return 'external_component_state_unverified'
     await this.freezeWork(state, marker)
     return null
   }
@@ -505,12 +570,15 @@ export async function programDeployment(root, { prepare = false, io = fs, checkp
   const layout = deploymentLayout(root)
   await validateDirectory(root); await validateDirectory(layout.config)
   const configFile = path.join(layout.config, 'endpoint.json'), runtimeFile = path.join(layout.config, 'runtime.json')
-  const configRaw = await optional(configFile), runtimeRaw = await optional(runtimeFile)
+  const configRaw = await optional(configFile)
   demand(configRaw !== null, 'deployment_configuration_missing')
   let config
-  try { config = validateConfig(JSON.parse(configRaw)); if (runtimeRaw !== null) validateRuntimeRequest(JSON.parse(runtimeRaw), config) }
+  try { config = JSON.parse(configRaw) }
   catch { throw new DeploymentError('deployment_configuration_invalid') }
-  demand([2, 3].includes(config.schema), 'deployment_existing_installations_required')
+  requireNativeRuntime(config) // Before runtime-file reads, preparation or selector writes.
+  const runtimeRaw = await optional(runtimeFile)
+  try { validateConfig(config); if (runtimeRaw !== null) validateRuntimeRequest(JSON.parse(runtimeRaw), config) }
+  catch { throw new DeploymentError('deployment_configuration_invalid') }
   demand(hostReferenceLayout(root, config).compatible, 'deployment_reference_overlap')
   // The same root convention as ForegroundHost. No external directory is made.
   const lifecycleDirectory = path.join(layout.data, 'endpoint')
@@ -529,8 +597,8 @@ export async function programDeployment(root, { prepare = false, io = fs, checkp
     qualify: async (_directory, _hash, verified) => {
       // Older candidates cannot consume native config. Refuse before selection
       // rather than activating an old entry and discovering it on next launch.
-      if (isNativeRuntimeConfig(config)) demand(verified?.manifest?.native_runtime, 'deployment_native_connector_missing')
-      if (isNativeRuntimeConfig(config) && config.transferConfigDir) demand(verified?.manifest?.native_transfer_directory_pair === true && verified.manifest.native_transfer_direct_cli === true, 'deployment_transfer_directories_unsupported')
+      demand(verified?.manifest?.native_runtime, 'deployment_native_connector_missing')
+      if (config.transferConfigDir) demand(verified?.manifest?.native_transfer_directory_pair === true && verified.manifest.native_transfer_direct_cli === true, 'deployment_transfer_directories_unsupported')
       return { schema: 1, stateProfileSha256: programProfileHash }
     } })
   Object.assign(manager, { configFile, runtimeFile, configRaw, runtimeRaw })
@@ -546,7 +614,8 @@ export async function programDeployment(root, { prepare = false, io = fs, checkp
   return manager
 }
 
-export async function runSelectedProgram(root, { input = process.stdin, output = process.stdout, piCatalogBinding = null } = {}) {
+export async function runSelectedProgram(root, { input = process.stdin, output = process.stdout, requestedPiCatalogProvider=null, piCatalogBinding=null } = {}) {
+  demand(piCatalogBinding===null,'deployment_pi_catalog_file_sync_retired')
   const manager = await programDeployment(root)
   // Carry one host lease through verification, import and the existing host's
   // full lifetime. Never leave a selection/start race or launch a second daemon.
@@ -555,7 +624,9 @@ export async function runSelectedProgram(root, { input = process.stdin, output =
   const release = async () => { if (!released) { await acquired(); released = true } }
   try {
     await manager.unchanged()
-    demand(!await exists(path.join(manager.lifecycleDirectory, 'profile-switch-pending.json')), 'deployment_profile_switch_recovery_required')
+    demand(!await exists(path.join(manager.lifecycleDirectory,'profile-switch-pending.json')),'deployment_profile_switch_recovery_required')
+    demand(!await exists(path.join(manager.lifecycleDirectory,nativeCatalogPendingName)),'deployment_pi_catalog_recovery_required')
+    demand(!await exists(path.join(manager.lifecycleDirectory,producerPendingName)),'deployment_producer_recovery_required')
     const state = await manager.read()
     demand(state.pending === null, 'deployment_recovery_required')
     demand(state.current !== null, 'deployment_not_installed')
@@ -563,10 +634,16 @@ export async function runSelectedProgram(root, { input = process.stdin, output =
     await manager.projectRoot(state.current)
     demand(owned.profile === programProfileHash, 'deployment_state_profile_changed')
     await manager.unchanged()
-    const target = path.join(manager.layout.packages, state.current, 'host.mjs')
-    const { runForeground, piCatalogBindingVersion } = await import(pathToFileURL(target))
-    if (piCatalogBinding !== null) demand(piCatalogBindingVersion === 1, 'deployment_pi_catalog_unsupported')
-    return await runForeground({ root, input, output, inheritedHostLease: release, piCatalogBinding })
+    const packageRoot=path.join(manager.layout.packages,state.current)
+    const verified=await manager.verify(packageRoot,state.current)
+    let catalogOptions
+    try { catalogOptions=await nativePiCatalogHostOptions({config:manager.config,packageRoot,manifest:verified.manifest,requestedProviderId:requestedPiCatalogProvider}) }
+    catch(error){throw new DeploymentError(/^catalog_[a-z_]+$/.test(error.message)?error.message:'deployment_pi_catalog_invalid')}
+    const { runForeground, piNativeCatalogBindingVersion } = await import(pathToFileURL(path.join(packageRoot,'host.mjs')))
+    if(catalogOptions.piNativeCatalog)demand(piNativeCatalogBindingVersion===1,'deployment_pi_native_catalog_unsupported')
+    await manager.unchanged()
+    return await runForeground({ root, input, output, inheritedHostLease: release,
+      piNativeCatalog:catalogOptions.piNativeCatalog,requestedPiCatalogProvider })
   } finally { await release() }
 }
 
@@ -576,18 +653,31 @@ export async function programDeploymentMain(args) {
     demand(/^--[a-z][a-z0-9-]*$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'deployment_arguments_invalid')
     options[rest[i]] = rest[i + 1]
   }
-  const fields = ['install', 'update'].includes(action) ? ['--root', '--source', '--manifest-sha256'] : action === 'rollback' ? ['--root', '--manifest-sha256'] : action === 'prepare-profile' ? ['--root', '--request-id', '--profile', '--configuration-sha256', '--lifecycle-sha256', '--continuation-sha256', '--attempts-sha256'] : ['archive-profile','commit-profile','rollback-profile'].includes(action) ? ['--root', '--request-id'] : ['--root']
+  const fields = ['install', 'update'].includes(action) ? ['--root', '--source', '--manifest-sha256'] : ['plan-producer','upgrade-producer'].includes(action) ? ['--root','--manifest-sha256','--request-id','--configuration-sha256','--lifecycle-sha256','--selection-sha256'] : ['recover-producer','rollback-producer'].includes(action) ? ['--root','--request-id'] : action === 'rollback' ? ['--root', '--manifest-sha256'] : action === 'prepare-pi-catalog' ? ['--root','--request-id','--provider'] : action === 'prepare-profile' ? ['--root', '--request-id', '--profile', '--configuration-sha256', '--lifecycle-sha256', '--continuation-sha256', '--attempts-sha256'] : ['archive-profile','commit-profile','rollback-profile'].includes(action) ? ['--root', '--request-id'] : ['--root']
   if (action === 'run' && Object.hasOwn(options, '--pi-catalog-provider')) {
     demand(/^[A-Za-z0-9_.-]{1,100}$/.test(options['--pi-catalog-provider']), 'deployment_arguments_invalid')
     fields.push('--pi-catalog-provider')
   }
-  demand(['install', 'update', 'rollback', 'recover', 'status', 'run', 'prepare-profile', 'archive-profile', 'commit-profile', 'rollback-profile'].includes(action) && Object.keys(options).sort().join(',') === fields.sort().join(','), 'deployment_arguments_invalid')
+  if(action==='prepare-pi-catalog'&&Object.hasOwn(options,'--interval-ms'))fields.push('--interval-ms')
+  if(action==='upgrade-producer'&&Object.hasOwn(options,'--reference-sha256'))fields.push('--reference-sha256')
+  demand(['install', 'update', 'rollback', 'recover', 'status', 'run', 'plan-producer','upgrade-producer','recover-producer','rollback-producer', 'prepare-pi-catalog', 'prepare-profile', 'archive-profile', 'commit-profile', 'rollback-profile'].includes(action) && Object.keys(options).sort().join(',') === fields.sort().join(','), 'deployment_arguments_invalid')
   const root = options['--root'], target = options['--manifest-sha256']
+  if (['plan-producer','upgrade-producer','recover-producer','rollback-producer'].includes(action)) return transactProducerUpgrade(await programDeployment(root), {
+    action, requestId: options['--request-id'], target, configurationSha256: options['--configuration-sha256'], lifecycleSha256: options['--lifecycle-sha256'], selectionSha256: options['--selection-sha256'],referenceSha256:options['--reference-sha256'] })
   if (action === 'prepare-profile') return prepareProfileSwitch({ root, requestId: options['--request-id'], profile: options['--profile'], configurationSha256: options['--configuration-sha256'], lifecycleSha256: options['--lifecycle-sha256'], continuationSha256: options['--continuation-sha256'], attemptsSha256: options['--attempts-sha256'] })
   if (action === 'archive-profile') return archiveProfileSwitch({ root, requestId: options['--request-id'] })
   if (action === 'commit-profile') return commitProfileSwitch({ root, requestId: options['--request-id'] })
   if (action === 'rollback-profile') return commitProfileSwitch({ root, requestId: options['--request-id'], rollback: true })
-  if (action === 'run') return { hostExitCode: await runSelectedProgram(root, { piCatalogBinding: options['--pi-catalog-provider'] ? magpieCatalogBinding(options['--pi-catalog-provider']) : null }) }
+  if(action==='prepare-pi-catalog')return prepareNativePiCatalog({root,requestId:options['--request-id'],providerId:options['--provider'],intervalMs:options['--interval-ms']===undefined?60000:Number(options['--interval-ms'])})
+  if (action === 'run') return { hostExitCode: await runSelectedProgram(root,{requestedPiCatalogProvider:options['--pi-catalog-provider']??null}) }
+  if (action === 'status') {
+    const config = validateConfig(JSON.parse(await boundedRead(path.join(deploymentLayout(root).config, 'endpoint.json'), 65536)))
+    if (!isNativeRuntimeConfig(config)) {
+      const state = await readDeploymentState(deploymentLayout(root), config.deviceId)
+      return { state: 'retired-history-only', selected: state.current, previous: state.previous, pending: state.pending,
+        ownedPackages: state.packages.map(p => p.hash), activation: 'blocked', executionPermitted: false, evidence: 'saved_deployment_journal_only' }
+    }
+  }
   const manager = await programDeployment(root, { prepare: action === 'install' })
   if (action === 'status') return describe(await manager.inventory())
   if (action === 'recover') return describe(await manager.recover(), manager.retained)

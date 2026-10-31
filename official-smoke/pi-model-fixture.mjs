@@ -57,7 +57,7 @@ export async function startPiModelFixture({ holdCompletion = false, holdWrite = 
   return {
     baseUrl,
     // Pi's documented dummy key enables a local compatible model. It grants
-    // no external access and is unrelated to Agenvo OAuth or target approval.
+    // no external access and supplies no Runtime enrollment or task authority.
     models: { providers: { [fixtureProvider]: { baseUrl, api: 'openai-completions', apiKey: 'fixture-no-credential', models: [{ id: fixtureModel, reasoning: false, input: ['text'], contextWindow: 32768, maxTokens: 2048 }] } } },
     snapshot: () => ({ requests, offeredWrites }),
     diagnostics: () => ({ received, rejected }),

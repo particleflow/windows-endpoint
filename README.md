@@ -1,7 +1,7 @@
 # Windows endpoint
 
 Windows endpoint delivery and lifecycle coordination around unchanged official
-Herdr, Agenvo and Pi components. This repository owns the delivery layer; the
+Memoh Runtime, Herdr and Pi components. This repository owns the delivery layer; the
 transfer queue/plugin implementation remains in Memoh and will be consumed as a
 qualified, versioned artifact.
 
@@ -18,9 +18,10 @@ and consume an existing transfer queue. See [explicit runtime](docs/explicit-run
 for its separate component, authorization and business-readiness boundaries.
 The [existing-installation mode](docs/existing-installations-plan.md) references
 official programs/configuration directly, rechecks actual versions and starts
-the same owned lifecycle. Herdr's path comes from the selected existing Agenvo
-instance, avoiding a second path to maintain in endpoint configuration. It does
-not install another Pi/Herdr copy or enable
+the same owned lifecycle using schema 3 and an explicit official Herdr reference.
+Schema 1/2 configuration remains readable for original history and bindings;
+launch requests and plans fail with `legacy_execution_retired`. No legacy
+connector launch or stale-lock recovery is available. This does not enable
 business-task upgrade handoff. It can explicitly reference the existing transfer
 plugin and queue; positive production TLS and file return remain unverified.
 The [historical-session diagnostic](docs/session-observation.md) can inspect saved
@@ -44,8 +45,8 @@ Historical task restoration and external-process adoption remain unimplemented.
 - `*.test.mjs`: synthetic delivery and lifecycle regression tests, using Node builtins.
 - `official-smoke/`: fixed official Windows binaries/npm lock and isolated CI fixtures.
 - `docs/`: delivery/lifecycle contracts, provenance and the source hash inventory.
-- `dependencies.json`, `endpoint.example.json`: investigated component versions and
-  non-secret placeholder references; neither is a qualified release configuration.
+- `dependencies.json`, `packaging/endpoint.native-runtime.example.json`: investigated component versions and
+  native placeholder references; neither is a qualified release configuration.
 
 ## Development checks
 
@@ -78,7 +79,7 @@ no Windows live handoff or automatic task replay is added.
 
 The finite consumer coalesces hints, honors producer deadlines and drains an
 invocation before shutdown. The current candidate source is Memoh
-`0894a6eb8ff69c8796e2da5450fa172d4cd5ef81` / plugin 0.10.1; CI builds it using its
+`62d27ed995c53f405297eb0069290f3aefba2c51` / plugin 0.10.1; CI builds it using its
 unchanged source build script. The optional LAN policy is read from the same
 private Herdr plugin config root; `configure` reports its path without copying
 addresses into endpoint configuration or changing an existing queue binding.

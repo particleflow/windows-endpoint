@@ -80,6 +80,7 @@ class CandidateTests(unittest.TestCase):
         with zipfile.ZipFile(archive) as zipped:
             names = zipped.namelist()
             self.assertNotIn('credentials.json', names)
+            self.assertNotIn('examples/endpoint.references.example.json', names)
             self.assertFalse(any(name.startswith(('node_modules/', 'herdr/', 'git/', 'official-smoke/')) for name in names))
             manifest = json.loads(zipped.read('candidate.json'))
             self.assertEqual(manifest['source_commit'], self.head)
@@ -87,9 +88,19 @@ class CandidateTests(unittest.TestCase):
             self.assertEqual(manifest['native_runtime']['commit'], self.pin)
             self.assertTrue(manifest['native_transfer_directory_pair'])
             self.assertTrue(manifest['native_transfer_direct_cli'])
+            self.assertEqual(manifest['native_producer_reference'], 1)
             self.assertTrue(manifest['native_runtime_project_root'])
             self.assertTrue(manifest['native_running_recovery'])
             self.assertTrue(manifest['native_stopped_observation_recovery'])
+            self.assertEqual(manifest['native_pi_catalog'], {
+                'schema': 1, 'mode': 'pi-in-process', 'piVersion': '1.4.0',
+                'entry': 'pi-magpie-native-profile-entry.mjs',
+                'settingsKey': 'windowsEndpointPiCatalog', 'legacyFileSync': False,
+                'bindingVersion': 1, 'profileReference': 'extensions/windows-endpoint-magpie.js'})
+            for resource in ('pi-magpie-native-profile-entry.mjs', 'pi-magpie-native-extension.mjs',
+                             'pi-native-catalog-profile.mjs', 'pi-magpie-catalog.mjs', 'pi-catalog-sync.mjs',
+                             'pi-native-catalog-transaction.mjs'):
+                self.assertIn(resource, names)
             self.assertIn('runtime-connector/dist/cli.mjs', names)
             self.assertEqual(set(names), {f['path'] for f in manifest['files']} | {'candidate.json'})
             for entry in manifest['files']:

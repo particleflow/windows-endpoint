@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises'
 import { statSync, lstatSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { EndpointError, catalog, validateConfig, validateDirectory, programPaths, managedEnvironment, digest, transferLocations, validateTransferConfiguration, isNativeRuntimeConfig, componentRoots, connectorConfigReference, connectorPackageRoot } from './endpoint.mjs'
+import { EndpointError, catalog, validateConfig, validateDirectory, programPaths, managedEnvironment, digest, transferLocations, validateTransferConfiguration, isNativeRuntimeConfig, componentRoots, connectorConfigReference, connectorPackageRoot, requireNativeRuntime } from './endpoint.mjs'
 import { readSessionHistory, observeExistingSession } from './session-diagnostics.mjs'
 import { verifySessionContinuation } from './session-continuation.mjs'
 
@@ -52,8 +52,8 @@ async function resolveNativeHerdr(config) {
 async function officialHerdrSelection(config) {
   const release = path.dirname(config.programs.herdr), releases = path.dirname(release), standalone = path.dirname(releases)
   // Recognize only the official Windows standalone layout. This reads its
-  // current selection; it never permits a link as a command path or rewrites
-  // Agenvo's separately approved canonical binary scope.
+  // current selection; it never permits a link as a command path or changes
+  // a running owner's captured official program generation.
   if (path.basename(releases) !== 'releases' || path.basename(standalone) !== 'standalone' || path.basename(path.dirname(standalone)) !== 'packages') return () => {}
   await validateDirectory(releases)
   const current = path.join(standalone, 'current'), stat = await fs.lstat(current)
@@ -112,38 +112,20 @@ async function capture(config, binding) {
 }
 
 export async function validateInstalledConfiguration(config, { inspectHistoryOnly = false, sessionContinuation = null } = {}) {
+  requireNativeRuntime(config)
   validateConfig(config)
-  demand([2, 3].includes(config.schema), 'existing_installation_config_required')
   for (const directory of componentRoots(config)) await validateDirectory(directory, { workspace: directory === config.sourceRoot })
   await regular(path.join(config.herdrConfigRoot, 'config.toml'))
-  const native = isNativeRuntimeConfig(config), file = connectorConfigReference(config)
+  const file = connectorConfigReference(config)
   let before
   try { before = await regular(file) }
-  catch (error) { if (native && error.code === 'ENOENT') throw new EndpointError('connector_authentication_required'); throw error }
+  catch (error) { if (error.code === 'ENOENT') throw new EndpointError('connector_authentication_required'); throw error }
   demand(before.size <= 65536, 'installation_metadata_oversized')
-  let herdr, herdrSource
-  if (native) {
-    // Presence is not authenticated NAS identity. Only the official Runtime
-    // loader reads this credential and validates its native enrollment format.
-    demand(before.size > 0, 'connector_authentication_required')
-    herdr = await resolveNativeHerdr(config)
-    herdrSource = same(herdr, config.programs.herdr) ? 'explicit_official_installation' : 'official_current_selection'
-  } else {
-    let connector
-    try { connector = JSON.parse(await fs.readFile(file, 'utf8')) } catch { throw new EndpointError('installation_metadata_invalid') }
-    demand(fingerprint(before) === fingerprint(await regular(file)), 'installation_changed_restart_required')
-    demand(connector.schema === 1 && connector.deviceId === config.deviceId && Array.isArray(connector.instances) && connector.instances.length === 1, 'runtime_device_mapping_invalid')
-    const i = connector.instances.find(instance => instance?.id === config.instanceId)
-    demand(i?.kind === 'herdr' && same(i.cwd, config.sourceRoot) && same(i.configRoot, config.herdrConfigRoot), 'runtime_approved_path_mismatch')
-    demand(config.programs.herdr === undefined || same(i.binary, config.programs.herdr), 'runtime_approved_path_mismatch')
-    herdr = i.binary
-    herdrSource = config.programs.herdr === undefined ? 'agenvo_instance' : 'legacy_explicit_match'
-    let relay
-    try { relay = new URL(connector.relay) } catch { throw new EndpointError('runtime_relay_invalid') }
-    demand(relay.protocol === 'https:' && !relay.username && !relay.password && !relay.search && !relay.hash && relay.pathname === '/', 'runtime_relay_invalid')
-    try { demand((await regular(path.join(config.agenvoConfigDir, 'credentials.json'))).size > 0, 'connector_authentication_required') }
-    catch (error) { if (error.code === 'ENOENT') throw new EndpointError('connector_authentication_required'); throw error }
-  }
+  // Presence is not authenticated NAS identity. Only the official Runtime
+  // loader reads the enrollment and validates its native credential format.
+  demand(before.size > 0, 'connector_authentication_required')
+  const herdr = await resolveNativeHerdr(config)
+  const herdrSource = same(herdr, config.programs.herdr) ? 'explicit_official_installation' : 'official_current_selection'
   const resolved = { ...config, programs: { ...config.programs, herdr, connectorPackage: connectorPackageRoot(config) } }
   validateConfig(resolved)
   await regular(resolved.programs.herdr)
@@ -171,19 +153,17 @@ export function compareProducerTarget(config, target) {
 // Program-only inspection reuses the exact version/protocol checks below. It
 // never opens a credential, user profile or task/session directory.
 export async function inspectPrograms(config, run = probe, binding = null) {
+  requireNativeRuntime(config)
   validateConfig(config)
   config = { ...config, programs: { ...config.programs, connectorPackage: connectorPackageRoot(config) } }
-  if (isNativeRuntimeConfig(config) && !binding) config = { ...config, programs: { ...config.programs, herdr: await resolveNativeHerdr(config) } }
+  if (!binding) config = { ...config, programs: { ...config.programs, herdr: await resolveNativeHerdr(config) } }
   validateConfig(config)
   const p = programPaths(config)
   const pi = await json(path.join(config.programs.piPackage, 'package.json'))
   const connector = await json(path.join(config.programs.connectorPackage, 'package.json'))
-  const native = isNativeRuntimeConfig(config)
-  if (native) {
-    try { await regular(path.join(config.programs.connectorPackage, 'dist/endpoint-host-api.mjs')) }
-    catch (error) { if (error.code === 'ENOENT') throw new EndpointError('native_runtime_project_root_unsupported'); throw error }
-  }
-  demand(pi.name === '@earendil-works/pi-coding-agent' && connector.name === (native ? '@memohai/runtime' : '@agenvo/herdr'), 'installation_package_mismatch')
+  try { await regular(path.join(config.programs.connectorPackage, 'dist/endpoint-host-api.mjs')) }
+  catch (error) { if (error.code === 'ENOENT') throw new EndpointError('native_runtime_project_root_unsupported'); throw error }
+  demand(pi.name === '@earendil-works/pi-coding-agent' && connector.name === '@memohai/runtime', 'installation_package_mismatch')
   const launcher = path.join(p.piBin, 'pi')
   demand((await regular(launcher)).size <= 16384, 'installation_launcher_invalid')
   const relativeEntry = path.relative(p.piBin, p.pi).split(path.sep).join('/')
@@ -197,20 +177,18 @@ export async function inspectPrograms(config, run = probe, binding = null) {
   const call = (file, args) => { observed.assertUnchanged(); const output = run(file, args, env); observed.assertUnchanged(); return output }
   const versions = { node: call(p.node, ['--version']).replace(/^v/, ''), herdr: call(p.herdr, ['--version']).replace(/^herdr /, ''), pi: call(p.node, [p.pi, '--version']) }
   let connectorVersion
-  try { connectorVersion = native ? call(p.node, [p.connector, 'version']) : JSON.parse(call(p.node, [p.connector, '--version'])).version } catch { throw new EndpointError('installation_connector_protocol_invalid') }
+  try { connectorVersion = call(p.node, [p.connector, 'version']) } catch { throw new EndpointError('installation_connector_protocol_invalid') }
   versions.connector = connectorVersion
   minimum(versions.node, catalog.installationSources.node.minimum)
   minimum(versions.herdr, catalog.installationSources.herdr.minimum)
   minimum(versions.pi, catalog.installationSources.pi.minimum)
-  demand(versions.pi === pi.version && versions.connector === connector.version && versions.connector === (native ? catalog.nativeRuntime?.version : '0.2.0'), 'installation_package_protocol_mismatch')
+  demand(versions.pi === pi.version && versions.connector === connector.version && versions.connector === catalog.nativeRuntime.version, 'installation_package_protocol_mismatch')
   const piHelp = call(p.node, [p.pi, '--help'])
   for (const flag of ['--mode', '--session-dir', '--session-id', '--provider', '--model']) demand(piHelp.includes(flag), 'installation_pi_protocol_missing')
   const herdrHelp = call(p.herdr, ['--help'])
   for (const flag of ['--session', 'server', 'status']) demand(herdrHelp.includes(flag), 'installation_herdr_protocol_missing')
-  if (native) {
-    const runtimeHelp = call(p.node, [p.connector, 'run', '--help'])
-    for (const flag of ['run', '--config', '--log']) demand(runtimeHelp.includes(flag), 'installation_connector_protocol_invalid')
-  }
+  const runtimeHelp = call(p.node, [p.connector, 'run', '--help'])
+  for (const flag of ['run', '--config', '--log']) demand(runtimeHelp.includes(flag), 'installation_connector_protocol_invalid')
   // Resolve the real official launcher in the same controlled environment the
   // host supplies. Positional values never become shell source or a new shim.
   const resolution = 'set -e; case "$(uname -s)" in MINGW*|MSYS*) ;; *) exit 91;; esac; for t in base64 cygpath sha256sum wc mkdir mv rm rmdir; do command -v "$t" >/dev/null || exit 92; done; printf "%s\\n" "$(cygpath -w "$(command -v pi)")"; pi --version'
@@ -228,13 +206,19 @@ export async function inspectInstalled(config, run = probe, { inspectHistoryOnly
 }
 
 export async function installedDoctor(config, target = null, { run = probe, observe = observeExistingSession } = {}) {
+  validateConfig(config)
   const native = isNativeRuntimeConfig(config)
-  const checks = [], result = { schema: 1, ready: false, mode: native ? 'native-runtime-existing-installations' : 'existing-installations', versions: null, checks,
+  const checks = [], result = { schema: 1, ready: false, mode: native ? 'native-runtime-existing-installations' : 'retired-history-only', versions: null, checks,
     producer: 'not_checked', transfer: 'not_included_pending_qualification', update: 'official_owner; stop_and_recheck; task_handoff_unimplemented', credentialsRead: false,
-    herdrReference: { source: native ? 'explicit_official_installation' : config.programs.herdr === undefined ? 'agenvo_instance' : 'legacy_explicit_match', migration: native || config.programs.herdr === undefined ? null : 'omit_programs_herdr_once_to_follow_existing_instance' } }
+    herdrReference: { source: native ? 'explicit_official_installation' : 'retired_reference', migration: null } }
   if (native) result.identityBinding = 'declared_configuration; authenticated_server_binding_unverified'
   result.history = await readSessionHistory(config)
   result.sessionObservation = { state: 'not_queried', ownership: 'not_acquired', stopAuthority: false, serverIdentity: 'not_verified' }
+  if (!native) {
+    result.activation = 'blocked'
+    checks.push({ check: 'legacy_execution', state: 'blocked', code: 'legacy_execution_retired' })
+    return result // Saved snapshot only; no legacy config/auth/status read or child.
+  }
   try {
     const inspected = await inspectInstalled(config, run, { inspectHistoryOnly: true })
     result.versions = inspected.versions
@@ -244,28 +228,28 @@ export async function installedDoctor(config, target = null, { run = probe, obse
     if (config.transfer) {
       await inspectInstalledTransfer(config)
       checks.push({ check: 'existing_transfer_reference', state: 'passed' })
-      result.transfer = native ? 'existing_reference_checked; original_file_credential_retained; native_control_file_principal_mapping_unverified' :
-        'reference_checked; native_tls_and_authorization_unverified'
+      result.transfer = 'existing_reference_checked; original_file_credential_retained; native_control_file_principal_mapping_unverified'
     }
     if (target) { result.producer = compareProducerTarget(inspected.config, target).state; checks.push({ check: 'producer_configuration', state: 'passed' }) }
   } catch (error) { checks.push({ check: 'installation_preflight', state: 'blocked', code: error instanceof EndpointError ? error.code : error.code === 'ENOENT' ? 'installation_input_missing' : 'installation_input_unavailable' }) }
-  // The existing file principal/binding still belongs to the original Agenvo
-  // connection. Local paths and payload checks do not authenticate a mapping
+  // The existing file credential remains bound to its original recorded principal
+  // and producer configuration bytes. Local paths and payload checks do not authenticate a mapping
   // from native control identity. This diagnostic never alters the authorized
   // original queue consumer or substitutes a Runtime key for its credential.
-  if (native && config.transfer) checks.push({ check: 'native_control_file_principal_mapping', state: 'blocked', code: 'native_file_principal_mapping_unverified' })
+  if (config.transfer) checks.push({ check: 'native_control_file_principal_mapping', state: 'blocked', code: 'native_file_principal_mapping_unverified' })
   return result
 }
 
 // The existing producer owns the package, credentials and queue. Its build
 // receipt checks selected local bytes; it is not a signed release certificate.
 export async function inspectInstalledTransfer(config) {
+  requireNativeRuntime(config)
   validateConfig(config)
-  demand([2, 3].includes(config.schema) && config.transfer, 'transfer_reference_required')
+  demand(config.transfer, 'transfer_reference_required')
   const locations = transferLocations(config)
   await validateDirectory(locations.root)
   await validateTransferConfiguration(config)
-  const direct = isNativeRuntimeConfig(config) && Object.hasOwn(config, 'transferConfigDir')
+  const direct = Object.hasOwn(config, 'transferConfigDir')
   const registryFile = path.join(config.herdrConfigRoot, 'plugins.json')
   // Direct CLI does not require a plugin registration, but an old hook must be
   // explicitly disabled. Observe absence and original bytes without editing it.

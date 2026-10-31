@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { validateDirectory, programPaths, managedEnvironment } from './endpoint.mjs'
+import { validateDirectory, programPaths, managedEnvironment, requireNativeRuntime } from './endpoint.mjs'
 
 const stamp = s => [s.dev, s.ino, s.size, s.mtimeMs, s.ctimeMs, s.nlink].join(':')
 const fail = code => { throw Object.assign(new Error(code), { code }) }
@@ -78,7 +78,9 @@ async function nativeQuery(file, args, env) {
 }
 
 export async function observeExistingSession(inspected, run = nativeQuery) {
-  const { config } = inspected, p = programPaths(config), env = managedEnvironment(config)
+  const { config } = inspected
+  requireNativeRuntime(config)
+  const p = programPaths(config), env = managedEnvironment(config)
   const result = { state: 'unverified', ownership: 'not_acquired', stopAuthority: false, serverIdentity: 'not_verified', workspaceCount: null,
     tabCount: null, paneCount: null, agentCount: null, piSessionReferences: null, businessTasks: 'not_inferred' }
   async function query(args) {
