@@ -151,6 +151,11 @@ if (process.platform === 'win32') test('native read-only owner/process probe acc
    const content=await fs.readFile(files[key],'utf8')
    files[key]=path.join(audit,key+'.json');items.push({kind:'file',path:files[key],content})
  }
+ // Additional evidence goes through -AdditionalEvidenceJson; a Windows PowerShell
+ // 5.1 pipeline parse of that argument nests the array unless explicitly enumerated.
+ const additionalFile=path.join(audit,'additional.json')
+ items.push({kind:'file',path:additionalFile,content:'{}'})
+ files.additional=[additionalFile]
  await fs.writeFile(input,JSON.stringify({root:f.base,items}))
  const ps=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe')
  const made=spawnSync(ps,['-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./official-smoke/private-fixture.ps1',import.meta.url)),'-InputFile',input],{encoding:'utf8',timeout:30000,maxBuffer:4096})
