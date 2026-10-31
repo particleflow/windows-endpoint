@@ -424,6 +424,20 @@ test('status failed also pairs with a journal already stopped on connector_stop_
  assert.equal((await recoverHost(f.options,f.deps)).state,'infrastructure_rechecked')
  assert.equal((await new StateStore(f.dir,f.config.deviceId).load()).infrastructureRecovery.previousPhase,'stopped')
 })
+test('invalid-input stop retries re-publish host-status alone and keep the wedge eligible',async t=>{
+ const f=await connectorStopUnknownFixture(t)
+ // Field sequence 2026-10-31: the first failed stop paired the journal and the
+ // status file on connector_stop_unknown; each later stdin stop retry judged
+ // invalid input then updated only host-status attention, not the journal.
+ f.status.attention='host_control_input_invalid';await fs.writeFile(f.statusFile,JSON.stringify(f.status))
+ assert.equal((await recoverHost(f.options,f.deps)).state,'infrastructure_rechecked')
+ const saved=await new StateStore(f.dir,f.config.deviceId).load()
+ assert.equal(saved.infrastructureRecovery.previousAttention,'connector_stop_unknown')
+ assert.equal(saved.infrastructureRecovery.previousPhase,'needs_attention')
+ const foreign=await connectorStopUnknownFixture(t)
+ foreign.status.attention='connector_authentication_required';await fs.writeFile(foreign.statusFile,JSON.stringify(foreign.status))
+ await assert.rejects(recoverHost(foreign.options,foreign.deps),{code:'host_recovery_status_not_eligible'})
+})
 test('status failed is not accepted for the other eligible journal kinds',async t=>{
  for(const f of [await runningFixture(t),await stoppedObservationFixture(t)]) {
   f.status.phase='failed';f.status.attention=f.state.attention

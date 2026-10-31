@@ -206,7 +206,13 @@ export async function recoverHost({root,expectedRun,expectedState,expectedConfig
     // Host stopOwned publishes (failed, attention) when the lifecycle released
     // its lease but the stop still surfaced the original failure; the same real
     // pairing is accepted alongside the wedge's stop_failed and crash shapes.
-    if (connectorStopUnknown) demand(status.attention === state.attention && ['running','stopping','failed','stop_failed','stopped'].includes(status.phase), 'host_recovery_status_not_eligible')
+    // A wedged host retains ownership and retries stop over its still-open stdin;
+    // a retry judged invalid input re-publishes host-status alone with attention
+    // host_control_input_invalid while the journal keeps connector_stop_unknown.
+    // Both codes originate only in this run's own stop sequence: host.mjs takes
+    // snapshot attention as stopReason || attention, and the sticky stopReason is
+    // set solely by this process's control-input path before each retry.
+    if (connectorStopUnknown) demand(['connector_stop_unknown','host_control_input_invalid'].includes(status.attention) && ['running','stopping','failed','stop_failed','stopped'].includes(status.phase), 'host_recovery_status_not_eligible')
     const inspected = await inspect(config,undefined,{inspectHistoryOnly:true})
     const effective = inspected.config
     demand(path.resolve(process.execPath).toLowerCase() === path.resolve(effective.programs.node).toLowerCase() || observe !== nativeRecoveryEvidence,'host_recovery_node_mismatch')
