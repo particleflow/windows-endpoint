@@ -310,6 +310,53 @@ for (const reason of ['authentication', 'permission', 'configuration', 'capacity
   await f.transfer.tick({ snapshotsOnly: true }); f.time(30000); f.transfer.hint('network'); await f.transfer.tick()
   assert.equal(f.transfer.snapshot().attention, `transfer_${reason}`); assert.deepEqual(f.calls, ['advance-snapshots'])
 })
+
+// E3b: the server names target_drift for a refused target binding
+// (target_fingerprint_mismatch), which is not a rejected credential. The
+// endpoint keeps running with the cause recorded in the decision; one bounded
+// retry re-reads after a possible server-side rebinding, then a slow recheck
+// continues without failing closed. Credential refusals still suspend.
+test('target_drift summary records without attention: one retry, then a slow recheck', async () => {
+  const f = fixture(action => output(action, decision('unknown', { error_class: 'target_drift' })))
+  await f.transfer.tick()
+  const first = f.transfer.snapshot()
+  assert.equal(first.attention, null); assert.equal(first.state, 'retry_hint')
+  assert.equal(first.decision.error_class, 'target_drift')
+  f.time(29999); await f.transfer.tick()
+  assert.equal(f.calls.length, 1)
+  f.time(30000); await f.transfer.tick()
+  const parked = f.transfer.snapshot()
+  assert.equal(parked.attention, null); assert.equal(parked.state, 'blocked')
+  assert.equal(parked.decision.error_class, 'target_drift')
+  assert.equal(f.calls.length, 2)
+  f.time(60000); await f.transfer.tick()
+  assert.equal(f.transfer.snapshot().attention, null); assert.equal(f.calls.length, 3)
+})
+
+test('target_drift advance refusal keeps the endpoint running while due summaries stop driving it', async () => {
+  const f = fixture(action => action === 'lifecycle-summary' ? output(action, decision('due')) : output(action, decision('blocked', { error_class: 'target_drift' }), 1))
+  await f.transfer.tick()
+  const snapshot = f.transfer.snapshot()
+  assert.equal(snapshot.attention, null); assert.equal(snapshot.state, 'retry_hint')
+  assert.equal(snapshot.decision.error_class, 'target_drift')
+  assert.deepEqual(f.calls, ['lifecycle-summary', 'advance-results'])
+})
+
+test('credential-class refusals still fail closed (contrast to target_drift)', async () => {
+  const f = fixture(action => output(action, decision('unknown', { error_class: 'authentication' })))
+  await f.transfer.tick()
+  assert.equal(f.transfer.snapshot().attention, 'transfer_authentication')
+  assert.equal(f.transfer.snapshot().state, 'needs_attention')
+})
+
+test('restricted target_drift failure retries once then rechecks without attention', async () => {
+  const f = fixture(() => snapshotOutput(snapshotStep({ error_class: 'target_drift' }), 1))
+  await f.transfer.tick({ snapshotsOnly: true })
+  assert.equal(f.transfer.snapshot().attention, null); assert.equal(f.transfer.snapshot().state, 'retry_hint')
+  f.time(30000); await f.transfer.tick({ snapshotsOnly: true })
+  assert.equal(f.transfer.snapshot().attention, null); assert.equal(f.transfer.snapshot().state, 'blocked')
+  assert.deepEqual(f.calls, ['advance-snapshots', 'advance-snapshots'])
+})
 for (const failure of [() => ({ status: 2, stdout: '' }), () => ({ status: 0, stdout: '{' }), () => ({ status: null, timedOut: true }), () => snapshotOutput(snapshotStep({ registered: true }))]) test('invalid/legacy restricted result suspends without trying a general action', async () => {
   const f = fixture(failure)
   await f.transfer.tick({ snapshotsOnly: true }); f.time(30000); await f.transfer.tick()
