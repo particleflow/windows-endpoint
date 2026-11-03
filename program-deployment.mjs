@@ -40,7 +40,7 @@ export async function prepareNativePiCatalog({root,requestId,providerId,interval
       const owned=await manager.owned(state,state.current)
       demand(owned.profile===programProfileHash,'deployment_state_profile_changed')
       const reason=await manager.work(programProfileHash)
-      if(reason)return {state:'deferred',reason,activation:'blocked',businessReplayed:false}
+      if(reason)return {state:'deferred',reason,businessReplayed:false}
       const packageRoot=path.join(manager.layout.packages,state.current)
       const verified=await manager.verify(packageRoot,state.current)
       const settingsFile=path.join(manager.config.piConfigDir,'settings.json'),modelsFile=path.join(manager.config.piConfigDir,'models.json')
@@ -101,7 +101,7 @@ export async function prepareProfileSwitch({ root, requestId, profile, configura
     const existing = await optional(file, 16384)
     if (existing !== null) {
       demand(existing === desired, 'deployment_profile_switch_pending_conflict')
-      return { state: 'already_prepared', requestId, activation: 'blocked', businessReplayed: false }
+      return { state: 'already_prepared', requestId, businessReplayed: false }
     }
     await checkpoint('before_prepare')
     await manager.unchanged()
@@ -111,7 +111,7 @@ export async function prepareProfileSwitch({ root, requestId, profile, configura
     await checkpoint('prepared')
     await manager.unchanged()
     demand(await boundedRead(manager.lifecycleStore.file, 262144) === stateRaw && await attemptEvidence(manager.config) === attempts, 'deployment_profile_switch_evidence_changed')
-    return { state: 'prepared', requestId, activation: 'blocked', businessReplayed: false }
+    return { state: 'prepared', requestId, businessReplayed: false }
   })
 }
 
@@ -180,7 +180,7 @@ export async function archiveProfileSwitch({ root, requestId }, { checkpoint = a
       await check()
     }
     await check()
-    return { state: 'old_files_archived', requestId, activation: 'blocked', businessReplayed: false, nasEvidence: 'not_checked' }
+    return { state: 'old_files_archived', requestId, businessReplayed: false, nasEvidence: 'not_checked' }
   })
 }
 
@@ -262,7 +262,7 @@ export async function commitProfileSwitch({ root, requestId, rollback = false },
     const result = await check()
     const expectedConfig = rollback ? oldConfigRaw : newConfigRaw, expectedState = rollback ? oldStateRaw : newStateRaw
     demand(result.c === expectedConfig && result.s === expectedState, 'deployment_profile_switch_evidence_changed')
-    return { state: rollback ? 'local_profile_rolled_back' : 'local_profile_prepared', requestId, activation: 'blocked', nasEvidence: 'not_checked', businessReplayed: false, configurationSha256: sha256(expectedConfig), lifecycleSha256: sha256(expectedState) }
+    return { state: rollback ? 'local_profile_rolled_back' : 'local_profile_prepared', requestId, nasEvidence: 'not_checked', businessReplayed: false, configurationSha256: sha256(expectedConfig), lifecycleSha256: sha256(expectedState) }
   })
 }
 async function optional(file, limit = 65536) {
@@ -391,13 +391,10 @@ async function directory(file) {
   await validateDirectory(file)
 }
 const describe = (result, retained = null) => ({ ...result, evidence: 'endpoint_program_transaction', activation: 'explicit_foreground_only',
-  qualification: 'not-for-production-release', officialComponentsChanged: false, queueAdvanced: false,
+  officialComponentsChanged: false, queueAdvanced: false,
   ...(retained ? { taskHistory: 'preserved_unreconciled', retainedAttemptEvidenceSha256: retained.attempts, businessReplayed: false, stopAuthority: false } : {}) })
 
 export class ProgramDeployment extends DeploymentTransactions {
-  maintenanceEligible(state) {
-    return super.maintenanceEligible(state) || this.handlingProducer === true && state.phase === 'stopped' && state.attention === 'producer_upgrade_pending'
-  }
   async locked(operation) {
     return super.locked(async()=>{
       demand(this.handlingProducer === true || !await exists(path.join(this.lifecycleDirectory, producerPendingName)), 'deployment_producer_recovery_required')
@@ -517,7 +514,7 @@ export class ProgramDeployment extends DeploymentTransactions {
     // home-mapped version to the corrected program.
     await this.projectRoot(target)
     if (state.current !== null && (await this.owned(state, state.current)).profile !== programProfileHash)
-      return { state: 'deferred', reason: 'producer_transaction_required', activation: 'blocked', businessReplayed: false }
+      return { state: 'deferred', reason: 'producer_transaction_required', businessReplayed: false }
     return super.selectionCheck(state, target, mode)
   }
   async unchanged() {
@@ -530,7 +527,7 @@ export class ProgramDeployment extends DeploymentTransactions {
     if (profile !== programProfileHash) return 'state_profile_incompatible'
     const state = await this.lifecycleStore.load()
     if (state.handoff) return 'host_handoff_unverified'
-    if (state.phase !== 'stopped' || state.attention) return 'endpoint_stop_unverified'
+    if (state.phase !== 'stopped') return 'endpoint_stop_unverified'
     // This is a stopped-program switch, not a claim of global business idle or
     // an admission barrier for an external producer. No component/queue writer
     // is upgraded here; its original path and exact producer revision remain.
@@ -675,7 +672,7 @@ export async function programDeploymentMain(args) {
     if (!isNativeRuntimeConfig(config)) {
       const state = await readDeploymentState(deploymentLayout(root), config.deviceId)
       return { state: 'retired-history-only', selected: state.current, previous: state.previous, pending: state.pending,
-        ownedPackages: state.packages.map(p => p.hash), activation: 'blocked', executionPermitted: false, evidence: 'saved_deployment_journal_only' }
+        ownedPackages: state.packages.map(p => p.hash), executionPermitted: false, evidence: 'saved_deployment_journal_only' }
     }
   }
   const manager = await programDeployment(root, { prepare: action === 'install' })

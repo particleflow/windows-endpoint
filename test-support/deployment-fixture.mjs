@@ -8,7 +8,7 @@ import { nativeInstalledFixture } from './installed-fixture.mjs'
 import { StateStore } from '../lifecycle.mjs'
 
 export async function syntheticBundle(directory, revision, format = 1) {
-  const manifest = { schema: 1, platform: 'win32-x64', qualification: 'review-only', components: {}, files: [] }
+  const manifest = { schema: 1, platform: 'win32-x64', components: {}, files: [] }
   const names = new Set([...catalog.requiredFiles, 'fixture-revision.txt', 'fixture-state-profile.json'])
   for (const [id, spec] of Object.entries(catalog.components)) {
     manifest.components[id] = { version: spec.version || '2.51.0.windows.1', source: spec.source, revision: spec.revision || 'v2.51.0.windows.1', entry: spec.entry }

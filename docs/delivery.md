@@ -13,7 +13,7 @@ Existing official Pi/Herdr/Node/Git installations remain independently owned.
 | --- | --- |
 | `configure --from FILE --root DIR` | Exclusively save complete schema-3 references to `config/endpoint.json`; root/config directory must already exist. No credentials, identities or component roots are created or moved. |
 | `configure --from FILE --config FILE` | Save complete native references exclusively, outside component-owned locations. Refuse an existing destination. |
-| `doctor --config FILE` | Native inventory/protocol checks and separately reported authentication limits. For old configurations, bounded saved-history projection only, with activation blocked. |
+| `doctor --config FILE` | Native inventory/protocol checks and separately reported authentication limits. For old configurations, bounded saved-history projection only, with legacy execution retired. |
 | `deploy install/update/rollback` | Native program candidate selection under original leases and retained-work checks; official program/config/state roots remain unchanged. See [transactions](deployment-transactions.md). |
 | `deploy status` | Native inventory, or saved selection/pending records for a retired configuration. Historical status does not stage, recover or launch an old program. |
 | `host handoff-status` | Read an original durable acknowledgement. No stop, replay or retry authority follows from a cached observation. |

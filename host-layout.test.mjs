@@ -50,11 +50,11 @@ test('one layout permits dedicated component data but does not adopt external us
 test('configure, setup and program update share the same central layout and preserve all component bytes', async t => {
   const f = await fixture(t)
   await configure(f.input, undefined, f.root)
-  assert.equal((await setupEndpoint(f.options, { doctor })).state, 'prepared_review_only')
+  assert.equal((await setupEndpoint(f.options, { doctor })).state, 'prepared')
   const next = await programPackage(path.join(f.base, 'next package'), 'next', { native: true })
   const manager = await programDeployment(f.root)
   await manager.stage(next.directory, next.hash)
-  assert.equal((await manager.select(next.hash, 'update')).state, 'selected_review_only')
+  assert.equal((await manager.select(next.hash, 'update')).state, 'selected')
   assert.deepEqual(await Promise.all(f.protectedFiles.map(file => fs.readFile(file))), f.original)
   assert.equal(JSON.parse(await fs.readFile(path.join(f.root, 'config/endpoint.json'))).piConfigDir, f.config.piConfigDir)
   assert.deepEqual(await fs.readdir(f.config.sourceRoot), [], 'updating never creates or purges task history')

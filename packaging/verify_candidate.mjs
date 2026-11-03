@@ -1,4 +1,4 @@
-// Isolated archive verification; neither install nor a production qualification.
+// Isolated archive verification; neither install nor release activation.
 import assert from 'node:assert/strict'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
@@ -20,7 +20,6 @@ assert.equal(archiveBytes.length, summary.size_bytes)
 assert.equal(hash(archiveBytes), summary.sha256)
 assert.equal(manifest.source_commit, summary.source_commit)
 assert.equal(manifest.producer_commit, summary.producer_commit)
-assert.equal(manifest.qualification, 'not-for-production-release')
 assert.equal(manifest.positive_production_tls, 'unverified')
 const actual = []
 async function walk(root, relative = '') {
@@ -79,7 +78,7 @@ try {
   }
   assert.ok(JSON.parse(command(['help'], 0)).commands.includes('host run --root DIR'))
   command(['update'], 2)
-  checks.push('extracted_public_entry_and_unchanged_update_gate')
+  checks.push('extracted_public_entry_rejects_unknown_legacy_commands')
   const root = path.join(sandbox, 'host')
   await fs.mkdir(path.join(root, 'config'), { recursive: true })
   await fs.mkdir(path.join(root, 'data/endpoint'), { recursive: true })
@@ -96,7 +95,7 @@ try {
   command(['configure', '--from', references, '--root', root], 2)
   checks.push('schema3_configure_preserves_existing_references_and_refuses_overwrite')
   const installed = JSON.parse(command(['deploy', 'install', '--root', root, '--source', candidate, '--manifest-sha256', summary.manifest_sha256], 0))
-  assert.equal(installed.state, 'selected_review_only')
+  assert.equal(installed.state, 'selected')
   assert.equal(installed.officialComponentsChanged, false)
   assert.equal(JSON.parse(command(['deploy', 'install', '--root', root, '--source', candidate, '--manifest-sha256', summary.manifest_sha256], 0)).state, 'already_selected')
   checks.push('managed_program_install_is_repeatable_and_preserves_external_component_mapping')
@@ -131,7 +130,7 @@ try {
   assert.equal(doctor.ready, false)
   assert.ok(doctor.checks.some(c => c.state === 'blocked' && c.code === 'installation_input_missing'))
   checks.push('missing_component_is_explicitly_unavailable')
-  process.stdout.write(JSON.stringify({ source_commit: manifest.source_commit, producer_commit: manifest.producer_commit, byteEvidence, checks, passed: checks.length, qualification: 'not-for-production-release', realPCandNAS: false, positiveProductionTLS: 'unverified' }) + '\n')
+  process.stdout.write(JSON.stringify({ source_commit: manifest.source_commit, producer_commit: manifest.producer_commit, byteEvidence, checks, passed: checks.length, realPCandNAS: false, positiveProductionTLS: 'unverified' }) + '\n')
 } finally {
   for (const cleanup of cleanups) await cleanup()
   await fs.rm(sandbox, { recursive: true, force: true })

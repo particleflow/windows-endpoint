@@ -18,7 +18,7 @@ function contains(root, target) {
   const relative = path.relative(root, target)
   return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))
 }
-const report = (state, extra = {}) => ({ state, ...extra, activation: 'blocked', transferAutomaticRecovery: false, evidence: 'offline_transaction_only' })
+const report = (state, extra = {}) => ({ state, ...extra, transferAutomaticRecovery: false, evidence: 'offline_transaction_only' })
 const layoutTemplate = JSON.parse(await fs.readFile(new URL('./deployment-layout.json', import.meta.url), 'utf8'))
 
 // Installation-owned layout; software packages contain only relative paths.
@@ -101,7 +101,10 @@ export class DeploymentTransactions {
     catch (error) { if (error.code === 'endpoint_already_owned') return report('deferred', { reason: 'endpoint_owned' }); throw error }
     try {
       const lifecycle = await this.lifecycleStore.load()
-      if (!this.maintenanceEligible(lifecycle)) return report('deferred', { reason: lifecycle.attention ? 'endpoint_attention' : 'endpoint_stop_unverified' })
+      // A stopped endpoint is updatable. Stopping is the update precondition;
+      // a recorded attention code does not defer the update that can replace
+      // the program that raised it.
+      if (!this.maintenanceEligible(lifecycle)) return report('deferred', { reason: 'endpoint_stop_unverified' })
       return await operation()
     } catch (error) {
       if (error instanceof DeploymentError) throw error
@@ -110,7 +113,7 @@ export class DeploymentTransactions {
       throw new DeploymentError(reason)
     } finally { await release() }
   }
-  maintenanceEligible(lifecycle) { return lifecycle.phase === 'stopped' && lifecycle.attention === null }
+  maintenanceEligible(lifecycle) { return lifecycle.phase === 'stopped' }
   async read() { return readDeploymentState(this.layout, this.config.deviceId, this.io) }
   async write(state) {
     // Flush the complete small journal before same-directory atomic rename.
@@ -139,7 +142,7 @@ export class DeploymentTransactions {
         else await this.io.mkdir(directory)
       }
       await this.write({ schema: 1, owner: this.config.deviceId, packages: [], current: null, previous: null, pending: null })
-      return report('initialized_review_only')
+      return report('initialized')
     })
   }
   async proof(directory, expectedHash) {
@@ -186,7 +189,7 @@ export class DeploymentTransactions {
       await this.checkpoint('stage_published')
       state.packages.push({ hash: expectedHash, profile: proof.profile }); state.pending = null
       await this.write(state)
-      return report('staged_review_only', { manifestSha256: expectedHash })
+      return report('staged', { manifestSha256: expectedHash })
     })
   }
   async selectionCheck(state, target, mode) {
@@ -200,7 +203,7 @@ export class DeploymentTransactions {
     const reason = await this.work(item.profile)
     if (reason) return report('deferred', { reason })
     await this.space()
-    return report('eligible_review_only', { manifestSha256: target })
+    return report('eligible', { manifestSha256: target })
   }
   async preflight(target, mode) {
     return this.locked(async () => this.selectionCheck(await this.read(), target, mode))
@@ -221,7 +224,7 @@ export class DeploymentTransactions {
       await this.write(state); await this.checkpoint('switch_selected')
       state.pending = null
       await this.write(state); await this.checkpoint('switch_committed')
-      return report('selected_review_only', { manifestSha256: target })
+      return report('selected', { manifestSha256: target })
     })
   }
   async recover() {
@@ -246,7 +249,7 @@ export class DeploymentTransactions {
       }
       state.pending = null
       await this.write(state)
-      return report('recovered_review_only', { manifestSha256: state.current, retainedUnrecordedFiles: true })
+      return report('recovered', { manifestSha256: state.current, retainedUnrecordedFiles: true })
     })
   }
   async inventory() {

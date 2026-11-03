@@ -22,6 +22,8 @@ const encode = value => JSON.stringify(value) + '\n'
 async function packageFixture(directory, old, sourceCommit, oldProducer=historicalProducer) {
   const pkg = await programPackage(directory, old?'history':'new', {native:true})
   const revision = old ? oldProducer : catalog.components.transfer.revision
+  // Recorded historical packages carry the historical manifest kind value.
+  if(old)pkg.manifest.kind='portable-existing-installations-review'
   const depsFile = path.join(directory,'dependencies.json'), deps = JSON.parse(await fs.readFile(depsFile,'utf8'))
   deps.components.transfer.revision = revision; await fs.writeFile(depsFile,encode(deps))
   const producerFiles = ['README.md','herdr-plugin.toml','transfer.example.json','transferqueue-cli.test.exe','transferqueue.exe','transferqueue.test.exe','verify-fixtures.ps1']

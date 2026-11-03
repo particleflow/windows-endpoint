@@ -27,11 +27,11 @@ test('offline install, update, rollback and repeated selection preserve config a
   assert.equal((await f.manager.stage(f.a.directory, f.a.hash)).state, 'already_staged')
   const lifecycle = await fs.readFile(f.store.file, 'utf8')
   const before = await journal(f)
-  assert.equal((await f.manager.preflight(f.a.hash, 'install')).state, 'eligible_review_only')
+  assert.equal((await f.manager.preflight(f.a.hash, 'install')).state, 'eligible')
   assert.equal(await journal(f), before)
   const installed = await f.manager.select(f.a.hash, 'install')
-  assert.equal(installed.state, 'selected_review_only')
-  assert.equal(installed.activation, 'blocked'); assert.equal(installed.transferAutomaticRecovery, false)
+  assert.equal(installed.state, 'selected')
+  assert.equal(installed.transferAutomaticRecovery, false)
   assert.equal((await f.manager.select(f.a.hash, 'install')).state, 'already_selected')
   await f.manager.select(f.b.hash, 'update')
   assert.equal((await f.manager.read()).current, f.b.hash)
@@ -100,7 +100,7 @@ test('independent mutable directories sharing only a packages/control name prefi
     validateConfig(config)
     const manager = fixtureManager({ ...f.settings, config })
     assert.equal((await manager.initialize()).state, 'already_initialized')
-    assert.ok(['staged_review_only', 'already_staged'].includes((await manager.stage(f.a.directory, f.a.hash)).state))
+    assert.ok(['staged', 'already_staged'].includes((await manager.stage(f.a.directory, f.a.hash)).state))
     assert.equal(await fs.readFile(marker, 'utf8'), 'keep')
   }
   await preserved(f)
@@ -120,7 +120,7 @@ test('missing component, missing qualification and unknown work fail without sel
   assert.equal(await journal(f), before)
 })
 
-test('busy, unknown, open admission and attention defer before transaction writes', async t => {
+test('busy, unknown and open admission defer before transaction writes; a stopped endpoint with attention stays updatable', async t => {
   const f = await deploymentFixture(t); await staged(f)
   const before = await journal(f)
   const safe = { schema: 1, admission: 'closed', tasks: 'idle', transfers: 'idle', stateProfileSha256: f.a.profile }
@@ -130,9 +130,9 @@ test('busy, unknown, open admission and attention defer before transaction write
     assert.equal(await journal(f), before)
   }
   const state = await f.store.load(); state.attention = 'transfer_permission'; await f.store.save(state)
-  assert.equal((await f.manager.select(f.a.hash, 'install')).reason, 'endpoint_attention')
+  assert.equal((await f.manager.select(f.a.hash, 'install')).state, 'selected')
   assert.equal((await f.store.load()).attention, 'transfer_permission')
-  assert.equal(await journal(f), before)
+  assert.equal((await f.manager.read()).current, f.a.hash)
 })
 
 test('incompatible state blocks rollback without changing selection or erasing the journal', async t => {
@@ -211,7 +211,7 @@ test('incompatible or damaged transaction journal is never reset to an empty ins
   await preserved(f)
 })
 
-for (const failed of [false, true]) test(`existing endpoint holds the update gate through ${failed ? 'failed' : 'successful'} stop drain`, async t => {
+for (const failed of [false, true]) test(`existing endpoint holds the update gate while draining and stays updatable after a ${failed ? 'failed' : 'successful'} stop`, async t => {
   const f = await deploymentFixture(t); await staged(f)
   let finish, entered
   const ready = new Promise(r => { entered = r })
@@ -228,8 +228,7 @@ for (const failed of [false, true]) test(`existing endpoint holds the update gat
   assert.equal(calls.some(c => c.startsWith('stop:')), false)
   finish(); await Promise.all([tick, stop])
   const result = await f.manager.select(f.a.hash, 'install')
-  if (failed) { assert.equal(result.reason, 'endpoint_attention'); assert.equal((await f.manager.read()).current, null) }
-  else { assert.equal(result.state, 'selected_review_only'); assert.equal((await f.manager.read()).current, f.a.hash) }
+  assert.equal(result.state, 'selected'); assert.equal((await f.manager.read()).current, f.a.hash)
 })
 
 async function terminateAt(f, phase, operation, target, source = '') {

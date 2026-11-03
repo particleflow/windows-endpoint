@@ -13,7 +13,7 @@ export async function programPackage(directory, label = 'a', { native = false } 
   const names = (await fs.readdir(source)).filter(n => n.endsWith('.mjs') && !n.endsWith('.test.mjs'))
   names.push('owned-herdr.ps1', 'host-recovery.ps1', 'producer-reference.ps1', 'directory-selection.ps1', 'WindowsEndpoint.ps1', 'deployment-layout.json', 'dependencies.json', 'LICENSE')
   for (const name of names) await fs.copyFile(path.join(source, name), path.join(directory, name))
-  await fs.writeFile(path.join(directory, 'README.md'), `INERT REVIEW REVISION ${label}`)
+  await fs.writeFile(path.join(directory, 'README.md'), `INERT FIXTURE REVISION ${label}`)
   await fs.mkdir(path.join(directory, 'transfer'))
   await fs.writeFile(path.join(directory, 'transfer/transferqueue.exe'), 'MZ INERT TEST FILE')
   await fs.writeFile(path.join(directory, 'transfer/SHA256SUMS.json'), '{}')
@@ -38,8 +38,8 @@ export async function programPackage(directory, label = 'a', { native = false } 
     const file = path.join(directory, name)
     files.push({ path: name, size: (await fs.stat(file)).size, sha256: await digest(file) })
   }
-  const manifest = { schema: 1, kind: 'portable-existing-installations-review', platform: 'win32-x64', entry: 'endpoint.mjs',
-    qualification: 'not-for-production-release', official_components: 'referenced-existing-installations-not-bundled',
+  const manifest = { schema: 1, kind: 'portable-existing-installations', platform: 'win32-x64', entry: 'endpoint.mjs',
+    official_components: 'referenced-existing-installations-not-bundled',
     source_repository: 'particleflow/windows-endpoint', source_commit: '1'.repeat(40), producer_repository: 'particleflow/Memoh',
     producer_commit: catalog.components.transfer.revision, state_profile: programStateProfile, workspace_unc_source_root: true, central_component_data: true, stable_installation_entry: 1, native_pi_catalog:nativeCatalogPackage, files }
   if (native) Object.assign(manifest, { native_runtime: { repository: 'particleflow/Memoh', commit: catalog.nativeRuntime.revision,
