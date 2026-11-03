@@ -143,8 +143,7 @@ def build(source, commit, producer, producer_source, output, native_runtime=None
     payload['licenses/Memoh-LICENSE'] = git(producer_source, 'show', f'{pin}:LICENSE')
     manifest = {
         'schema': 1,
-        'kind': 'portable-existing-installations-review',
-        'qualification': 'not-for-production-release',
+        'kind': 'portable-existing-installations',
         'source_repository': 'particleflow/windows-endpoint',
         'source_commit': commit,
         'producer_repository': 'particleflow/Memoh',
@@ -190,7 +189,6 @@ def build(source, commit, producer, producer_source, output, native_runtime=None
         'archive': archive_name, 'sha256': sha(archive.read_bytes()),
         'size_bytes': archive.stat().st_size, 'files': len(payload),
         'manifest_sha256': sha(manifest_bytes),
-        'qualification': manifest['qualification'],
         'positive_production_tls': 'unverified',
     }
     if native:

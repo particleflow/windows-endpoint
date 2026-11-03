@@ -215,7 +215,6 @@ export async function installedDoctor(config, target = null, { run = probe, obse
   result.history = await readSessionHistory(config)
   result.sessionObservation = { state: 'not_queried', ownership: 'not_acquired', stopAuthority: false, serverIdentity: 'not_verified' }
   if (!native) {
-    result.activation = 'blocked'
     checks.push({ check: 'legacy_execution', state: 'blocked', code: 'legacy_execution_retired' })
     return result // Saved snapshot only; no legacy config/auth/status read or child.
   }

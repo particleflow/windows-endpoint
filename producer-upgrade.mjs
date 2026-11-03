@@ -240,7 +240,7 @@ export async function transactProducerUpgrade(manager, options, { checkpoint = a
             executableSize:producerSource.objects.find(item=>item.role==='source:transferqueue.exe').size}}:{}),
         configurationSha256,lifecycleSha256,selectionSha256,transferConfigurationSha256:transferConfiguration.sha256,transferConfigurationVersion:transferConfiguration.version,
         ordinarySnapshotSha256:continuation.snapshot,attemptsSha256:plan.attempts,queueMetadataSha256:plan.queue,
-        activation:'blocked',persistentPayloadsWritten:false,queueAdvanced:false,businessReplayed:false,credentialsRead:false,productionAccepted:false}
+        persistentPayloadsWritten:false,queueAdvanced:false,businessReplayed:false,credentialsRead:false,productionAccepted:false}
       const parent = path.dirname(history(manager, requestId))
       try { await fs.mkdir(parent) } catch (error) { if (error.code !== 'EEXIST') throw error }
       await validateDirectory(parent)

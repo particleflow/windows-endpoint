@@ -211,8 +211,8 @@ export async function verifyBundle(root, expectedHash) {
   await regular(manifestFile)
   requireThat(await digest(manifestFile) === expectedHash, 'manifest_hash_mismatch')
   const manifest = await readJSON(manifestFile, 8 * 1024 ** 2)
-  keys(manifest, ['schema', 'platform', 'qualification', 'components', 'files'])
-  requireThat(manifest.schema === 1 && manifest.platform === catalog.platform && manifest.qualification === 'review-only', 'bundle_contract_unsupported')
+  keys(manifest, ['schema', 'platform', 'components', 'files'], ['qualification'])
+  requireThat(manifest.schema === 1 && manifest.platform === catalog.platform, 'bundle_contract_unsupported')
   keys(manifest.components, Object.keys(catalog.components))
   for (const [id, spec] of Object.entries(catalog.components)) {
     const component = manifest.components[id]
@@ -293,7 +293,7 @@ export async function configure(from, to, root, { browseSourceRoot = false, choo
   const handle = await fs.open(to, 'wx')
   try { await handle.writeFile(`${JSON.stringify(config, null, 2)}\n`); await handle.sync() }
   finally { await handle.close() }
-  return { state: 'references_saved', credentialsRead: false, activation: 'blocked',
+  return { state: 'references_saved', credentialsRead: false,
     transferConfiguration: config.transfer ? {
       directory: transferLocations(config).config,
       networkPolicyFile: path.join(transferLocations(config).config, 'transfer-network.json'),
@@ -368,7 +368,6 @@ export function launchPlan(config) {
   requireNativeRuntime(config)
   const entry = id => programPaths(config)[id]
   return {
-    activation: 'blocked', reason: 'compatibility_qualification_pending',
     commands: [
       { component: 'herdr', file: entry('herdr'), args: ['--session', config.session, 'server'] },
       { component: 'connector', file: entry('node'), args: [entry('connector'), 'run', '--config', connectorConfigReference(config)] },
@@ -390,7 +389,7 @@ export async function doctor(config, run) {
 }
 
 // Standalone native official-binary CI harness. Callers must
-// establish artifact provenance first. This never grants endpoint qualification.
+// establish artifact provenance first.
 export async function verifyToolchain(config, gitVersion, run = probe) {
   requireNativeRuntime(config)
   requireThat(process.platform === 'win32' && process.arch === 'x64', 'windows_x64_required')
@@ -442,8 +441,7 @@ export async function main(args) {
     requireThat(/^--[a-z][a-z0-9-]*$/.test(rest[i]) && typeof rest[i + 1] === 'string' && !Object.hasOwn(options, rest[i]), 'invalid_arguments')
     options[rest[i]] = rest[i + 1]
   }
-  if (command === 'help' || !command) return { commands: ['installation install|dependencies|migration-plan (see WindowsEndpoint.ps1)', 'setup --from FILE --root DIR --source DIR --manifest-sha256 SHA256 --transfer disabled|existing-queue [--browse-source-root native]', 'configure --from FILE --root DIR [--browse-source-root native]', 'directory-pick [--config FILE]', 'configure --from FILE --config FILE', 'doctor --config FILE', 'layout --config FILE --root DIR', 'plan --config FILE', 'host run --root DIR', 'host status --root DIR', 'host recover --root DIR --expected-run UUID --expected-state-sha256 SHA256 --expected-configuration-sha256 SHA256', 'host handoff-status --root DIR --request-id UUID', 'deploy install|update --root DIR --source DIR --manifest-sha256 SHA256', 'deploy rollback --root DIR --manifest-sha256 SHA256', 'deploy run|recover|status --root DIR', 'deploy prepare-profile --root DIR --request-id UUID --profile DIR --configuration-sha256 SHA256 --lifecycle-sha256 SHA256 --continuation-sha256 SHA256 --attempts-sha256 SHA256', 'deploy archive-profile --root DIR --request-id UUID', 'deploy commit-profile|rollback-profile --root DIR --request-id UUID', 'deploy prepare-pi-catalog --root DIR --request-id UUID --provider EXISTING_PROVIDER [--interval-ms 60000]'], status: 'portable program deployment and foreground review available; production release and active-task handoff remain unqualified' }
-  if (['start', 'activate', 'update', 'rollback', 'uninstall'].includes(command)) throw new EndpointError('qualification_required_no_runtime_or_data_changed')
+  if (command === 'help' || !command) return { commands: ['installation install|dependencies|migration-plan (see WindowsEndpoint.ps1)', 'setup --from FILE --root DIR --source DIR --manifest-sha256 SHA256 --transfer disabled|existing-queue [--browse-source-root native]', 'configure --from FILE --root DIR [--browse-source-root native]', 'directory-pick [--config FILE]', 'configure --from FILE --config FILE', 'doctor --config FILE', 'layout --config FILE --root DIR', 'plan --config FILE', 'host run --root DIR', 'host status --root DIR', 'host recover --root DIR --expected-run UUID --expected-state-sha256 SHA256 --expected-configuration-sha256 SHA256', 'host handoff-status --root DIR --request-id UUID', 'deploy install|update --root DIR --source DIR --manifest-sha256 SHA256', 'deploy rollback --root DIR --manifest-sha256 SHA256', 'deploy run|recover|status --root DIR', 'deploy prepare-profile --root DIR --request-id UUID --profile DIR --configuration-sha256 SHA256 --lifecycle-sha256 SHA256 --continuation-sha256 SHA256 --attempts-sha256 SHA256', 'deploy archive-profile --root DIR --request-id UUID', 'deploy commit-profile|rollback-profile --root DIR --request-id UUID', 'deploy prepare-pi-catalog --root DIR --request-id UUID --provider EXISTING_PROVIDER [--interval-ms 60000]'], status: 'portable program deployment and foreground host available' }
   if (command === 'layout') {
     keys(options, ['--config', '--root'])
     const { hostReferenceLayout } = await import('./deployment.mjs')

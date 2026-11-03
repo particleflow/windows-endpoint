@@ -54,9 +54,9 @@ test('unified setup prepares and selects the existing program transaction while 
   const originals = [f.options.from, f.config.connector.enrollmentFile, path.join(f.config.piConfigDir, 'auth.json')]
   const before = await Promise.all(originals.map(file => fs.readFile(file)))
   const result = await setupEndpoint(f.options, { doctor: blocked })
-  assert.equal(result.state, 'prepared_review_only'); assert.equal(result.ready, false)
+  assert.equal(result.state, 'prepared'); assert.equal(result.ready, false)
   assert.equal(result.activation, 'not_started'); assert.equal(result.prerequisites, 'blocked')
-  assert.equal(result.deployment.state, 'selected_review_only')
+  assert.equal(result.deployment.state, 'selected')
   assert.equal(result.nextAction, null); assert.equal(result.nextRequired, 'resolve_preflight_prerequisites_then_recheck')
   assert.deepEqual(JSON.parse(await fs.readFile(f.files.config)), f.config)
   assert.deepEqual(JSON.parse(await fs.readFile(f.files.runtime)), { schema: 2, mode: 'existing-installations', transfer: 'disabled' })
@@ -69,7 +69,7 @@ test('native setup resolves its candidate connector for preflight, preserves omi
   await fs.unlink(f.config.connector.enrollmentFile)
   let observed
   const result = await setupEndpoint(f.options, { doctor: async config => { observed = config; return blocked() } })
-  assert.equal(result.state, 'prepared_review_only')
+  assert.equal(result.state, 'prepared')
   assert.equal(observed.programs.connectorPackage, path.join(f.candidate.directory, 'runtime-connector'))
   assert.equal(observed.programs.herdr, f.config.programs.herdr)
   assert.equal(observed.piConfigDir, f.config.piConfigDir)
@@ -86,7 +86,7 @@ test('one existing setup entry browses and saves the fresh Windows default witho
     calls++; return { state: 'selected', path: selected }
   } })
   assert.equal(calls, 1, 'the configuration writer must not open a second dialog')
-  assert.equal(result.state, 'prepared_review_only')
+  assert.equal(result.state, 'prepared')
   assert.equal(JSON.parse(await fs.readFile(f.files.config)).sourceRoot, selected)
   assert.deepEqual(await fs.readFile(f.options.from), input)
   assert.deepEqual(await fs.readdir(f.config.sourceRoot), [])
@@ -143,7 +143,7 @@ test('stopped home-mapped inventory can upgrade, but restart and rollback cannot
   f.candidate.manifest.native_runtime_project_root = true
   await fs.writeFile(manifestFile, JSON.stringify(f.candidate.manifest))
   assert.equal(await digest(manifestFile), currentHash)
-  assert.equal((await programDeploymentMain(['update', '--root', f.options.root, '--source', f.candidate.directory, '--manifest-sha256', currentHash])).state, 'selected_review_only')
+  assert.equal((await programDeploymentMain(['update', '--root', f.options.root, '--source', f.candidate.directory, '--manifest-sha256', currentHash])).state, 'selected')
   const manager = await programDeployment(f.options.root), journal = await fs.readFile(manager.file)
   await assert.rejects(programDeploymentMain(['rollback', '--root', f.options.root, '--manifest-sha256', oldHash]), { code: 'deployment_native_project_root_unsupported' })
   assert.deepEqual(await fs.readFile(manager.file), journal)
@@ -173,7 +173,7 @@ test('native directory configuration refuses rollback to a candidate that cannot
   await fs.writeFile(path.join(f.candidate.directory, 'candidate.json'), JSON.stringify(f.candidate.manifest))
   const hash = await digest(path.join(f.candidate.directory, 'candidate.json'))
   // Select the capable program before introducing configuration it supports.
-  assert.equal((await programDeploymentMain(['update', '--root', f.options.root, '--source', f.candidate.directory, '--manifest-sha256', hash])).state, 'selected_review_only')
+  assert.equal((await programDeploymentMain(['update', '--root', f.options.root, '--source', f.candidate.directory, '--manifest-sha256', hash])).state, 'selected')
   Object.assign(f.config, { transfer: { pluginRoot: path.join(f.base, 'producer'), nasOrigin: 'https://example.com/api' },
     transferConfigDir: path.join(f.base, 'native-file/config'), transferStateDir: path.join(f.base, 'native-file/state') })
   await f.write(path.join(f.config.transferConfigDir, 'keep'), 'original configuration bytes')
@@ -212,7 +212,7 @@ test('interruption after references and write denial resume without replacing th
     assert.equal(await exists(f.files.runtime), false)
     assert.equal(await exists(path.join(f.options.root, 'control')), false)
     const result = await setupEndpoint(f.options, { doctor: blocked })
-    assert.equal(result.state, 'prepared_review_only')
+    assert.equal(result.state, 'prepared')
     assert.deepEqual(await fs.readFile(f.files.config), saved)
   }
 })
@@ -288,7 +288,7 @@ test('public setup entry reports offline preparation separately from readiness u
   try { await promisify(execFile)(process.execPath, args, { timeout: 15000, maxBuffer: 65536 }) }
   catch (error) { assert.equal(error.code, 2); assert.equal(error.stderr, ''); response = JSON.parse(error.stdout) }
   assert.ok(response, 'endpoint keeps its existing ready:false exit-code convention')
-  assert.equal(response.state, 'prepared_review_only'); assert.equal(response.prerequisites, 'blocked')
+  assert.equal(response.state, 'prepared'); assert.equal(response.prerequisites, 'blocked')
   assert.equal(response.preflight.checks[0].code, 'connector_authentication_required')
   assert.equal(response.ready, false); assert.equal(response.activation, 'not_started')
   assert.equal(response.nextAction, null)

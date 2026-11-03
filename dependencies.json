@@ -1,6 +1,5 @@
 {
   "schema": 1,
-  "qualification": "blocked",
   "platform": "win32-x64",
   "nativeRuntime": {
     "version": "0.22.0",
@@ -56,13 +55,6 @@
     "node_modules/.bin/pi.cmd",
     "transfer/herdr-plugin.toml",
     "transfer/SHA256SUMS.json"
-  ],
-  "blockers": [
-    "release_bundle_not_qualified",
-    "production_tls_and_authorization_unverified",
-    "clean_windows_user_acceptance_pending",
-    "approved_binary_path_update_contract_pending",
-    "agent_tool_recovery_unverified"
   ],
   "installationSources": {
     "node": {

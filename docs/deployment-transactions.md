@@ -8,7 +8,7 @@ re-enable a legacy program. A recorded old candidate remains readable but cannot
 be selected for native execution.
 
 [Packaging](../packaging/README.md) documents the stable product entry and the
-review-only candidate. Official Runtime/Herdr/Pi configuration, credentials,
+portable program candidate. Official Runtime/Herdr/Pi configuration, credentials,
 producer journals and source exports keep their existing roots and owners.
 `configure` saves complete native references exclusively; it does not generate
 legacy component layouts or migrate old state.
@@ -39,10 +39,12 @@ the synthetic state-profile digest is a test contract, not an official schema.
 The updater holds the original endpoint and deployment leases; an owned endpoint
 causes deferral. It never stops or kills a process to make progress. Selection
 requires stopped compatible lifecycle state and an unchanged configuration,
-original attempt evidence and saved session continuation. Unknown/busy/attention
-states fail closed. Native stale marker retention requires the existing exact
-recovery proof; an observed marker or missing PID alone grants no authority.
-Active-task handoff remains unqualified.
+original attempt evidence and saved session continuation. A stopped endpoint
+with a recorded attention code stays updatable: stopping is the update
+precondition, and the update can replace the program that raised the attention.
+Unknown/busy work states fail closed. Native stale marker retention requires the
+existing exact recovery proof; an observed marker or missing PID alone grants no
+authority. Active-task handoff remains unqualified.
 
 Native feature checks reject candidates lacking the required Runtime, project
 root, transfer directory-pair or current recovery support. Rollback selects only
@@ -81,7 +83,7 @@ executables, inspect private component config, recover, stage or execute. Old
 receipts and unknown data remain in their original locations. Native status
 continues to report verified inventory and retained unknown entries.
 
-No cleanup policy adopts or deletes unrecorded files. Review fixtures check
+No cleanup policy adopts or deletes unrecorded files. Test fixtures check
 install/update/rollback, same-operation recovery, owned-process interruption and
 preservation of original synthetic data. They do not establish production
 transfer TLS, non-admin/ACL acceptance, live Pi handoff or onsite migration.

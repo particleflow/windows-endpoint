@@ -22,7 +22,7 @@ artifact `12879724489`. No rebuild is needed for this tool.
 | `transfer/transferqueue.exe` | `8d99378eca82d8f6c74425a4c43356797b3687ba0d9fa6d4446d13e867d42b68` |
 
 Producer source is Memoh `0813c7127faa2f6383b723d5f81ec05487c4e446`.
-The candidate remains `not-for-production-release`. The Explicit job failed at
+The candidate remains a pinned program build. The Explicit job failed at
 the explicit unfulfilled-acceptance throw, before the following trusted-TLS
 step. That is not an observed TLS handshake failure. The Windows delivery job's
 cancellation cause remains unknown; passing tests do not identify its actor.

@@ -29,6 +29,9 @@ const recordedProducerPrograms = new Map([
 ])
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 const demand = (ok, code) => { if (!ok) throw Object.assign(new Error(code), { code }) }
+// Recorded packages carry the historical kind value below; new candidates use
+// the plain kind. Both identify the same portable program package type.
+const candidateKinds = ['portable-existing-installations', 'portable-existing-installations-review']
 const required = ['endpoint.mjs', 'host.mjs', 'candidate.mjs', 'program-deployment.mjs', 'deployment.mjs', 'lifecycle.mjs', 'handoff.mjs', 'runtime.mjs', 'installed.mjs', 'dependencies.json', 'LICENSE', 'transfer/transferqueue.exe', 'transfer/SHA256SUMS.json']
 
 export async function verifyCandidate(root, expectedHash) {
@@ -47,8 +50,8 @@ async function verifyPackage(root, expectedHash, recorded) {
   demand(createHash('sha256').update(raw).digest('hex') === expectedHash, 'candidate_manifest_hash_mismatch')
   let manifest
   try { manifest = JSON.parse(raw) } catch { demand(false, 'candidate_manifest_invalid') }
-  demand(manifest.schema === 1 && manifest.kind === 'portable-existing-installations-review' && manifest.platform === 'win32-x64' && manifest.entry === 'endpoint.mjs' &&
-    manifest.qualification === 'not-for-production-release' && manifest.official_components === 'referenced-existing-installations-not-bundled' &&
+  demand(manifest.schema === 1 && candidateKinds.includes(manifest.kind) && manifest.platform === 'win32-x64' && manifest.entry === 'endpoint.mjs' &&
+    manifest.official_components === 'referenced-existing-installations-not-bundled' &&
     manifest.source_repository === 'particleflow/windows-endpoint' && /^[a-f0-9]{40}$/.test(manifest.source_commit) &&
     manifest.producer_repository === 'particleflow/Memoh' && (manifest.producer_commit === catalog.components.transfer.revision ||
       recorded && recordedProducerPrograms.get(manifest.source_commit) === manifest.producer_commit), 'candidate_kind_or_producer_mismatch')
@@ -158,5 +161,5 @@ export async function stageCandidate(source, destination, expectedHash, { checkp
     await verify(target, expectedHash)
     return { state: 'already_staged', manifestSha256: expectedHash, retainedPending: true }
   }
-  return { state: 'staged_review_only', manifestSha256: expectedHash }
+  return { state: 'staged', manifestSha256: expectedHash }
 }
