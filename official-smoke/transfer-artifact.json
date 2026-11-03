@@ -1,0 +1,13 @@
+{
+  "purpose": "review-only-transfer-consumer-fixture",
+  "repository": "particleflow/Memoh",
+  "sourceCommit": "6ddf61dcd8199758e4110398645c556a3d6d7375",
+  "version": "0.3.0",
+  "runId": 39819368622,
+  "artifactId": 12444231490,
+  "archiveSha256": "48ac47ad36b0c21b350193d9f1b987f9c470354fc1bac07b722a701c36dde8df",
+  "expiresAt": "2026-10-29T17:07:52Z",
+  "arch": "amd64",
+  "lifecycleSummary": "not_implemented",
+  "productionQualified": false
+}

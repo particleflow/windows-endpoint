@@ -211,6 +211,28 @@ export function managedEnvironment(config, inherited = process.env) {
   env.PI_CODING_AGENT_DIR = config.piConfigDir
   return env
 }
+
+// Shared reference checks only. The producer remains responsible for native
+// storage permissions, authorization and queue integrity; never repair ACLs here.
+export async function validateTransferConfiguration(config) {
+  validateConfig(config)
+  for (const field of ['sourceRoot', 'transferConfigDir', 'transferStateDir']) {
+    await canonical(config[field])
+    requireThat((await fs.stat(config[field])).isDirectory(), 'directory_required')
+  }
+  const file = path.join(config.transferConfigDir, 'transfer.json')
+  const cfg = await readJSON(file, 8192)
+  keys(cfg, ['version', 'origin', 'source_root'])
+  requireThat(cfg.version === 1 && cfg.origin === config.nasOrigin && samePath(cfg.source_root, config.sourceRoot), 'transfer_configuration_mismatch')
+  try { requireThat((await regular(path.join(config.transferConfigDir, 'device.credential'))).size > 0, 'transfer_credential_missing') }
+  catch (error) { if (error.code === 'ENOENT') throw new EndpointError('transfer_credential_missing'); throw error }
+}
+
+export function transferEnvironment(config, inherited = process.env) {
+  return { ...managedEnvironment(config, inherited),
+    HERDR_PLUGIN_CONFIG_DIR: config.transferConfigDir,
+    HERDR_PLUGIN_STATE_DIR: config.transferStateDir }
+}
 export function launchPlan(config) {
   const entry = id => path.join(config.bundleRoot, catalog.components[id].entry)
   return {
@@ -256,12 +278,7 @@ export async function doctor(config, run = probe) {
     requireThat((await regular(path.join(config.piConfigDir, 'auth.json'))).size > 0, 'pi_authentication_missing')
     await regular(path.join(config.herdrConfigRoot, 'config.toml'))
   })
-  await check('transfer_configuration', async () => {
-    const cfg = await readJSON(path.join(config.transferConfigDir, 'transfer.json'), 8192)
-    keys(cfg, ['version', 'origin', 'source_root'])
-    requireThat(cfg.version === 1 && cfg.origin === config.nasOrigin && samePath(cfg.source_root, config.sourceRoot), 'transfer_configuration_mismatch')
-    requireThat((await regular(path.join(config.transferConfigDir, 'device.credential'))).size > 0, 'transfer_credential_missing')
-  })
+  await check('transfer_configuration', () => validateTransferConfiguration(config))
   await check('existing_transfer_plugin', async () => {
     const registry = await readJSON(path.join(config.herdrConfigRoot, 'plugins.json'))
     requireThat(Array.isArray(registry), 'plugin_registry_invalid')

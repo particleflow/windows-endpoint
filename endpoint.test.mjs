@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { catalog, configure, digest, doctor, launchPlan, main, stageBundle, validateConfig, verifyBundle } from './endpoint.mjs'
+import { catalog, configure, digest, doctor, launchPlan, main, stageBundle, validateConfig, validateTransferConfiguration, verifyBundle } from './endpoint.mjs'
 
 async function json(file, value) {
   await fs.mkdir(path.dirname(file), { recursive: true })
@@ -254,4 +254,18 @@ test('CLI diagnostics use bounded codes and a failing exit status', () => {
   assert.equal(result.status, 2)
   assert.deepEqual(JSON.parse(result.stderr), { error: 'operation_failed' })
   assert.ok(!result.stderr.includes('PRIVATE-NAS-TOKEN'))
+})
+
+test('transfer preflight binds existing roots and config without reading or repairing credentials', async t => {
+  const f = await fixture(t)
+  const file = path.join(f.config.transferConfigDir, 'transfer.json')
+  await validateTransferConfiguration(f.config)
+  const credential = path.join(f.config.transferConfigDir, 'device.credential')
+  assert.equal(await fs.readFile(credential, 'utf8'), 'DO-NOT-DISCLOSE-OR-PARSE-ME')
+  await json(file, { version: 1, origin: 'https://other.example.test', source_root: f.config.sourceRoot })
+  await assert.rejects(validateTransferConfiguration(f.config), /transfer_configuration_mismatch/)
+  await json(file, { version: 1, origin: f.config.nasOrigin, source_root: f.config.sourceRoot })
+  await fs.unlink(credential)
+  await assert.rejects(validateTransferConfiguration(f.config), /transfer_credential_missing/)
+  await assert.rejects(fs.stat(credential), { code: 'ENOENT' })
 })
