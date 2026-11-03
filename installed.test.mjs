@@ -538,6 +538,8 @@ test('external transfer roots preserve data boundaries and existing configuratio
   const f = await installedTransferFixture(t)
   assert.throws(() => validateConfig({ ...f.config, transfer: { ...f.config.transfer, pluginRoot: f.config.sourceRoot } }), { code: 'data_program_overlap' })
   assert.throws(() => validateConfig({ ...f.config, transfer: { ...f.config.transfer, nasOrigin: 'http://nas.example.test' } }), { code: 'https_origin_required' })
+  const privateHTTP = { ...f.config, transfer: { ...f.config.transfer, nasOrigin: 'http://192.168.1.10/api' } }
+  assert.equal(validateConfig(privateHTTP), privateHTTP)
   await fs.writeFile(path.join(f.locations.config, 'transfer.json'), JSON.stringify({ version: 1, origin: f.locations.origin, source_root: f.base }))
   await assert.rejects(inspectInstalledTransfer(f.config), { code: 'transfer_configuration_mismatch' })
 })

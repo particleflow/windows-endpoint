@@ -71,6 +71,17 @@ That API-base migration validates the original base's 2048-byte limit before
 appending the fixed task namespace and validated IDs; it preserves TLS, ID and
 authentication checks without changing configuration or queue bytes.
 
+`test-support/api-base-v2.json` extends those 30 vectors with 8 plain-HTTP cases
+(38 total) for the shared v2 policy: HTTPS stays valid for every host, while
+plain HTTP is accepted only for private-network IP literals (RFC 1918 IPv4
+10/8, 172.16/12, 192.168/16 and IPv6 unique local fc00::/7, IPv4-mapped forms
+unwrapped). It is maintained in this repository in the same vector format; it
+carries every v1 verdict unchanged and is not yet byte-identical to an upstream
+file, because the fixed producer source still pins the v1 contract. The
+endpoint accepts these vectors in `validateAPIBase` without normalization; the
+pinned producer binary continues to enforce its own v1 policy until its pin
+moves.
+
 At that API-base migration checkpoint, compared with `4c880e07`, the build closure
 changed only `internal/transferclient/api_base.go`, `api_base_test.go`,
 `client.go` and that vector file. CLI JSON/actions, queue and publication code,

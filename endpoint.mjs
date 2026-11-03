@@ -79,12 +79,14 @@ export async function digest(file) {
 }
 
 function validateAPIBase(value) {
-  // memoh.file-api-base.v1: inspect raw syntax before WHATWG URL can normalize
-  // dot segments, an empty authority or a default port. Never rewrite the value
-  // used by transfer.json's raw-byte HostBinding. Keep the existing error code.
+  // memoh.file-api-base.v2: inspect raw syntax before WHATWG URL can normalize
+  // dot segments, an empty authority or a default port. HTTPS stays valid for
+  // every host; plain HTTP is confined to private-network IP literals, matching
+  // the shared transfer-client rule. Never rewrite the value used by
+  // transfer.json's raw-byte HostBinding. Keep the existing error code.
   const code = 'https_origin_required'
   requireThat(typeof value === 'string' && Buffer.byteLength(value) <= 2048 && !/[\x00-\x20\x7f?#%\\]/.test(value), code)
-  const parts = value.match(/^https:\/\/([^/]+)(\/.*)?$/)
+  const parts = value.match(/^https?:\/\/([^/]+)(\/.*)?$/)
   requireThat(parts && !parts[1].includes('@') && !parts[1].endsWith(':'), code)
   const port = parts[1].match(/:(\d+)$/)
   requireThat(!port || (Number(port[1]) >= 1 && Number(port[1]) <= 65535), code)
@@ -92,7 +94,67 @@ function validateAPIBase(value) {
   requireThat(!prefix.includes('//') && prefix.split('/').every(segment => /^[A-Za-z0-9._~-]*$/.test(segment) && segment !== '.' && segment !== '..'), code)
   let url
   try { url = new URL(value) } catch { throw new EndpointError(code) }
-  requireThat(url.protocol === 'https:' && url.hostname && !url.username && !url.password && !url.hostname.endsWith('.invalid'), code)
+  requireThat(url.hostname && !url.username && !url.password && !url.hostname.endsWith('.invalid'), code)
+  if (url.protocol !== 'https:') {
+    const host = port ? parts[1].slice(0, -port[0].length) : parts[1]
+    requireThat(privateNetworkHost(host), code)
+  }
+}
+// Plain-HTTP hosts must be private-network IP literals: RFC 1918 IPv4 (10/8,
+// 172.16/12, 192.168/16) or IPv6 unique local fc00::/7, with IPv4-mapped IPv6
+// (the transfer client's Unmap) unwrapped first. DNS names, loopback and every
+// other literal keep the HTTPS requirement. The raw configured bytes are
+// parsed here: no DNS lookup, probe or WHATWG normalization participates.
+function privateNetworkHost(host) {
+  const literal = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+  const bytes = literal.includes(':') ? ipv6Bytes(literal) : ipv4Bytes(literal)
+  if (bytes === null) return false
+  if (bytes.length === 4) return isPrivateIPv4(bytes[0], bytes[1])
+  if (bytes.slice(0, 10).every(b => b === 0) && bytes[10] === 0xff && bytes[11] === 0xff) return isPrivateIPv4(bytes[12], bytes[13])
+  return (bytes[0] & 0xfe) === 0xfc
+}
+function isPrivateIPv4(first, second) {
+  return first === 10 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168)
+}
+function ipv4Bytes(literal) {
+  const octets = literal.split('.')
+  if (octets.length !== 4) return null
+  const bytes = []
+  for (const octet of octets) {
+    if (!/^\d{1,3}$/.test(octet) || (octet.length > 1 && octet[0] === '0') || Number(octet) > 255) return null
+    bytes.push(Number(octet))
+  }
+  return bytes
+}
+function ipv6Bytes(literal) {
+  // Same acceptance shape as the transfer client's literal parser: at most one
+  // '::' that elides at least one 16-bit group, 1-4 hex digits per group, and
+  // an optional embedded IPv4 tail.
+  const halves = literal.split('::')
+  if (halves.length > 2) return null
+  const bytes = []
+  const consume = half => {
+    if (half === '') return true
+    const groups = half.split(':')
+    for (let i = 0; i < groups.length; i++) {
+      const group = groups[i]
+      if (i === groups.length - 1 && group.includes('.')) {
+        const embedded = ipv4Bytes(group)
+        if (embedded === null) return false
+        bytes.push(...embedded)
+      } else {
+        if (!/^[0-9a-fA-F]{1,4}$/.test(group)) return false
+        bytes.push(Number.parseInt(group, 16) >> 8, Number.parseInt(group, 16) & 0xff)
+      }
+    }
+    return true
+  }
+  if (!consume(halves[0])) return null
+  const head = bytes.length
+  if (!consume(halves[1] ?? '')) return null
+  if (halves.length === 1) return bytes.length === 16 ? bytes : null
+  if (bytes.length > 14) return null
+  return [...bytes.slice(0, head), ...new Array(16 - bytes.length).fill(0), ...bytes.slice(head)]
 }
 
 export function isNativeRuntimeConfig(config) { return config?.schema === 3 }
