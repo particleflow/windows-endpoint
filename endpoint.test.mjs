@@ -13,6 +13,16 @@ import { programPackage } from './test-support/program-package.mjs'
 const apiBaseVectors = JSON.parse(await fs.readFile(new URL('./test-support/api-base-v1.json', import.meta.url)))
 assert.equal(apiBaseVectors.contract, 'memoh.file-api-base.v1')
 assert.equal(apiBaseVectors.cases.length, 30)
+// v2 keeps every v1 verdict and confines plain HTTP to private-network IP
+// literals. The v1 file stays byte-identical to the fixed producer source's
+// contract fixture; v2 is the endpoint's current shared policy.
+const apiBaseVectorsV2 = JSON.parse(await fs.readFile(new URL('./test-support/api-base-v2.json', import.meta.url)))
+assert.equal(apiBaseVectorsV2.contract, 'memoh.file-api-base.v2')
+assert.equal(apiBaseVectorsV2.cases.length, 38)
+for (const earlier of apiBaseVectors.cases) {
+  const carried = apiBaseVectorsV2.cases.find(vector => vector.input === earlier.input)
+  assert.ok(carried && carried.accepted === earlier.accepted, `v2 must carry v1 verdict for ${earlier.input}`)
+}
 
 async function json(file, value) {
   await fs.mkdir(path.dirname(file), { recursive: true })
@@ -132,6 +142,12 @@ test('transfer binary provenance remains tied to the exact component commit', as
 test('configuration has no secret fields, rejects unsafe origin and overlapping roots', async t => {
   const { config } = await fixture(t)
   for (const nasOrigin of ['http://example.test', 'https://user:secret@example.test', 'https://example.test/api/../other', 'https://example.test?token=secret', 'https://host.invalid']) assert.throws(() => validateConfig({ ...config, nasOrigin }), /https_origin_required/)
+  // Plain HTTP is confined to private-network IP literals (file-api-base v2).
+  for (const nasOrigin of ['http://192.168.1.10/api', 'http://10.0.0.5:18080/api', 'http://[fd00::10]:8443/api', 'http://[::ffff:172.16.0.29]/api']) {
+    const accepted = { ...config, nasOrigin }
+    assert.equal(validateConfig(accepted), accepted)
+  }
+  for (const nasOrigin of ['http://203.0.113.10/api', 'http://127.0.0.1/api', 'http://[fe80::1]/api', 'http://010.1.1.1/api']) assert.throws(() => validateConfig({ ...config, nasOrigin }), /https_origin_required/)
   assert.throws(() => validateConfig({ ...config, oauthToken: 'secret' }), /unknown_or_missing_field/)
   assert.throws(() => validateConfig({ ...config, sourceRoot: config.agenvoConfigDir }), /data_package_overlap/)
   assert.throws(() => validateConfig({ ...config, transferStateDir: config.piConfigDir }), /herdr_plugin_state_mismatch/)
@@ -248,7 +264,7 @@ for (const schema of [1, 2]) {
 
   test(`schema ${schema} adopts all shared API base vectors without normalization`, async t => {
     const f = await apiBaseFixture(t, schema)
-    for (const vector of apiBaseVectors.cases) await t.test(vector.name, () => {
+    for (const vector of apiBaseVectorsV2.cases) await t.test(vector.name, () => {
       f.setBase(vector.input)
       const before = JSON.stringify(f.config)
       if (vector.accepted) {
@@ -260,7 +276,8 @@ for (const schema of [1, 2]) {
   })
   test(`schema ${schema} API base retains destination restriction and bounded unambiguous parsing`, async t => {
     const f = await apiBaseFixture(t, schema)
-    for (const base of ['https://host.invalid/api', 'https://HOST.INVALID:8443/api', 'https://@nas.example.test/api', 'https://nas.example.test/\tapi', 'https://nas.example.test/☃', `https://nas.example.test/${'x'.repeat(2048)}`]) {
+    for (const base of ['https://host.invalid/api', 'https://HOST.INVALID:8443/api', 'https://@nas.example.test/api', 'https://nas.example.test/\tapi', 'https://nas.example.test/☃', `https://nas.example.test/${'x'.repeat(2048)}`,
+      'http://nas.lan/api', 'http://203.0.113.10/api', 'http://172.32.0.1/api', 'http://[fe80::1]/api', 'http://[::1]/api', 'http://[::ffff:203.0.113.10]/api', 'Http://10.0.0.5/api', 'http://10.0.0.5/api/../other']) {
       f.setBase(base)
       assert.throws(() => validateConfig(f.config), { code: 'https_origin_required' })
     }
