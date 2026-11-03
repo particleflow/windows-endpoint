@@ -84,6 +84,19 @@ export class TransferLifecycle {
     if (![0, 1].includes(status) || (status !== 0 && ['due', 'idle'].includes(decision.state))) {
       this.suspend('transfer_command_outcome_unknown'); return
     }
+    // target_drift names a refused server-side target binding (the server's
+    // target_fingerprint_mismatch token), not a rejected credential: the local
+    // credential stays valid and other deliveries keep flowing. Keep the
+    // endpoint running with the drift recorded in this decision; one bounded
+    // retry re-reads after a possible server-side rebinding, then a slow
+    // recheck continues without failing closed. E3b misread this as
+    // authentication and stopped the endpoint for 4.7h.
+    if (decision.error_class === 'target_drift') {
+      if (!this.retryUsed) {
+        this.retryUsed = true; this.state = 'retry_hint'; this.nextCheck = now + 30000; return
+      }
+      this.state = 'blocked'; this.nextCheck = now + 30000; return
+    }
     // Real disk pressure can carry a persisted producer wake. Capacity without
     // that waiting deadline still requires attention; never invent a retry.
     if (['authentication', 'permission', 'configuration'].includes(decision.error_class) || decision.error_class === 'capacity' && decision.state !== 'waiting') {
@@ -120,6 +133,14 @@ export class TransferLifecycle {
       this.decision = null
       if (['transient', 'busy'].includes(observed.error_class) && !this.retryUsed) {
         this.retryUsed = true; this.state = 'retry_hint'; this.nextCheck = this.clock() + 30000
+      } else if (observed.error_class === 'target_drift') {
+        // Same split as accept(): a drifted target binding never stops the
+        // endpoint; recheck slowly while the decision records the cause.
+        if (!this.retryUsed) {
+          this.retryUsed = true; this.state = 'retry_hint'; this.nextCheck = this.clock() + 30000
+        } else {
+          this.state = 'blocked'; this.nextCheck = this.clock() + 30000
+        }
       } else this.suspend(`transfer_${observed.error_class}`)
       return
     }

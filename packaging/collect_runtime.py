@@ -84,7 +84,7 @@ def collect(source, commit, output):
         target.write_bytes(data)
     (output / 'SHA256SUMS.json').write_text(json.dumps(proof, indent=2) + '\n', encoding='utf-8')
     return {'source_commit': commit, 'package_version': metadata['version'], 'files': len(payload),
-            'qualification': 'review-only', 'systemTrust': 'unchanged', 'enrollment': 'not_performed'}
+            'systemTrust': 'unchanged', 'enrollment': 'not_performed'}
 
 
 if __name__ == '__main__':

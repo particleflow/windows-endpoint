@@ -107,7 +107,7 @@ try {
   assert.ok(activePane?.terminal_id)
   const update = spawnSync(programs.node, [fileURLToPath(new URL('../endpoint.mjs', import.meta.url)), 'update'], { env: driver.env, encoding: 'utf8', timeout: 10000, maxBuffer: 16384, windowsHide: true })
   assert.equal(update.status, 2)
-  assert.equal(JSON.parse(update.stderr).error, 'qualification_required_no_runtime_or_data_changed')
+  assert.equal(JSON.parse(update.stderr).error, 'unknown_command')
   assert.equal(await driver.ownedGeneration(), generation)
   assert.equal((await driver.ownedHostRequest('ping')).type, 'pong')
   const afterUpdate = JSON.parse(driver.command(driver.herdr, ['--session', config.session, 'api', 'snapshot'])).result.snapshot
@@ -116,7 +116,7 @@ try {
   await assert.rejects(fs.access(path.join(config.sourceRoot, 'exit.json')), { code: 'ENOENT' })
   assert.equal(await fs.readFile(path.join(config.sourceRoot, 'invocations.txt'), 'utf8'), 'once\n')
   assert.deepEqual(model.snapshot(), { requests: 2, offeredWrites: 1 })
-  process.stdout.write(JSON.stringify({ activePiUpdateCheck: 'rejected_without_stopping_or_replaying_task', automaticHandoff: false }) + '\n')
+  process.stdout.write(JSON.stringify({ activePiUpdateCheck: 'retired_command_rejected_without_stopping_or_replaying_task', automaticHandoff: false }) + '\n')
   model.releaseCompletion()
   stage = 'pi_completion'
   const deadline = Date.now() + 75000

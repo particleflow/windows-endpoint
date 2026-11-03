@@ -112,10 +112,10 @@ export async function setupEndpoint({ from, root, source, manifestSha256, transf
   const current = selectionRaw === null ? null : parse(selectionRaw).current
   const mode = installProgramReferences && current && current !== manifestSha256 ? 'update' : 'install'
   const deployment = await install([mode, '--root', root, '--source', source, '--manifest-sha256', manifestSha256])
-  const selected = ['selected_review_only', 'already_selected'].includes(deployment.state)
+  const selected = ['selected', 'already_selected'].includes(deployment.state)
   const blocked = preflight.checks.some(check => check.state === 'blocked')
-  return { state: selected ? 'prepared_review_only' : deployment.state, ready: false, activation: 'not_started',
-    qualification: 'not-for-production-release', preflight, prerequisites: blocked ? 'blocked' : 'local_checks_passed',
+  return { state: selected ? 'prepared' : deployment.state, ready: false, activation: 'not_started',
+    preflight, prerequisites: blocked ? 'blocked' : 'local_checks_passed',
     deployment, nextAction: selected && !blocked ? ['deploy', 'run', '--root', root] : null,
     nextRequired: selected && blocked ? 'resolve_preflight_prerequisites_then_recheck' : null,
     officialComponentsChanged: false, credentialsWritten: false, queueAdvanced: false }

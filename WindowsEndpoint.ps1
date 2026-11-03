@@ -9,7 +9,6 @@ param(
     [string]$Source,
     [ValidatePattern('^[a-f0-9]{64}$')][string]$ManifestSha256,
     [ValidateSet('disabled','existing-queue')][string]$Transfer = 'existing-queue',
-    [switch]$ReviewCandidate,
     [string]$ExpectedRun,
     [string]$ExpectedStateSha256,
     [string]$ExpectedConfigurationSha256,
@@ -105,8 +104,7 @@ try {
     $arguments = @()
     switch ($Action) {
         'Install' {
-            if (-not $ReviewCandidate) { throw 'installation_release_qualification_pending' }
-            $arguments = @('installation','install','--from',$References,'--root',$ProductRoot,'--source',$Source,'--manifest-sha256',$ManifestSha256,'--transfer',$Transfer,'--review','true')
+            $arguments = @('installation','install','--from',$References,'--root',$ProductRoot,'--source',$Source,'--manifest-sha256',$ManifestSha256,'--transfer',$Transfer)
         }
         'Dependencies' { $arguments = @('installation','dependencies','--from',$References) }
         'MigrationPlan' { $arguments = @('installation','migration-plan','--from',$References,'--root',$ProductRoot) }

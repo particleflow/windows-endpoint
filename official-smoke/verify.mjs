@@ -81,8 +81,8 @@ try {
   await Promise.race([closed, delay(10000).then(() => { throw new Error('Herdr stop timeout') })])
   server = undefined
   checked('official_herdr_graceful_stop')
-  await assert.rejects(main(['start']), /qualification_required/)
-  checked('product_activation_still_blocked')
+  await assert.rejects(main(['start']), /unknown_command/)
+  checked('retired_lifecycle_commands_stay_unimplemented')
   process.stdout.write(`${JSON.stringify({ officialDependencySmoke: results, transfer: 'not_included_pending_qualification', unattendedRecovery: false, physicalPowerLoss: 'not_tested', gui: 'not_tested' }, null, 2)}\n`)
 } finally {
   if (server && server.exitCode === null) server.kill()

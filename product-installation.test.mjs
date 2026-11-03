@@ -17,7 +17,7 @@ async function fixture(t) {
   const f = await nativeInstalledFixture(t), root = path.join(f.base,'persistent product')
   const source = await programPackage(path.join(f.base,'extracted installer'),'installation',{native:true})
   const from = path.join(f.base,'references.json'); await fs.writeFile(from,JSON.stringify(f.config))
-  const options = {from,root,source:source.directory,manifestSha256:source.hash,transfer:'disabled',review:true}
+  const options = {from,root,source:source.directory,manifestSha256:source.hash,transfer:'disabled'}
   const deps = {setup: options=>setupEndpoint(options,{doctor:async()=>({checks:[],ready:false})}),
     dependencies: config=>programDependencies(config,{inspect:c=>inspectPrograms(c,f.run)})}
   const originals = [from,f.config.connector.enrollmentFile,path.join(f.config.piConfigDir,'auth.json')]
@@ -25,26 +25,21 @@ async function fixture(t) {
   return {...f,root,source,from,options,deps,originals,before,entry:path.join(root,'control/WindowsEndpoint.ps1'),receipt:path.join(root,'control/installation.json')}
 }
 
-test('installation requires explicit review qualification before any product-root write',async t=>{
-  const f=await fixture(t)
-  await assert.rejects(installProduct({...f.options,review:false},f.deps),{code:'installation_release_qualification_pending'})
-  await assert.rejects(fs.stat(f.root),{code:'ENOENT'})
-})
 test('one installation entry is repeatable, records verified existing programs and preserves original configuration and credentials',async t=>{
   const f=await fixture(t), first=await installProduct(f.options,f.deps)
-  assert.equal(first.state,'installed_review_only');assert.equal(first.activation,'not_started')
+  assert.equal(first.state,'installed');assert.equal(first.activation,'not_started')
   assert.equal(first.dependencies.components.length,5)
   assert.ok(first.dependencies.components.every(c=>c.state==='verified_existing_installation'&&c.installExecuted===false))
   assert.equal(await fs.readFile(f.entry,'utf8'),await fs.readFile(path.join(f.source.directory,'WindowsEndpoint.ps1'),'utf8'))
   assert.equal(JSON.parse(await fs.readFile(f.receipt)).phase,'complete')
-  assert.equal((await installProduct(f.options,f.deps)).state,'installed_review_only')
+  assert.equal((await installProduct(f.options,f.deps)).state,'installed')
   assert.deepEqual(await Promise.all(f.originals.map(p=>fs.readFile(p))),f.before)
 })
 for(const stage of ['entry_prepared','entry_published'])test(`interruption at ${stage} resumes only the recorded installer transaction`,async t=>{
   const f=await fixture(t)
   await assert.rejects(installProduct(f.options,{...f.deps,checkpoint:async point=>{if(point===stage)throw new Error('synthetic interruption')}}))
   assert.equal(JSON.parse(await fs.readFile(f.receipt)).phase,'prepared')
-  assert.equal((await installProduct(f.options,f.deps)).state,'installed_review_only')
+  assert.equal((await installProduct(f.options,f.deps)).state,'installed')
   assert.deepEqual(await Promise.all(f.originals.map(p=>fs.readFile(p))),f.before)
 })
 test('changed or unknown stable launchers are retained instead of adopted or overwritten',async t=>{
@@ -65,7 +60,7 @@ for(const code of ['EACCES','ENOSPC'])test(`installer ${code} does not erase com
     {code:code==='EACCES'?'deployment_storage_read_only':'deployment_space_unavailable'})
   await assert.rejects(fs.stat(f.entry),{code:'ENOENT'})
   assert.deepEqual(await Promise.all(f.originals.map(p=>fs.readFile(p))),f.before)
-  assert.equal((await installProduct(f.options,f.deps)).state,'installed_review_only')
+  assert.equal((await installProduct(f.options,f.deps)).state,'installed')
 })
 test('an active host defers installation without replacing its launcher or releasing its lease',async t=>{
   const f=await fixture(t);await installProduct(f.options,f.deps)
@@ -133,7 +128,7 @@ test('first setup persists the installed bundle reference and no longer depends 
     if(file===f.p.node&&args[0]===programPaths(c).connector)return args[1]==='version'?'0.22.0':'run --config --log'
     return f.run(file,args,env)
   })})})
-  assert.equal(result.state,'installed_review_only')
+  assert.equal(result.state,'installed')
   const saved=JSON.parse(await fs.readFile(path.join(f.root,'config/endpoint.json')))
   assert.equal(saved.programs.connectorPackage,path.join(f.root,'packages',f.source.hash,'runtime-connector'))
   assert.equal(saved.sourceRoot,f.config.sourceRoot)
@@ -168,7 +163,7 @@ for(const interruption of [null,'entry_prepared','entry_published'])test(`same i
     assert.equal(JSON.parse(await fs.readFile(f.receipt)).phase,'prepared')
   }
   const result=await installProduct(options,f.deps)
-  assert.equal(result.state,'installed_review_only')
+  assert.equal(result.state,'installed')
   assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'control/deployment.json'))).current,nextHash)
   assert.equal(await fs.readFile(f.entry,'utf8'),await fs.readFile(member,'utf8'))
   assert.equal(JSON.parse(await fs.readFile(f.receipt)).source_manifest,nextHash)

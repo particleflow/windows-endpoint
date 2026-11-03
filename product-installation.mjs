@@ -28,7 +28,7 @@ export async function programDependencies(config, { inspect = inspectPrograms } 
   for (const id of ['node','git','herdr','pi','connector']) {
     const file = observed ? programPaths(observed.config)[id] : paths[id]
     let presence = 'missing'
-    try { presence = (await fs.lstat(file)).isFile() ? 'present_not_qualified' : 'not_regular' }
+    try { presence = (await fs.lstat(file)).isFile() ? 'present_unverified' : 'not_regular' }
     catch (e) { if (!['ENOENT','ENOTDIR'].includes(e.code)) { presence = 'unavailable'; error ||= 'installation_input_unavailable' } }
     const source = id === 'connector' ? { source: catalog.nativeRuntime.source, method: 'included_in_verified_endpoint_package' } : catalog.installationSources[id]
     components.push({ id, path: file, state: observed ? 'verified_existing_installation' : presence,
@@ -56,11 +56,9 @@ function checkedReceipt(raw, identity) {
 }
 
 export async function installProduct(options, { setup = setupEndpoint, dependencies = programDependencies, io = fs, checkpoint = async () => {} } = {}) {
-  const { from, root, source, manifestSha256, review = false } = options
+  const { from, root, source, manifestSha256 } = options
   const verified = await verifyCandidate(source, manifestSha256)
-  // Never relabel an unqualified review payload as a production installer.
   demand(verified.manifest.stable_installation_entry === 1, 'installation_entry_protocol_unsupported')
-  demand(review === true, 'installation_release_qualification_pending')
   const raw = await boundedRead(from, 65536), config = validateConfig(JSON.parse(raw))
   demand(isNativeRuntimeConfig(config), 'installation_native_configuration_required')
   const mapped = installedProgramReferences(config,source,path.join(root,'packages',manifestSha256))
@@ -114,14 +112,14 @@ export async function installProduct(options, { setup = setupEndpoint, dependenc
     next.phase = 'complete'; next.previous_sha256 = null
     await publish(io, receiptFile, JSON.stringify(next) + '\n')
     const selected = state.current === manifestSha256
-    return { state: selected && prerequisites.state === 'programs_verified' ? 'installed_review_only' : 'deferred',
+    return { state: selected && prerequisites.state === 'programs_verified' ? 'installed' : 'deferred',
       ...(!selected || prerequisites.state !== 'programs_verified' ? { reason: !selected ? 'program_selection_incomplete' : 'dependencies_unverified' } : {}),
       entry, dependencies: publicDependencies(prerequisites), prepared, capabilitiesVerified: false,
       layout: hostReferenceLayout(root,manager.config),
       programReferenceMappings, serverReferencesChanged: false,
       nasProducerLocator: config.transfer ? 'must_match_saved_program_path_before_remote_tasks' : 'not_configured',
       runtimePrerequisites: prepared.prerequisites, nextAction: prepared.nextAction ? [entry,'-Action','Run'] : null,
-      qualification: 'not-for-production-release', activation: 'not_started', officialInstallationsChanged: false,
+      activation: 'not_started', officialInstallationsChanged: false,
       credentialsWritten: false, migrationExecuted: false, uninstall: 'unsupported_all_files_retained' }
   })
   return result
@@ -133,7 +131,7 @@ export async function migrationPlan(from, root) {
   const mappings = layout.references.map(entry=>({role:entry.role,from:entry.path,
     to:entry.role==='sourceRoot'||entry.kind==='program_reference'?entry.path:
       entry.role==='connector.enrollmentFile'?path.join(root,'config/runtime/enrollment.json'):layout.defaults[entry.role]||entry.path,
-    action:entry.kind==='program_reference'?'reuse_existing_official_installation':'review_only_no_move',automatic:false}))
+    action:entry.kind==='program_reference'?'reuse_existing_official_installation':'plan_only_no_move',automatic:false}))
   return { state: 'migration_plan_only', current: layout.references, mappings,
     proposedDefaults: layout.defaults, credentialsRead: false, filesChanged: false,
     originalBindings: 'retained_no_roothash_hostbinding_queue_or_task_rewrite',
@@ -155,6 +153,6 @@ export async function installationMain(args) {
     demand(Object.keys(options).sort().join(',') === '--from,--root', 'installation_arguments_invalid')
     return migrationPlan(options['--from'],options['--root'])
   }
-  demand(action === 'install' && Object.keys(options).sort().join(',') === '--from,--manifest-sha256,--review,--root,--source,--transfer' && options['--review'] === 'true', 'installation_arguments_invalid')
-  return installProduct({from:options['--from'],root:options['--root'],source:options['--source'],manifestSha256:options['--manifest-sha256'],transfer:options['--transfer'],review:true})
+  demand(action === 'install' && Object.keys(options).sort().join(',') === '--from,--manifest-sha256,--root,--source,--transfer', 'installation_arguments_invalid')
+  return installProduct({from:options['--from'],root:options['--root'],source:options['--source'],manifestSha256:options['--manifest-sha256'],transfer:options['--transfer']})
 }

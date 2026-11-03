@@ -1,13 +1,13 @@
-# Windows endpoint portable review candidate
+# Windows endpoint portable program candidate
 
 This archive contains the executable Node foreground host, the fixed
 source-built Memoh Runtime connector and Windows transfer CLI. It needs no npm
 install on the PC. It is **not a
-released installer**: production HTTPS success, physical PC/NAS acceptance,
-active-task upgrade and unattended activation/rollback are not qualified.
+released installer**: production HTTPS success, physical PC/NAS acceptance and
+active-task upgrade remain unverified.
 `candidate.json` identifies exact sources and every file hash; the separate
 `candidate-summary.json` identifies the archive hash. Obtain both from the same
-reviewed CI run. These inventories are build evidence, not release signatures.
+CI run. These inventories are build evidence, not release signatures.
 
 Pi, Herdr, Node and Git are **not copied into this package**. Use their existing
 official installations/configuration. The native connector uses the original
@@ -21,7 +21,7 @@ configured `sourceRoot`; `/data` therefore maps to the project, not the Windows
 user home. It does not change `HOME`, enrollment, ACLs, credentials or the
 official source. This is a default path mapping, **not a filesystem sandbox**:
 official HostFS also supports absolute host paths under the existing authority.
-The producer's unchanged review
+The producer's unchanged source-built
 bundle includes two test executables and its fixture script; these are identified
 in `candidate.json` and are not new services or user setup steps. The included
 AGPL license applies to this endpoint and the referenced Memoh source; upstream
@@ -33,8 +33,8 @@ source and dependency declarations are available at the recorded exact commits.
 It stages the program using the existing transactions and publishes a stable
 `control/WindowsEndpoint.ps1` under the selected persistent root. Existing
 official components are verified/reused, not silently installed or copied.
-The current artifact is still unqualified: install refuses unless the operator
-explicitly selects `-ReviewCandidate`. This is not a production installer release.
+Install verifies the exact input package hash before executing any installation
+code. This is not a production installer release.
 See the [installation contract](https://github.com/particleflow/windows-endpoint/blob/feat/explicit-component-runtime/docs/installation-entry.md)
 for exact commands, dependency sources, recovery and the non-destructive removal
 boundary. The older low-level setup commands below remain supported.

@@ -31,13 +31,16 @@ function decision(value, now) {
   requireContract(value.schema === 'memoh.delivery.lifecycle.v1', 'transfer_lifecycle_contract_missing')
   requireContract(['schema', 'state', 'next_due_at', 'error_class'].every(k => Object.hasOwn(value, k)))
   requireContract(['due', 'idle', 'waiting', 'blocked', 'unknown'].includes(value.state))
-  requireContract(['none', 'transient', 'busy', 'authentication', 'permission', 'configuration', 'capacity', 'unknown'].includes(value.error_class))
+  requireContract(['none', 'transient', 'busy', 'authentication', 'permission', 'configuration', 'capacity', 'target_drift', 'unknown'].includes(value.error_class))
   const dueAt = value.next_due_at === null ? null : deadlineMilliseconds(value.next_due_at)
   if (value.state === 'waiting') requireContract(dueAt !== null && dueAt > now)
   else requireContract(dueAt === null)
   if (['idle', 'due'].includes(value.state)) requireContract(value.error_class === 'none')
   if (value.state === 'waiting') requireContract(['none', 'transient', 'busy', 'capacity'].includes(value.error_class))
   if (['transient', 'busy'].includes(value.error_class)) requireContract(['waiting', 'unknown'].includes(value.state))
+  // The server names target_drift only for a refused target binding (its
+  // target_fingerprint_mismatch token), never with runnable work attached.
+  if (value.error_class === 'target_drift') requireContract(['blocked', 'unknown'].includes(value.state))
   return Object.freeze({ schema: value.schema, state: value.state, next_due_at: value.next_due_at, error_class: value.error_class })
 }
 
@@ -96,7 +99,7 @@ export function parseSnapshotAdvance(raw, status) {
   }
   requireContract(Number.isSafeInteger(value.offset) && value.offset >= 0 && ['admitted', 'registered', 'associated'].every(k => typeof value[k] === 'boolean'))
   if (status !== 0) {
-    requireContract(['transient', 'busy', 'authentication', 'permission', 'configuration', 'capacity', 'unknown'].includes(value.error_class))
+    requireContract(['transient', 'busy', 'authentication', 'permission', 'configuration', 'capacity', 'target_drift', 'unknown'].includes(value.error_class))
     return Object.freeze({ state: 'failed', advance_scope: value.advance_scope, error_class: value.error_class })
   }
   requireContract(value.delivery_id.length > 0 && value.phase.length > 0 && value.admitted && !value.registered && !Object.hasOwn(value, 'error_class'))

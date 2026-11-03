@@ -103,7 +103,15 @@ test('disk capacity wait requires the producer deadline without weakening other 
   assert.deepEqual(parse(waiting), waiting)
   assert.deepEqual(parseAdvanceDecision(JSON.stringify({ ...waiting, delivery_id: 'original-download', phase: 'queued', offset: 8388608, admitted: true, associated: false, feedback_status: 'recorded' }), now), waiting)
   for (const next_due_at of [null, '2026-10-22T18:00:00Z']) assert.throws(() => parse({ ...waiting, next_due_at }))
-  for (const error_class of ['authentication', 'permission', 'configuration', 'unknown']) assert.throws(() => parse({ ...waiting, error_class }))
+  for (const error_class of ['authentication', 'permission', 'configuration', 'target_drift', 'unknown']) assert.throws(() => parse({ ...waiting, error_class }))
+})
+
+test('target_drift is a named refusal class, never attached to runnable work', () => {
+  for (const state of ['blocked', 'unknown']) {
+    const drift = summary({ state, error_class: 'target_drift' })
+    assert.deepEqual(parse(drift), drift)
+  }
+  for (const state of ['due', 'idle', 'waiting']) assert.throws(() => parse(summary({ state, error_class: 'target_drift' })))
 })
 
 test('missing legacy feedback is unknown and cannot imply recorded or not-applicable', () => {

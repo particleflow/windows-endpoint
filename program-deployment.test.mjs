@@ -204,11 +204,11 @@ test('profile preparation fixes original hashes, is reentrant, and blocks host s
 
 test('portable program installs, updates, rolls back and runs the selected real foreground entry without copying official components', async t => {
   const f = await fixture(t)
-  assert.equal((await apply(f, f.a)).state, 'selected_review_only')
+  assert.equal((await apply(f, f.a)).state, 'selected')
   assert.equal((await apply(f, f.a)).state, 'already_selected')
-  assert.equal((await apply(f, f.b, 'update')).state, 'selected_review_only')
+  assert.equal((await apply(f, f.b, 'update')).state, 'selected')
   assert.equal((await f.manager.read()).current, f.b.hash)
-  assert.equal((await programDeploymentMain(['rollback', '--root', f.root, '--manifest-sha256', f.a.hash])).state, 'selected_review_only')
+  assert.equal((await programDeploymentMain(['rollback', '--root', f.root, '--manifest-sha256', f.a.hash])).state, 'selected')
   const child = spawn(process.execPath, [fileURLToPath(new URL('./endpoint.mjs', import.meta.url)), 'deploy', 'run', '--root', f.root], { stdio: ['pipe', 'pipe', 'pipe'] })
   let output = '', stderr = ''; const ended = new Promise(resolve => child.once('close', code => resolve(code)))
   const timeout = setTimeout(() => child.kill(), 15000)
@@ -224,17 +224,18 @@ test('portable program installs, updates, rolls back and runs the selected real 
     child.stdin.end('{"action":"stop"}\n')
     assert.equal(await ended, 0, stderr)
   } finally { clearTimeout(timeout); if (child.exitCode === null) { child.kill(); await ended } }
-  assert.equal((await apply(f, f.b, 'update')).state, 'selected_review_only')
+  assert.equal((await apply(f, f.b, 'update')).state, 'selected')
   assert.ok(output.includes('"ready":false'))
   await preserve(f)
 })
 
-test('attention, task evidence, external lock and incompatible state defer or reject without changing selected software or task files', async t => {
+test('a stopped endpoint with recorded attention stays updatable; task evidence, external lock and incompatible state defer or reject without changing selected software or task files', async t => {
   const f = await fixture(t); await apply(f, f.a)
   const store = new StateStore(f.manager.lifecycleDirectory, f.config.deviceId), state = await store.load()
   await store.save({ ...state, attention: 'transfer_permission' })
-  assert.equal((await apply(f, f.b, 'update')).reason, 'endpoint_attention')
+  assert.equal((await apply(f, f.b, 'update')).state, 'selected')
   assert.equal((await store.load()).attention, 'transfer_permission')
+  await programDeploymentMain(['rollback', '--root', f.root, '--manifest-sha256', f.a.hash])
   await store.save(state)
   const attempt = path.join(f.config.sourceRoot, '.memoh-computer/attempts/opaque-attempt')
   await fs.mkdir(attempt, { recursive: true }); await fs.writeFile(path.join(attempt, 'receipt.json'), 'SYNTHETIC UNKNOWN ORIGINAL')
@@ -418,7 +419,7 @@ test('a verified stopped native program update retains a stale official marker w
   await fs.mkdir(path.dirname(marker), { recursive: true }); await fs.writeFile(marker, generation)
   f.manager.observe = async () => ({ ownerVerified: true, oldHostAbsent: true, referencedProcessesAbsent: true, herdrAbsent: true })
   const state = await fs.readFile(f.manager.lifecycleStore.file)
-  assert.equal((await f.manager.select(f.b.hash, 'update')).state, 'selected_review_only')
+  assert.equal((await f.manager.select(f.b.hash, 'update')).state, 'selected')
   assert.equal(await fs.readFile(marker, 'utf8'), generation)
   assert.deepEqual(await fs.readFile(f.manager.lifecycleStore.file), state)
   assert.equal(await fs.readFile(f.attempt, 'utf8'), f.raw)
@@ -476,13 +477,13 @@ test('a retained marker needs the same recovery proof even when the attempt dire
   await f.manager.lifecycleStore.save(state)
   await fs.mkdir(path.dirname(marker), { recursive: true }); await fs.writeFile(marker, '12345:1770000000000000000')
   f.manager.observe = async () => ({ ownerVerified: true, oldHostAbsent: true, referencedProcessesAbsent: true, herdrAbsent: true })
-  assert.equal((await f.manager.select(f.b.hash, 'update')).state, 'selected_review_only')
+  assert.equal((await f.manager.select(f.b.hash, 'update')).state, 'selected')
   assert.equal(await fs.readFile(marker, 'utf8'), '12345:1770000000000000000')
 })
 
 test('orphaned-running recovery permits the compatible program switch without restarting the old home-mapped host', async t => {
   const f = await orphanRetentionFixture(t), before = await fs.readFile(f.manager.lifecycleStore.file), backup = await fs.readFile(f.backup)
-  assert.equal((await f.manager.select(f.b.hash, 'update')).state, 'selected_review_only')
+  assert.equal((await f.manager.select(f.b.hash, 'update')).state, 'selected')
   assert.equal((await f.manager.read()).current, f.b.hash)
   assert.deepEqual(await fs.readFile(f.manager.lifecycleStore.file), before); assert.deepEqual(await fs.readFile(f.backup), backup)
   assert.equal(JSON.parse(await fs.readFile(f.statusFile)).phase, 'running', 'never fabricate an original clean exit')
@@ -515,7 +516,7 @@ test('orphaned-running recovery cannot use a changed backup or a different cache
 
 test('compatible stopped program switch retains the original durable unknown checkpoint and never claims a business handoff', async t => {
   const f = await retainedFixture(t), before = await fs.readFile(f.manager.lifecycleStore.file)
-  assert.equal((await f.manager.select(f.b.hash, 'update')).state, 'selected_review_only')
+  assert.equal((await f.manager.select(f.b.hash, 'update')).state, 'selected')
   assert.equal((await f.manager.read()).current, f.b.hash)
   assert.equal(f.observations(), 5, 'both work observations and all three atomic publications recheck native absence')
   assert.equal(f.manager.retained.attempts, await attemptEvidence(f.config))
@@ -544,7 +545,7 @@ test('interrupted retained-history selection requires recovery and preserves the
   await assert.rejects(interrupted.select(f.b.hash, 'update'))
   const pending = await interrupted.read(); assert.equal(pending.current, f.b.hash); assert.equal(pending.pending.phase, 'selected')
   const fresh = await programDeployment(f.root, f.options)
-  assert.equal((await fresh.recover()).state, 'recovered_review_only')
+  assert.equal((await fresh.recover()).state, 'recovered')
   assert.equal((await fresh.read()).pending, null)
   assert.equal(await fs.readFile(f.attempt, 'utf8'), f.raw)
   await preserve(f)
@@ -602,7 +603,7 @@ test('actual CLI reports deferred with exit2 and completed selection with exit0'
   const release = await acquireLeases([`host:${f.root}`], f.manager.lifecycleDirectory)
   try { const denied = await cli(); assert.equal(denied.code, 2); assert.equal(denied.result.state, 'deferred'); assert.equal(denied.result.reason, 'endpoint_owned') }
   finally { await release() }
-  const selected = await cli(); assert.equal(selected.code, 0); assert.equal(selected.result.state, 'selected_review_only')
+  const selected = await cli(); assert.equal(selected.code, 0); assert.equal(selected.result.state, 'selected')
   const attempt = path.join(f.config.sourceRoot, '.memoh-computer/attempts/unverified/receipt.json')
   await fs.mkdir(path.dirname(attempt), { recursive: true }); await fs.writeFile(attempt, 'UNVERIFIED ORIGINAL')
   const history = await cli(); assert.equal(history.code, 2); assert.equal(history.result.reason, 'task_handoff_unverified')
@@ -622,7 +623,7 @@ async function stoppedObservationRetention(t) {
 }
 test('stopped observation recheck permits a compatible update while preserving original status and unknown receipt', async t => {
   const f = await stoppedObservationRetention(t), status = await fs.readFile(f.statusFile), state = await fs.readFile(f.manager.lifecycleStore.file)
-  assert.equal((await f.manager.select(f.b.hash, 'update')).state, 'selected_review_only')
+  assert.equal((await f.manager.select(f.b.hash, 'update')).state, 'selected')
   assert.deepEqual(await fs.readFile(f.statusFile), status); assert.deepEqual(await fs.readFile(f.manager.lifecycleStore.file), state)
   assert.equal(await fs.readFile(f.attempt, 'utf8'), f.raw)
 })

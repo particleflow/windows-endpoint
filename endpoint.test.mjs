@@ -22,7 +22,7 @@ async function fixture(t) {
   const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'endpoint Unicode 空格 ')))
   t.after(() => fs.rm(base, { recursive: true, force: true }))
   const root = path.join(base, 'bundle')
-  const manifest = { schema: 1, platform: 'win32-x64', qualification: 'review-only', components: {}, files: [] }
+  const manifest = { schema: 1, platform: 'win32-x64', components: {}, files: [] }
   const names = new Set(catalog.requiredFiles)
   for (const [id, spec] of Object.entries(catalog.components)) {
     manifest.components[id] = { version: spec.version || '2.51.0.windows.1', source: spec.source, revision: spec.revision || 'v2.51.0.windows.1', entry: spec.entry }
@@ -80,14 +80,14 @@ test('reject missing dependency, extra files, altered payload, and untrusted man
   await assert.rejects(verifyBundle(f.root, await f.save()), /component_missing/)
 })
 
-test('refuse component version/source drift and release-status promotion', async t => {
+test('refuse component version/source drift and platform drift', async t => {
   const f = await fixture(t)
   f.manifest.components.connector.version = '0.2.1'
   await assert.rejects(verifyBundle(f.root, await f.save()), /component_version_mismatch/)
   f.manifest.components.connector.version = '0.2.0'
   f.manifest.components.connector.source = 'https://untrusted.example.test'
   await assert.rejects(verifyBundle(f.root, await f.save()), /component_source_mismatch/)
-  f.manifest.qualification = 'released'
+  f.manifest.platform = 'linux-x64'
   await assert.rejects(verifyBundle(f.root, await f.save()), /bundle_contract_unsupported/)
 })
 
@@ -159,7 +159,7 @@ test('staging resumes around inert interrupted copies, is idempotent, preserves 
   await fs.writeFile(path.join(pending, 'partial'), 'unfinished')
   await fs.writeFile(path.join(f.config.sourceRoot, 'original'), 'KEEP-ORIGINAL')
   await fs.writeFile(path.join(f.config.herdrStateRoot, 'queue'), 'KEEP-UNDELIVERED')
-  assert.equal((await stageCandidate(pkg.directory, dest, pkg.hash)).state, 'staged_review_only')
+  assert.equal((await stageCandidate(pkg.directory, dest, pkg.hash)).state, 'staged')
   assert.equal((await stageCandidate(pkg.directory, dest, pkg.hash)).state, 'already_staged')
   await verifyCandidate(path.join(dest, pkg.hash), pkg.hash)
   assert.equal(await fs.readFile(path.join(pending, 'partial'), 'utf8'), 'unfinished')
@@ -182,7 +182,6 @@ test('corrupt published candidate is never overwritten or repaired', async t => 
 test('plan uses explicit binaries and an isolated PATH, no task/transport worker', async t => {
   const f = await nativeInstalledFixture(t)
   const plan = launchPlan(f.config)
-  assert.equal(plan.activation, 'blocked')
   assert.equal(plan.commands.length, 2)
   assert.deepEqual(plan.commands[0].args, ['--session', f.config.session, 'server'])
   assert.equal(plan.commands[1].args[1], 'run')
@@ -192,8 +191,8 @@ test('plan uses explicit binaries and an isolated PATH, no task/transport worker
   assert.equal(plan.environment.XDG_STATE_HOME, path.dirname(f.config.herdrStateRoot))
 })
 
-test('unqualified lifecycle operations cannot mutate or launch anything', async () => {
-  for (const cmd of ['start', 'activate', 'update', 'rollback', 'uninstall']) await assert.rejects(main([cmd]), /qualification_required_no_runtime_or_data_changed/)
+test('retired lifecycle operations cannot mutate or launch anything', async () => {
+  for (const cmd of ['start', 'activate', 'update', 'rollback', 'uninstall']) await assert.rejects(main([cmd]), /unknown_command/)
   await assert.rejects(main(['doctor', '--config', 'a', '--config', 'b']), /invalid_arguments/)
   assert.equal((await main(['help'])).commands.some(command => command.startsWith('transfer-budget ')), false)
   await assert.rejects(main(['transfer-budget', '--root', 'not-accessed', '--bytes', '8589934592']), /unknown_command/)

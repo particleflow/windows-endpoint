@@ -3,7 +3,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as fs from 'node:fs/promises'
-import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -15,11 +14,10 @@ import { setupEndpoint } from './setup.mjs'
 import { installProduct } from './product-installation.mjs'
 import { digest } from './endpoint.mjs'
 import { childExitDeadline } from './test-support/child-exit-deadline.mjs'
-import { productEntryProbe, parseEntryProbe } from './test-support/product-entry-probe.mjs'
 
 assert.equal(process.platform,'win32','this differential entry test requires actual Windows')
 const powershell=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe')
-async function fixture(t,unicodeNode=false,{selectedHost=null,entryProbe=false}={}){
+async function fixture(t,unicodeNode=false,{selectedHost=null}={}){
   const f=await nativeInstalledFixture(t),root=path.join(f.base,'persistent product')
   f.config.programs.node=await fs.realpath(process.execPath)
   if(unicodeNode){
@@ -28,17 +26,6 @@ async function fixture(t,unicodeNode=false,{selectedHost=null,entryProbe=false}=
     f.config.programs.node=copy
   }
   const source=await programPackage(path.join(f.base,'disposable extraction'),'product-entry',{native:true})
-  let entryTrace=null
-  if(entryProbe){
-    const entry=path.join(source.directory,'WindowsEndpoint.ps1')
-    const instrumented=productEntryProbe(await fs.readFile(entry))
-    await fs.writeFile(entry,instrumented)
-    const member=source.manifest.files.find(file=>file.path==='WindowsEndpoint.ps1')
-    member.size=Buffer.byteLength(instrumented);member.sha256=await digest(entry)
-    await fs.writeFile(path.join(source.directory,'candidate.json'),JSON.stringify(source.manifest))
-    source.hash=await digest(path.join(source.directory,'candidate.json'))
-    entryTrace=path.join(f.base,'entry-probe.jsonl');await fs.writeFile(entryTrace,'')
-  }
   if(selectedHost!==null){
     const entry=path.join(source.directory,'host.mjs');await fs.writeFile(entry,selectedHost)
     const member=source.manifest.files.find(file=>file.path==='host.mjs')
@@ -47,15 +34,15 @@ async function fixture(t,unicodeNode=false,{selectedHost=null,entryProbe=false}=
     source.hash=await digest(path.join(source.directory,'candidate.json'))
   }
   const from=path.join(f.base,'references.json');await fs.writeFile(from,JSON.stringify(f.config))
-  const result=await installProduct({from,root,source:source.directory,manifestSha256:source.hash,review:true,transfer:'disabled'},
+  const result=await installProduct({from,root,source:source.directory,manifestSha256:source.hash,transfer:'disabled'},
     {setup:options=>setupEndpoint(options,{doctor:async()=>({checks:[]})}),
       dependencies:async()=>({state:'programs_verified',components:[],observed:null,evidence:'synthetic_program_inventory'})})
-  assert.equal(result.state,'installed_review_only')
+  assert.equal(result.state,'installed')
   // Only this test's explicit activation request is removed to exercise the
   // supported observer: no inert Agent program may be launched by this check.
   await fs.rm(path.join(root,'config/runtime.json'))
   await fs.rm(source.directory,{recursive:true})
-  return {...f,root,entry:result.entry,entryTrace}
+  return {...f,root,entry:result.entry}
 }
 const args=f=>['-NoProfile','-NonInteractive','-File',f.entry]
 test('stable PowerShell Run forwards the prepared native Pi catalog and preserves old selected-host refusal',async t=>{
@@ -93,17 +80,15 @@ export async function runForeground({root,piNativeCatalog}){
     assert.equal(await fs.readFile(f.config.connector.enrollmentFile,'utf8'),'SYNTHETIC UNREAD ENROLLMENT')
   }
 })
-test('actual installer process refuses unqualified default and reports unverified dependencies without installing them',async t=>{
+test('actual installer process reports unverified dependencies without installing them and upgrades its own entry',async t=>{
   const f=await nativeInstalledFixture(t),root=path.join(f.base,'actual installer product')
   f.config.programs.node=await fs.realpath(process.execPath)
   const source=await programPackage(path.join(f.base,'installer extraction'),'actual-install',{native:true})
   const from=path.join(f.base,'references.json');await fs.writeFile(from,JSON.stringify(f.config))
   const command=['-NoProfile','-NonInteractive','-File',path.join(source.directory,'WindowsEndpoint.ps1'),'-Action','Install',
     '-ProductRoot',root,'-References',from,'-ManifestSha256',source.hash,'-NodePath',f.config.programs.node,'-Transfer','disabled']
-  await assert.rejects(promisify(execFile)(powershell,command,{timeout:20000,maxBuffer:65536}),e=>e.code===2&&e.stderr.includes('installation_release_qualification_pending'))
-  await assert.rejects(fs.stat(root),{code:'ENOENT'})
   let stdout
-  try { await promisify(execFile)(powershell,[...command,'-ReviewCandidate'],{timeout:20000,maxBuffer:65536}); assert.fail('inert dependencies must remain unqualified') }
+  try { await promisify(execFile)(powershell,command,{timeout:20000,maxBuffer:65536}); assert.fail('inert dependencies must remain unverified') }
   catch(e){assert.equal(e.code,2);stdout=e.stdout}
   const result=JSON.parse(stdout)
   assert.equal(result.state,'deferred');assert.equal(result.reason,'dependencies_unverified')
@@ -120,37 +105,28 @@ test('actual installer process refuses unqualified default and reports unverifie
   const nextHash=await digest(path.join(next.directory,'candidate.json'))
   try {
     await promisify(execFile)(powershell,['-NoProfile','-NonInteractive','-File',script,'-Action','Install','-ProductRoot',root,
-      '-ManifestSha256',nextHash,'-NodePath',f.config.programs.node,'-Transfer','disabled','-ReviewCandidate'],{timeout:20000,maxBuffer:65536})
-    assert.fail('synthetic programs must stay unqualified after update')
+      '-ManifestSha256',nextHash,'-NodePath',f.config.programs.node,'-Transfer','disabled'],{timeout:20000,maxBuffer:65536})
+    assert.fail('synthetic programs must stay unverified after update')
   }catch(e){assert.equal(e.code,2);assert.equal(JSON.parse(e.stdout).reason,'dependencies_unverified')}
   assert.equal(JSON.parse(await fs.readFile(path.join(root,'control/deployment.json'))).current,nextHash)
   assert.equal(await fs.readFile(path.join(root,'control/WindowsEndpoint.ps1'),'utf8'),await fs.readFile(script,'utf8'))
   assert.deepEqual(await fs.readFile(path.join(root,'config/endpoint.json')),configuration)
 })
 test('installed stable PowerShell entry runs and stops the real foreground observer after extraction is removed',async t=>{
-  const f=await fixture(t,true,{entryProbe:process.env.WINDOWS_ENDPOINT_ENTRY_PROBE==='1'})
-  const env={...process.env}
-  if(f.entryTrace)env.WINDOWS_ENDPOINT_FIXTURE_ENTRY_TRACE=f.entryTrace
-  const child=spawn(powershell,[...args(f),'-Action','Run'],{stdio:['pipe','pipe','pipe'],windowsHide:true,env})
-  let output='',stderr='',closed=false,exitCode=null,exitSignal=null,spawnError=null,probeEvidence=null
+  const f=await fixture(t,true)
+  const child=spawn(powershell,[...args(f),'-Action','Run'],{stdio:['pipe','pipe','pipe'],windowsHide:true})
+  let output='',stderr='',closed=false,exitCode=null,exitSignal=null,spawnError=null
   child.stdin.on('error',()=>{})
   child.stdout.on('data',c=>{output+=c});child.stderr.on('data',c=>{stderr+=c})
   child.once('error',error=>{spawnError=error.code??error.message})
   const done=new Promise(resolve=>child.once('close',(code,signal)=>{
     closed=true;exitCode=code;exitSignal=signal
-    if(f.entryTrace){
-      try { probeEvidence={rows:parseEntryProbe(readFileSync(f.entryTrace,'utf8'))} }
-      catch { probeEvidence={state:'unreadable'} }
-    }
     resolve(code)
   }))
   const evidence=()=>JSON.stringify({powershell,closed,exitCode,exitSignal,spawnError,stdout:output,stderr})
   t.after(async()=>{
     try { if(!closed){child.stdin.end('{"action":"stop"}\n');const ok=await childExitDeadline(done.then(()=>true),8000,false);if(!ok)child.kill()} }
-    finally {
-      t.diagnostic(evidence())
-      if(f.entryTrace)t.diagnostic(JSON.stringify({fixtureEntryProbe:true,...(probeEvidence??{state:'close_not_observed'})}))
-    }
+    finally { t.diagnostic(evidence()) }
   })
   const deadline=Date.now()+15000
   while(Date.now()<deadline&&!output.includes('"phase":"running"')&&!closed)await delay(25)
@@ -168,10 +144,10 @@ test('installed uninstall plan preserves all data and changed package code is re
   const first=JSON.parse(await fs.readFile(path.join(f.root,'control/deployment.json'))).current
   const next=await programPackage(path.join(f.base,'next extraction'),'update',{native:true})
   const updated=JSON.parse((await promisify(execFile)(powershell,[...args(f),'-Action','Update','-Source',next.directory,'-ManifestSha256',next.hash],{timeout:20000,maxBuffer:16384})).stdout)
-  assert.equal(updated.state,'selected_review_only')
+  assert.equal(updated.state,'selected')
   assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'control/deployment.json'))).current,next.hash)
   const rolled=JSON.parse((await promisify(execFile)(powershell,[...args(f),'-Action','Rollback','-ManifestSha256',first],{timeout:20000,maxBuffer:16384})).stdout)
-  assert.equal(rolled.state,'selected_review_only')
+  assert.equal(rolled.state,'selected')
   assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'control/deployment.json'))).current,first)
   const plan=JSON.parse((await promisify(execFile)(powershell,[...args(f),'-Action','UninstallPlan'],{timeout:15000,maxBuffer:16384})).stdout)
   assert.equal(plan.filesChanged,false);assert.equal(plan.deletionImplemented,false)

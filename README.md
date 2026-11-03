@@ -6,14 +6,14 @@ transfer queue/plugin implementation remains in Memoh and will be consumed as a
 qualified, versioned artifact.
 
 **Development baseline, not a released installer.** The existing Windows CI now
-retains a [portable review candidate](packaging/README.md) after archive and native
+retains a [portable program candidate](packaging/README.md) after archive and native
 reference-mode checks. It contains this foreground host and the unchanged
-source-built transfer review bundle, references existing official installations,
+source-built transfer bundle, references existing official installations,
 and keeps the positive production TLS gate unmet. It is not a production release.
-Release activation remains blocked. The current CLI provides configuration
+The current CLI provides configuration
 references, diagnostics, launch plans, verified program deployment and a runnable
 foreground host. The host reports missing configuration and unavailable capabilities;
-an explicit review request can start inventory-verified local official components
+an explicit runtime request can start inventory-verified local official components
 and consume an existing transfer queue. See [explicit runtime](docs/explicit-runtime.md)
 for its separate component, authorization and business-readiness boundaries.
 The [existing-installation mode](docs/existing-installations-plan.md) references

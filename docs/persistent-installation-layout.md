@@ -1,9 +1,9 @@
 # Persistent installation layout
 
-The current archive is a review candidate, not a production installer. It owns
+The current archive is a program candidate, not a production installer. It owns
 the endpoint program, the source-built Memoh Runtime connector and producer.
 Official Pi/Herdr/Node/Git are existing installation references, not adopted
-files or extra copies. The review producer bundle also contains identified test
+files or extra copies. The producer bundle also contains identified test
 executables. Fully managed prerequisite installation and a production-only
 archive remain unimplemented; do not present the candidate as that deliverable.
 

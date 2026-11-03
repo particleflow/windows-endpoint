@@ -1,18 +1,16 @@
 # Product installation entry
 
 `WindowsEndpoint.ps1` is one installer / stable foreground entry implementation,
-not an official-component installer or a new background service. The current
-artifact still has `not-for-production-release` qualification. **Install without
-`-ReviewCandidate` refuses before executing installation code.** Production
-release qualification and the existing positive TLS gate are not changed by
-this feature. Do not distribute the review ZIP as a qualified production installer.
+not an official-component installer or a new background service. The installer
+verifies the exact input package hash before executing any installation code.
+The existing positive TLS gate is not changed by this feature.
 
 ## First installation
 
 From an extracted, hash-verified candidate, in the normal authorized account:
 
 ```powershell
-& $Candidate/WindowsEndpoint.ps1 -Action Install -ProductRoot $ProductRoot -References $References -ManifestSha256 $ManifestSha256 -ReviewCandidate
+& $Candidate/WindowsEndpoint.ps1 -Action Install -ProductRoot $ProductRoot -References $References -ManifestSha256 $ManifestSha256
 ```
 
 `ProductRoot` is selectable; if omitted the Windows LocalApplicationData known
