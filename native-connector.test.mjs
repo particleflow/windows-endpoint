@@ -5,7 +5,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawn } from 'node:child_process'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { NativeRuntimeConnector, nativeConnectorObservation } from './native-connector.mjs'
+import { NativeRuntimeConnector, nativeConnectorObservation, nativeConnectorDisconnect } from './native-connector.mjs'
 
 // These are real owned Node processes with a synthetic CLI shape. They verify
 // the IPC bridge/lifecycle only; official Runtime/Herdr integration runs in CI.
@@ -88,6 +88,25 @@ test('native certificate verification failures remain attention and redact certi
   for (const message of ['connect ECONNREFUSED 127.0.0.1:43210', 'getaddrinfo ENOTFOUND synthetic-private.invalid', 'socket hang up']) {
     assert.deepEqual(nativeConnectorObservation(`disconnected: ${message}`), { state: 'offline', lastError: 'connection_unavailable' })
   }
+})
+
+test('disconnect causes are fixed machine codes and never echo the official text', () => {
+  const cases = [
+    ['runtime connection closed', { disconnect: 'session_closed', closeCode: null }],
+    ['connection reset https://synthetic-private.invalid/key', { disconnect: 'reset', closeCode: null }],
+    ['connect ECONNREFUSED 127.0.0.1:43210', { disconnect: 'refused', closeCode: null }],
+    ['getaddrinfo ENOTFOUND synthetic-private.invalid', { disconnect: 'dns_failure', closeCode: null }],
+    ['socket hang up', { disconnect: 'hangup', closeCode: null }],
+    ['WebSocket closed during handshake', { disconnect: 'handshake_closed', closeCode: null }],
+    ['Unexpected server response: 502', { disconnect: 'upgrade_rejected', closeCode: null }],
+    ['Invalid WebSocket frame: invalid status code 1005', { disconnect: 'frame_invalid', closeCode: null }],
+    ['closed with code 4410', { disconnect: 'unclassified', closeCode: 4410 }],
+    ['peer closed with code 1001', { disconnect: 'unclassified', closeCode: 1001 }]
+  ]
+  for (const [text, expected] of cases) assert.deepEqual(nativeConnectorDisconnect(text), expected)
+  // Reserved and off-wire values are not promoted to a close code.
+  for (const text of ['code 1005', 'code 1004', 'code 0999', 'code 5000']) assert.equal(nativeConnectorDisconnect(text).closeCode, null)
+  assert.equal(JSON.stringify(nativeConnectorDisconnect('getaddrinfo ENOTFOUND synthetic-private.invalid')).includes('synthetic-private'), false)
 })
 
 test('bridge runs the original CLI arguments and graceful stop waits for actual owned exit', async t => {
@@ -219,6 +238,27 @@ process.stdout.write('connecting\\ndisconnected: runtime handshake rejected with
   await connector.stop()
   assert.equal(connector.record.stoppedObserved, true); assert.equal(connector.cleanupConfirmed(), true); assert.equal(connector.confirmedExit(), true)
   assert.equal(connector.status().lastError, 'handshake_403'); assert.equal(connector.status().state, 'needs_attention')
+})
+
+test('the owned child disconnect text is retained as a machine code on the record and diagnostics', async t => {
+  const { connector } = await fixture(t, `
+const timer = setInterval(() => {}, 1000);
+process.once('SIGTERM', () => { clearInterval(timer); process.stdout.write('stopped\\n') });
+process.stdout.write('connecting\\nconnected\\n');
+setTimeout(() => process.stdout.write('disconnected: runtime connection closed\\n'), 30);
+setTimeout(() => process.stdout.write('disconnected: getaddrinfo ENOTFOUND synthetic-private.invalid\\n'), 60);
+`)
+  connector.start(); await until(() => connector.record?.disconnect === 'dns_failure')
+  assert.equal(connector.record.closeCode, null)
+  // The raw official text is never retained, only the fixed code.
+  assert.equal(JSON.stringify(connector.diagnostics()).includes('synthetic-private'), false)
+  const diagnostics = connector.diagnostics()
+  assert.equal(diagnostics.disconnect, 'dns_failure'); assert.equal(diagnostics.closeCode, null)
+  assert.equal(diagnostics.lastError, 'connection_unavailable')
+  await connector.stop()
+  // A bare official `stopped` carries no cause and does not erase the observed one.
+  assert.equal(connector.record.stoppedObserved, true)
+  assert.equal(connector.diagnostics().disconnect, 'dns_failure')
 })
 
 test('known failed spawn releases no imaginary process ownership and does not fabricate an exit', async t => {

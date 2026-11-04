@@ -48,6 +48,17 @@ runtime-request readers reject it; do not represent an old selected program as
 supporting this setting or alter an old manifest to make it appear compatible.
 There is no automatic queue migration or producer downgrade.
 
+## Expected disconnects during deployment
+
+An `offline` observation inside a documented deployment window is expected, not
+a defect. Two cases produce it: a server-side Memoh runtime deploy or restart
+drops the established session immediately, and an endpoint program update or the
+supervisor's own `restart`/`update-restart` stops the owned connector on purpose.
+Both recover through the official Runtime's own reconnect (measured 1–30 s, no
+replay, no task resubmission). Do not treat a single deployment-window `offline`
+as a network fault or as a reason to relax the terminal authentication,
+permission, protocol or TLS gates below.
+
 The HC-06 regression exercises the real factory and StateStore with owned inert
 Node child processes, plus a separate fresh coordinator process that reads the
 persisted state. Its opaque queue/receipt files test non-interference only;

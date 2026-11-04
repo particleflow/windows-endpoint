@@ -10,7 +10,39 @@ const fail = code => { throw Object.assign(new Error(code), { code }) }
 const stateMap = { connecting: 'connecting', connected: 'online', disconnected: 'offline', stopped: 'stopped' }
 const processDiagnostic = c => c ? { component: 'connector', pid: c.process.pid || null, exitObserved: c.exitObserved,
   exitCode: c.exitCode ?? null, signal: c.signal ?? null, processError: c.error,
-  stderrBytes: c.stderrBytes, stderrCode: c.stderrCode } : null
+  stderrBytes: c.stderrBytes, stderrCode: c.stderrCode,
+  // Observation only. The official Runtime prints one bounded line per status
+  // change, so an ordinary disconnect is the only place a cause can appear.
+  lastError: c.observation?.lastError ?? null, disconnect: c.disconnect ?? null,
+  closeCode: c.closeCode ?? null } : null
+
+// Fixed machine codes for the official Runtime's own bounded disconnect text.
+// The bundled WebSocket client does not pass its close code or reason through
+// the bridge, so a numeric code is recorded only when the text states one.
+// Guessing 1006 for a terminate() would make self-inflicted and peer closes
+// indistinguishable, which is exactly what this field exists to separate.
+// `session_closed` is deliberately neutral: a peer close frame and the
+// official watchdog's own terminate() both surface as that exact text.
+const disconnectKinds = [
+  ['handshake_closed', /WebSocket closed during handshake/i],
+  ['closed_before_open', /closed before the connection was established/i],
+  ['dns_failure', /getaddrinfo|ENOTFOUND|EAI_AGAIN/i],
+  ['refused', /ECONNREFUSED/i],
+  ['reset', /ECONNRESET|connection reset/i],
+  ['timeout', /ETIMEDOUT|handshake timeout|timed out/i],
+  ['hangup', /socket hang up/i],
+  ['frame_invalid', /Invalid WebSocket frame/i],
+  ['upgrade_rejected', /Unexpected server response/i],
+  ['session_closed', /^runtime connection closed$/i]
+]
+export function nativeConnectorDisconnect(text) {
+  const value = String(text || '').trim()
+  const match = /(?:\bcode|closed with code)\s*[:=]?\s*(\d{4})\b/i.exec(value)
+  const stated = match ? Number(match[1]) : null
+  // RFC 6455 code spaces; 1004/1005 are reserved and never appear on the wire.
+  const closeCode = stated !== null && ((stated >= 1000 && stated <= 1014 && stated !== 1004 && stated !== 1005) || (stated >= 3000 && stated <= 4999)) ? stated : null
+  return { disconnect: disconnectKinds.find(([, pattern]) => pattern.test(value))?.[0] || 'unclassified', closeCode }
+}
 
 // Never return raw stderr, enrollment, URLs or keys. The HTTP classifications
 // match the official Runtime's own fixed handshake diagnostic, not a guessed
@@ -74,13 +106,21 @@ export class NativeRuntimeConnector {
     const child = spawn(node, [bridge, entry, enrollmentFile], { cwd, env, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] })
     const c = { process: child, startedAt: Date.now(), updatedAt: Date.now(), exited: false, exitObserved: false, closed: false, error: false,
       stopRequested: false, stopSent: false, loaded: false, observation: null, exitCode: null, signal: null, stoppedObserved: false, sessionStarted: false, spawnFailed: false,
-      stderrBytes: 0, stderrCode: null }
+      stderrBytes: 0, stderrCode: null, disconnect: null, closeCode: null }
     this.previousRecord = this.record; this.record = c
     const observe = (value, line = '') => {
       if (!value) return
       const event = /^(connecting|connected|disconnected|stopped)(?:: .*)?$/.exec(line.trim())?.[1]
       if (event === 'stopped') c.stoppedObserved = true
       else if (event) { c.sessionStarted = true; c.stoppedObserved = false }
+      // Retain the cause of the latest ordinary disconnect. The official Runtime
+      // emits its text once per transition; it is not a growing history buffer.
+      // A later reconnect keeps the last cause; the next disconnect replaces it.
+      // A bare `stopped` carries no cause and must not erase a prior one.
+      if (event === 'disconnected' || event === 'stopped') {
+        const detail = line.trim().slice(event.length).replace(/^:\s*/, '')
+        if (detail) ({ disconnect: c.disconnect, closeCode: c.closeCode } = nativeConnectorDisconnect(detail))
+      }
       // Keep a hard failure visible even if the official retry loop subsequently
       // emits connecting. Lifecycle attention requires its existing owner flow.
       if (c.observation?.state === 'needs_attention' && value.state !== 'needs_attention') return
