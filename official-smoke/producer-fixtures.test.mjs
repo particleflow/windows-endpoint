@@ -116,11 +116,11 @@ test('shared vector checkout stays byte-identical under a Windows CRLF Git profi
   const indexed = spawnSync('git', ['read-tree', 'HEAD'], options)
   assert.equal(indexed.status, 0, 'temporary fixture index')
   const prefix = `${path.join(root, 'checkout').replaceAll('\\', '/')}/`
-  const checked = spawnSync('git', ['-c', 'core.autocrlf=true', 'checkout-index', `--prefix=${prefix}`, '--', 'test-support/api-base-v1.json'], options)
+  const checked = spawnSync('git', ['-c', 'core.autocrlf=true', 'checkout-index', `--prefix=${prefix}`, '--', 'test-support/api-base-v3.json'], options)
   assert.equal(checked.status, 0, 'isolated Windows-profile checkout')
-  const actual = await fs.readFile(path.join(root, 'checkout/test-support/api-base-v1.json'))
+  const actual = await fs.readFile(path.join(root, 'checkout/test-support/api-base-v3.json'))
   assert.equal(actual.includes(13), false, 'vector checkout must retain upstream LF bytes')
-  assert.deepEqual(actual, await fs.readFile(new URL('../test-support/api-base-v1.json', import.meta.url)))
+  assert.deepEqual(actual, await fs.readFile(new URL('../test-support/api-base-v3.json', import.meta.url)))
 })
 test('source-built fixture inventory rejects wrong source and modified payload before execution', async t => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'producer-fixture-inventory-')))

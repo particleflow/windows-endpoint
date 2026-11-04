@@ -59,26 +59,18 @@ using that commit's unchanged build script. Current CI uses the fixed source in
 implementation is imported, no old denied artifact is fetched, and no binary is
 redistributed by this repository. See [scope and limits](explicit-runtime.md).
 
-`test-support/api-base-v1.json` is the byte-identical shared syntax-vector file
-from Memoh `internal/transferclient/testdata/api-base-v1.json` at
-[`91149ad7ab5c0d24a57f10e7d9ff1df4b71cf51c`](https://github.com/particleflow/Memoh/commit/91149ad7ab5c0d24a57f10e7d9ff1df4b71cf51c),
-Git blob `67cc407e6b914dd52ce7a244a82a580c72ad2ec1`, under the retained AGPL-3.0
-license. Only those 30 data vectors are imported; no Go implementation is copied.
-They retain the same blob at the current producer pin. The source-built test
-executable runs its original contract test against all 30 cases in that checkout.
-It separately runs both task API-base boundary tests and requires all 13 cases.
-That API-base migration validates the original base's 2048-byte limit before
-appending the fixed task namespace and validated IDs; it preserves TLS, ID and
-authentication checks without changing configuration or queue bytes.
-
-`test-support/api-base-v3.json` keeps the 30 shared vectors and replaces the
-scheme verdicts with the v3 policy: HTTP and HTTPS are accepted for every host,
-with no private-network or loopback classification and no `.invalid` destination
-rule. It is maintained in this repository in the same vector format and is not
-byte-identical to an upstream file, because the fixed producer source still
-pins the v1 HTTPS-only contract. The endpoint accepts these vectors in
-`validateAPIBase` without normalization; the pinned producer binary continues
-to enforce its own v1 policy until its pin moves.
+`test-support/api-base-v3.json` is the byte-identical shared syntax-vector file
+from Memoh `internal/transferclient/testdata/api-base-v3.json` at the current
+producer pin `3a75aa92b9ac7f7312ad3caaa4c85aa6a5ad4d1e`, under the retained
+AGPL-3.0 license. Only those 38 data vectors are imported; no Go implementation
+is copied. With `memoh.file-api-base.v3`, HTTP and HTTPS are accepted for every
+host: there is no private-network or loopback classification and no `.invalid`
+destination rule. The source-built test executable runs its original contract
+test against all 38 cases in that checkout. It separately runs both task
+API-base boundary tests and requires all 13 cases. The API-base validation keeps
+the 2048-byte limit before appending the fixed task namespace and validated IDs,
+plus all ID and authentication checks, without changing configuration or queue
+bytes. TLS hardening still applies whenever the configured base is HTTPS.
 
 At that API-base migration checkpoint, compared with `4c880e07`, the build closure
 changed only `internal/transferclient/api_base.go`, `api_base_test.go`,
