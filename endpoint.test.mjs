@@ -5,7 +5,26 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { catalog, configure, digest, doctor, launchPlan, main, stageBundle, validateConfig, validateTransferConfiguration, verifyBundle } from './endpoint.mjs'
+import { catalog, configure, digest, doctor, launchPlan, main, transferLocations, validateConfig, validateTransferConfiguration, verifyBundle } from './endpoint.mjs'
+import { installedFixture, nativeInstalledFixture } from './test-support/installed-fixture.mjs'
+import { stageCandidate, verifyCandidate } from './candidate.mjs'
+import { programPackage } from './test-support/program-package.mjs'
+
+const apiBaseVectors = JSON.parse(await fs.readFile(new URL('./test-support/api-base-v1.json', import.meta.url)))
+assert.equal(apiBaseVectors.contract, 'memoh.file-api-base.v1')
+assert.equal(apiBaseVectors.cases.length, 30)
+// v3 drops the scheme/private-network classification: HTTP and HTTPS are both
+// accepted for every host. The v1 file stays byte-identical to the fixed
+// producer source's contract fixture; v3 is the endpoint's current policy.
+const apiBaseVectorsV3 = JSON.parse(await fs.readFile(new URL('./test-support/api-base-v3.json', import.meta.url)))
+assert.equal(apiBaseVectorsV3.contract, 'memoh.file-api-base.v3')
+assert.equal(apiBaseVectorsV3.cases.length, 38)
+// Only the scheme verdict may differ: v3 accepts plain HTTP for every host.
+for (const earlier of apiBaseVectors.cases) {
+  const carried = apiBaseVectorsV3.cases.find(vector => vector.input === earlier.input)
+  assert.ok(carried, `v3 must carry v1 vector for ${earlier.input}`)
+  if (earlier.accepted) assert.ok(carried.accepted, `v3 must keep accepted v1 vector ${earlier.input}`)
+}
 
 async function json(file, value) {
   await fs.mkdir(path.dirname(file), { recursive: true })
@@ -15,7 +34,7 @@ async function fixture(t) {
   const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'endpoint Unicode 空格 ')))
   t.after(() => fs.rm(base, { recursive: true, force: true }))
   const root = path.join(base, 'bundle')
-  const manifest = { schema: 1, platform: 'win32-x64', qualification: 'review-only', components: {}, files: [] }
+  const manifest = { schema: 1, platform: 'win32-x64', components: {}, files: [] }
   const names = new Set(catalog.requiredFiles)
   for (const [id, spec] of Object.entries(catalog.components)) {
     manifest.components[id] = { version: spec.version || '2.51.0.windows.1', source: spec.source, revision: spec.revision || 'v2.51.0.windows.1', entry: spec.entry }
@@ -53,18 +72,12 @@ async function fixture(t) {
   return { base, root, manifest, config, hash, save }
 }
 
-test('verified full inventory is still review-only, with explicit blockers', async t => {
+test('historical inventory verification does not qualify retired diagnostics', async t => {
   const f = await fixture(t)
   assert.ok((await verifyBundle(f.root, f.hash)).totalBytes < 16384)
-  const result = await doctor(f.config, () => { throw new Error('fixture: no real components') })
-  assert.equal(result.ready, false)
-  assert.equal(result.activation, 'blocked')
-  for (const key of ['bundle_inventory', 'existing_device_mapping', 'official_agent_configuration', 'transfer_configuration', 'existing_transfer_plugin']) assert.equal(result.checks.find(c => c.check === key).state, 'passed')
-  assert.equal(result.capabilities.desktop, 'unsupported_by_command_connector')
-  assert.equal(result.lifecycle.automaticRecovery, false)
-  assert.equal(result.lifecycle.idleQueueWake, 'missing')
-  assert.ok(result.blockers.includes('transfer_candidate_not_qualified'))
-  assert.ok(!JSON.stringify(result).includes('DO-NOT-DISCLOSE'))
+  const result = await doctor(f.config, () => assert.fail('no retired dependency probe'))
+  assert.equal(result.ready, false); assert.equal(result.mode, 'retired-history-only')
+  assert.deepEqual(result.checks, [{ check: 'legacy_execution', state: 'blocked', code: 'legacy_execution_retired' }])
 })
 
 test('reject missing dependency, extra files, altered payload, and untrusted manifest', async t => {
@@ -79,14 +92,14 @@ test('reject missing dependency, extra files, altered payload, and untrusted man
   await assert.rejects(verifyBundle(f.root, await f.save()), /component_missing/)
 })
 
-test('refuse component version/source drift and release-status promotion', async t => {
+test('refuse component version/source drift and platform drift', async t => {
   const f = await fixture(t)
   f.manifest.components.connector.version = '0.2.1'
   await assert.rejects(verifyBundle(f.root, await f.save()), /component_version_mismatch/)
   f.manifest.components.connector.version = '0.2.0'
   f.manifest.components.connector.source = 'https://untrusted.example.test'
   await assert.rejects(verifyBundle(f.root, await f.save()), /component_source_mismatch/)
-  f.manifest.qualification = 'released'
+  f.manifest.platform = 'linux-x64'
   await assert.rejects(verifyBundle(f.root, await f.save()), /bundle_contract_unsupported/)
 })
 
@@ -128,9 +141,14 @@ test('transfer binary provenance remains tied to the exact component commit', as
   await assert.rejects(verifyBundle(f.root, await f.save()), /transfer_provenance_mismatch/)
 })
 
-test('configuration has no secret fields, rejects unsafe origin and overlapping roots', async t => {
+test('configuration has no secret fields, rejects malformed origin and overlapping roots', async t => {
   const { config } = await fixture(t)
-  for (const nasOrigin of ['http://example.test', 'https://user:secret@example.test', 'https://example.test/path', 'https://example.test?token=secret', 'https://host.invalid']) assert.throws(() => validateConfig({ ...config, nasOrigin }), /https_origin_required/)
+  for (const nasOrigin of ['https://user:secret@example.test', 'https://example.test/api/../other', 'https://example.test?token=secret', 'ftp://example.test/api', 'relative/api', 'https://host.invalid']) assert.throws(() => validateConfig({ ...config, nasOrigin }), /api_base_invalid/)
+  for (const nasOrigin of ['http://nas.begonia.cloud:18068/api', 'http://192.168.1.10/api', 'http://10.0.0.5:18080/api', 'http://[fd00::10]:8443/api', 'http://[::ffff:172.16.0.29]/api', 'https://nas.begonia.cloud:18443/api']) {
+    const accepted = { ...config, nasOrigin }
+    assert.equal(validateConfig(accepted), accepted)
+  }
+  for (const nasOrigin of ['http://203.0.113.10:0/api', 'http://127.0.0.1/api//v1', 'http://[fe80::1]/api/../x', 'http://010.1.1.1:65536/api']) assert.throws(() => validateConfig({ ...config, nasOrigin }), /api_base_invalid/)
   assert.throws(() => validateConfig({ ...config, oauthToken: 'secret' }), /unknown_or_missing_field/)
   assert.throws(() => validateConfig({ ...config, sourceRoot: config.agenvoConfigDir }), /data_package_overlap/)
   assert.throws(() => validateConfig({ ...config, transferStateDir: config.piConfigDir }), /herdr_plugin_state_mismatch/)
@@ -138,114 +156,63 @@ test('configuration has no secret fields, rejects unsafe origin and overlapping 
 })
 
 test('configure creates references exclusively and never overwrites official files', async t => {
-  const f = await fixture(t)
+  const f = await nativeInstalledFixture(t)
   const input = path.join(f.base, 'input.json')
   const output = path.join(f.base, 'endpoint.json')
   await json(input, f.config)
   assert.equal((await configure(input, output)).credentialsRead, false)
   await assert.rejects(configure(input, output), e => e.code === 'EEXIST')
   await assert.rejects(configure(input, path.join(f.config.piConfigDir, 'auth.json')), /configuration_location_rejected/)
-  assert.equal(await fs.readFile(path.join(f.config.piConfigDir, 'auth.json'), 'utf8'), 'DO-NOT-DISCLOSE-OR-PARSE-ME')
-})
-
-test('changed approved executable/root/device mappings are blocked', async t => {
-  const f = await fixture(t)
-  const file = path.join(f.config.agenvoConfigDir, 'config.json')
-  const original = JSON.parse(await fs.readFile(file, 'utf8'))
-  for (const changed of [
-    { ...original, deviceId: 'other' },
-    { ...original, instances: [{ ...original.instances[0], binary: path.join(f.base, 'old/herdr.exe') }] },
-    { ...original, instances: [{ ...original.instances[0], cwd: f.base }] },
-  ]) {
-    await json(file, changed)
-    const report = await doctor(f.config, () => '')
-    assert.equal(report.checks.find(c => c.check === 'existing_device_mapping').state, 'blocked')
-  }
-})
-
-test('authentication failure and stale snapshots never turn into readiness or restarts', async t => {
-  const f = await fixture(t)
-  const file = path.join(f.config.agenvoConfigDir, 'status.json')
-  await json(file, { deviceId: f.config.deviceId, updatedAt: Date.now(), state: 'online', lastError: 'handshake_401', secret: 'REDACT-ME' })
-  const blocked = await doctor(f.config, () => '')
-  assert.equal(blocked.capabilities.connection, 'authentication_required')
-  assert.equal(blocked.ready, false)
-  assert.ok(!JSON.stringify(blocked).includes('REDACT-ME'))
-  await json(file, { deviceId: f.config.deviceId, updatedAt: Date.now(), state: 'needs_attention', lastError: '' })
-  assert.equal((await doctor(f.config, () => '')).capabilities.connection, 'needs_attention')
-  await json(file, { deviceId: f.config.deviceId, updatedAt: Date.now() - 121000, state: 'online', lastError: '' })
-  assert.equal((await doctor(f.config, () => '')).capabilities.connection, 'authentication_unverified')
-})
-
-test('official Agenvo 0.2.0 online snapshot is observed without claiming endpoint readiness', async t => {
-  const f = await fixture(t)
-  // Shape and online state from the pinned official connector main.ts, not a
-  // hypothetical connected state. No credential is part of this snapshot.
-  const snapshot = { pid: 1234, relay: 'https://relay.example.test', deviceId: f.config.deviceId, state: 'online', version: '0.2.0', updatedAt: Date.now(), instances: [{ id: f.config.instanceId, available: true, backendVersion: '0.9.5' }], lastError: '' }
-  await json(path.join(f.config.agenvoConfigDir, 'status.json'), snapshot)
-  const report = await doctor(f.config, () => '')
-  assert.equal(report.capabilities.connection, 'online_snapshot_unverified')
-  assert.equal(report.capabilities.agent, 'readiness_unverified')
-  assert.equal(report.ready, false)
-  assert.equal(report.lifecycle.automaticRecovery, false)
-  await json(path.join(f.config.agenvoConfigDir, 'status.json'), { ...snapshot, state: 'connected' })
-  assert.equal((await doctor(f.config, () => '')).capabilities.connection, 'authentication_unverified')
-})
-
-test('missing, disabled or incorrectly linked transfer plugin is explicit', async t => {
-  const f = await fixture(t)
-  const file = path.join(f.config.herdrConfigRoot, 'plugins.json')
-  const registry = JSON.parse(await fs.readFile(file, 'utf8'))
-  for (const changed of [[], [{ ...registry[0], enabled: false }], [{ ...registry[0], plugin_root: f.base }]]) {
-    await json(file, changed)
-    assert.equal((await doctor(f.config, () => '')).checks.find(c => c.check === 'existing_transfer_plugin').state, 'blocked')
-  }
+  assert.equal(await fs.readFile(path.join(f.config.piConfigDir, 'auth.json'), 'utf8'), 'SYNTHETIC UNREAD PI CONFIG')
 })
 
 test('staging resumes around inert interrupted copies, is idempotent, preserves data', async t => {
-  const f = await fixture(t)
+  const f = await nativeInstalledFixture(t)
+  const pkg = await programPackage(path.join(f.base, 'candidate'), 'copy', { native: true })
   const dest = path.join(f.base, 'packages')
   await fs.mkdir(dest)
-  const pending = path.join(dest, `.pending-${f.hash}-interrupted`)
+  const pending = path.join(dest, `.pending-${pkg.hash}-interrupted`)
   await fs.mkdir(pending)
   await fs.writeFile(path.join(pending, 'partial'), 'unfinished')
   await fs.writeFile(path.join(f.config.sourceRoot, 'original'), 'KEEP-ORIGINAL')
-  await fs.writeFile(path.join(f.config.transferStateDir, 'queue'), 'KEEP-UNDELIVERED')
-  assert.equal((await stageBundle(f.root, dest, f.hash)).state, 'staged_review_only')
-  assert.equal((await stageBundle(f.root, dest, f.hash)).state, 'already_staged')
-  await verifyBundle(path.join(dest, f.hash), f.hash)
+  await fs.writeFile(path.join(f.config.herdrStateRoot, 'queue'), 'KEEP-UNDELIVERED')
+  assert.equal((await stageCandidate(pkg.directory, dest, pkg.hash)).state, 'staged')
+  assert.equal((await stageCandidate(pkg.directory, dest, pkg.hash)).state, 'already_staged')
+  await verifyCandidate(path.join(dest, pkg.hash), pkg.hash)
   assert.equal(await fs.readFile(path.join(pending, 'partial'), 'utf8'), 'unfinished')
   assert.equal(await fs.readFile(path.join(f.config.sourceRoot, 'original'), 'utf8'), 'KEEP-ORIGINAL')
-  assert.equal(await fs.readFile(path.join(f.config.transferStateDir, 'queue'), 'utf8'), 'KEEP-UNDELIVERED')
-  assert.equal(await fs.readFile(path.join(f.config.piConfigDir, 'auth.json'), 'utf8'), 'DO-NOT-DISCLOSE-OR-PARSE-ME')
+  assert.equal(await fs.readFile(path.join(f.config.herdrStateRoot, 'queue'), 'utf8'), 'KEEP-UNDELIVERED')
+  assert.equal(await fs.readFile(path.join(f.config.piConfigDir, 'auth.json'), 'utf8'), 'SYNTHETIC UNREAD PI CONFIG')
 })
 
 test('corrupt published candidate is never overwritten or repaired', async t => {
-  const f = await fixture(t)
+  const f = await nativeInstalledFixture(t)
+  const pkg = await programPackage(path.join(f.base, 'candidate'), 'copy', { native: true })
   const dest = path.join(f.base, 'packages')
   await fs.mkdir(dest)
-  await stageBundle(f.root, dest, f.hash)
-  await fs.writeFile(path.join(dest, f.hash, 'node/node.exe'), 'corrupted')
-  await assert.rejects(stageBundle(f.root, dest, f.hash), /payload_hash_mismatch/)
-  assert.equal(await fs.readFile(path.join(dest, f.hash, 'node/node.exe'), 'utf8'), 'corrupted')
+  await stageCandidate(pkg.directory, dest, pkg.hash)
+  await fs.writeFile(path.join(dest, pkg.hash, 'host.mjs'), 'corrupted')
+  await assert.rejects(stageCandidate(pkg.directory, dest, pkg.hash), /candidate_payload_changed/)
+  assert.equal(await fs.readFile(path.join(dest, pkg.hash, 'host.mjs'), 'utf8'), 'corrupted')
 })
 
 test('plan uses explicit binaries and an isolated PATH, no task/transport worker', async t => {
-  const f = await fixture(t)
+  const f = await nativeInstalledFixture(t)
   const plan = launchPlan(f.config)
-  assert.equal(plan.activation, 'blocked')
   assert.equal(plan.commands.length, 2)
-  assert.deepEqual(plan.commands[0].args, ['--session', 'default', 'server'])
+  assert.deepEqual(plan.commands[0].args, ['--session', f.config.session, 'server'])
   assert.equal(plan.commands[1].args[1], 'run')
   for (const cmd of plan.commands) assert.ok(path.isAbsolute(cmd.file))
-  assert.ok(plan.environment.PATH.startsWith(path.join(f.root, 'node')))
+  assert.ok(plan.environment.PATH.startsWith(path.dirname(f.config.programs.node)))
   assert.ok(!plan.environment.PATH.includes('/usr/local/bin'))
   assert.equal(plan.environment.XDG_STATE_HOME, path.dirname(f.config.herdrStateRoot))
 })
 
-test('unqualified lifecycle operations cannot mutate or launch anything', async () => {
-  for (const cmd of ['start', 'activate', 'update', 'rollback', 'uninstall']) await assert.rejects(main([cmd]), /qualification_required_no_runtime_or_data_changed/)
+test('retired lifecycle operations cannot mutate or launch anything', async () => {
+  for (const cmd of ['start', 'activate', 'update', 'rollback', 'uninstall']) await assert.rejects(main([cmd]), /unknown_command/)
   await assert.rejects(main(['doctor', '--config', 'a', '--config', 'b']), /invalid_arguments/)
+  assert.equal((await main(['help'])).commands.some(command => command.startsWith('transfer-budget ')), false)
+  await assert.rejects(main(['transfer-budget', '--root', 'not-accessed', '--bytes', '8589934592']), /unknown_command/)
 })
 
 test('CLI diagnostics use bounded codes and a failing exit status', () => {
@@ -269,3 +236,79 @@ test('transfer preflight binds existing roots and config without reading or repa
   await assert.rejects(validateTransferConfiguration(f.config), /transfer_credential_missing/)
   await assert.rejects(fs.stat(credential), { code: 'ENOENT' })
 })
+
+async function apiBaseFixture(t, schema) {
+  const f = schema === 1 ? await fixture(t) : await installedFixture(t)
+  if (schema === 2) f.config.transfer = { pluginRoot: path.join(f.base, 'existing-plugin'), nasOrigin: 'https://nas.example.test' }
+  return { ...f, setBase(value) { (schema === 1 ? f.config : f.config.transfer).nasOrigin = value } }
+}
+for (const schema of [1, 2]) {
+  test(`schema ${schema} configure refuses retired references without rewriting producer policy or the queue`, async t => {
+    const f = await apiBaseFixture(t, schema), locations = transferLocations(f.config)
+    const input = path.join(f.base, 'network-input.json'), output = path.join(f.base, 'network-references.json')
+    await json(input, f.config)
+    await assert.rejects(configure(input, output), { code: 'legacy_execution_retired' })
+    await assert.rejects(fs.stat(output), { code: 'ENOENT' })
+    const policy = path.join(locations.config, 'transfer-network.json')
+    await assert.rejects(fs.access(policy), { code: 'ENOENT' })
+    for (const dir of [locations.config, locations.state]) await fs.mkdir(dir, { recursive: true })
+    const files = new Map([
+      [policy, '{"version":1,"lan_addresses":["192.0.2.1","2001:db8::1"]}\r\n'],
+      [path.join(locations.config, 'transfer.json'), '{"version":1,"origin":"https://NAS.example.test:443/api/"}\n'],
+      [path.join(locations.state, 'existing.journal'), 'OPAQUE EXISTING QUEUE BYTES'],
+    ])
+    for (const [name, raw] of files) await fs.writeFile(name, raw)
+    await assert.rejects(configure(input, path.join(f.base, 'another-reference.json')), { code: 'legacy_execution_retired' })
+    for (const [name, raw] of files) assert.equal(await fs.readFile(name, 'utf8'), raw)
+    await assert.rejects(fs.stat(output), { code: 'ENOENT' })
+  })
+
+  test(`schema ${schema} adopts all shared API base vectors without normalization`, async t => {
+    const f = await apiBaseFixture(t, schema)
+    for (const vector of apiBaseVectorsV3.cases) await t.test(vector.name, () => {
+      f.setBase(vector.input)
+      const before = JSON.stringify(f.config)
+      if (vector.accepted) {
+        assert.equal(validateConfig(f.config), f.config)
+        assert.equal(transferLocations(f.config).origin, vector.input)
+      } else assert.throws(() => validateConfig(f.config), { code: 'api_base_invalid' })
+      assert.equal(JSON.stringify(f.config), before)
+    })
+  })
+  test(`schema ${schema} API base retains bounded unambiguous parsing`, async t => {
+    const f = await apiBaseFixture(t, schema)
+    for (const base of ['https://@nas.example.test/api', 'https://nas.example.test/\tapi', 'https://nas.example.test/☃', `https://nas.example.test/${'x'.repeat(2048)}`,
+      'http://nas.lan/api/../other', 'http://203.0.113.10:0/api', 'Http://10.0.0.5/api', 'http://10.0.0.5/api/../other']) {
+      f.setBase(base)
+      assert.throws(() => validateConfig(f.config), { code: 'api_base_invalid' })
+    }
+  })
+  test(`schema ${schema} API base preflight preserves exact producer config binding and existing journal bytes`, async t => {
+    const f = await apiBaseFixture(t, schema), base = 'https://NAS.example.test:443/memoh/api/'
+    f.setBase(base)
+    const locations = transferLocations(f.config)
+    for (const dir of [locations.config, locations.state]) await fs.mkdir(dir, { recursive: true })
+    const file = path.join(locations.config, 'transfer.json'), journal = path.join(locations.state, 'existing-journal')
+    const raw = Buffer.from(`${JSON.stringify({ source_root: f.config.sourceRoot, origin: base, version: 1 }, null, 2)}\r\n`)
+    const evidence = Buffer.from('OPAQUE EXISTING JOURNAL; PREFLIGHT MUST NOT REWRITE')
+    await fs.writeFile(file, raw); await fs.writeFile(journal, evidence)
+    await fs.writeFile(path.join(locations.config, 'device.credential'), 'SYNTHETIC UNREAD')
+    const binding = await digest(file)
+    await validateTransferConfiguration(f.config)
+    const input = path.join(f.base, 'api-input.json'), output = path.join(f.base, 'api-configured.json')
+    await json(input, f.config); await assert.rejects(configure(input, output), { code: 'legacy_execution_retired' })
+    assert.equal(transferLocations(validateConfig(f.config)).origin, base)
+    // Equivalent URL spellings are still different persisted bindings. A new
+    // endpoint reference must not silently rewrite an existing producer queue.
+    for (const changed of [base.slice(0, -1), 'https://nas.example.test/memoh/api/', 'https://nas.example.test']) {
+      f.setBase(changed)
+      await assert.rejects(validateTransferConfiguration(f.config), { code: 'transfer_configuration_mismatch' })
+      assert.equal(await digest(file), binding)
+      assert.deepEqual(await fs.readFile(file), raw)
+      assert.deepEqual(await fs.readFile(journal), evidence)
+    }
+    f.setBase(base)
+    await validateTransferConfiguration(f.config)
+    assert.equal(await digest(file), binding)
+  })
+}

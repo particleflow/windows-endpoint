@@ -77,3 +77,41 @@ The foreign-peer rejection check also directly probes the original owned server
 after rejection, proving both servers remain alive. Future Windows updates must use controlled
 stop/restore; neither seamless handoff nor real Agent pending-tool recovery is
 established by this fixture. Consult the corrected commit's CI for its result.
+
+## PR5 owned-exit observation race
+
+Head `596d81cb5bf5872683747bfcd8403964ed0313e2`, run
+[39897288333](https://github.com/particleflow/windows-endpoint/actions/runs/39897288333),
+official job `120230541066` failed with exit 1. User-supplied output confirms the
+first five lifecycle checks passed and the persisted fixture was observed after
+2,006 ms of polling. The subsequent Herdr recovery wait ended with
+`phase: needs_attention`, `attention: herdr_observation_unknown` and
+`restartsInWindow: 1`. It had not recorded the second recovery. The saved snapshot
+precondition was satisfied; extending its sleep is not the correction.
+
+The fixture, native driver, ownership helper and fixed official dependencies were
+unchanged from the previous green c5 checkpoint. A deterministic regression at
+`660f4fe` reproduces a real coordinator gap: after `tick` checks `alive`, the owned
+Herdr child can exit during its status observation. Both observation-unknown and
+owner-exited errors were persisted as attention instead of entering the existing
+recovery budget. The synchronous status subprocess additionally prevented Node
+from delivering child-exit events while it ran. This explains a reproducible
+failure sequence consistent with the supplied output; the original log does not
+contain an event trace identifying each scheduling boundary.
+
+The runtime status probe now uses a bounded asynchronous subprocess with the same
+arguments, environment, 3-second timeout and output bound. Generation checks stay
+on both sides. Only `herdr_observation_unknown` or `herdr_owner_exited`, paired with
+an actual exit event on the retained child whose generation was previously
+captured, can enter ordinary recovery. A kill request, spawn error, missing proof,
+PID mismatch, generation change or unverified ownership cannot. Existing restart
+budgets, configuration validation, external-server refusal and stop gates remain.
+No unknown result is labelled ready and no Agent task is resubmitted.
+
+The Windows fixture now schedules its real owned crash precisely between the
+initial generation check and the actual status probe, then asserts recovery and
+the same persisted pane/no-replay conditions. It also retains all eleven original
+lifecycle checks, including foreign-peer/successor safety and Unix-only handoff
+rejection. No timeout was extended, lock scope changed or official source patched.
+The correction still requires its own exact-head Windows CI result; previous
+success of the independent transfer-host job is not an overall green result.
