@@ -8,7 +8,7 @@ the evidence checks and bounded driver; they are not positive TLS acceptance.
 ## Current source and recorded prior candidate
 
 Current source pins published producer
-`bbdb0e2748bb5611827803daffa1302e67a2c624`. Use its new exact-head CI
+`3a75aa92b9ac7f7312ad3caaa4c85aa6a5ad4d1e`. Use its new exact-head CI
 candidate summary's manifest hash; do not mix it with an old candidate capture.
 The prior already-built candidate remains recorded separately, from source
 `890131d277e8d44301d4b4304f3054b761a4b38b`, run
