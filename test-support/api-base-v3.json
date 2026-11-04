@@ -1,5 +1,5 @@
 {
-  "contract": "memoh.file-api-base.v2",
+  "contract": "memoh.file-api-base.v3",
   "cases": [
     {"name":"https-root", "input":"https://nas.example.test", "accepted":true},
     {"name":"https-api-prefix", "input":"https://nas.example.test/api", "accepted":true},
@@ -10,15 +10,7 @@
     {"name":"configured-private-name", "input":"https://nas.lan/api", "accepted":true},
     {"name":"configured-ipv6", "input":"https://[2001:db8::10]/api", "accepted":true},
     {"name":"configured-ula-ipv6", "input":"https://[fd00::10]:8443/api", "accepted":true},
-    {"name":"private-http-ipv4", "input":"http://192.168.1.10/api", "accepted":true},
-    {"name":"private-http-ipv4-port", "input":"http://10.0.0.5:18080/api", "accepted":true},
-    {"name":"private-http-ipv4-range-172", "input":"http://172.16.0.29:18080/api", "accepted":true},
-    {"name":"private-http-ula-ipv6", "input":"http://[fd00::10]:8443/api", "accepted":true},
-    {"name":"http-public-name", "input":"http://nas.example.test/api", "accepted":false},
-    {"name":"http-private-name", "input":"http://nas.lan/api", "accepted":false},
-    {"name":"http-doc-ipv4", "input":"http://203.0.113.10/api", "accepted":false},
-    {"name":"http-doc-ipv6", "input":"http://[2001:db8::10]/api", "accepted":false},
-    {"name":"http-loopback-ipv4", "input":"http://127.0.0.1/api", "accepted":false},
+    {"name":"http", "input":"http://nas.example.test/api", "accepted":true},
     {"name":"relative", "input":"/api", "accepted":false},
     {"name":"empty-host", "input":"https:///api", "accepted":false},
     {"name":"userinfo", "input":"https://user:synthetic@nas.example.test/api", "accepted":false},
@@ -38,6 +30,14 @@
     {"name":"zero-port", "input":"https://nas.example.test:0/api", "accepted":false},
     {"name":"overflow-port", "input":"https://nas.example.test:65536/api", "accepted":false},
     {"name":"empty-port", "input":"https://nas.example.test:/api", "accepted":false},
-    {"name":"ipv6-zone", "input":"https://[fe80::10%25zone]/api", "accepted":false}
+    {"name":"ipv6-zone", "input":"https://[fe80::10%25zone]/api", "accepted":false},
+    {"name":"http-public-name", "input":"http://nas.begonia.cloud:18068/api", "accepted":true},
+    {"name":"http-public-name-root", "input":"http://nas.begonia.cloud:18068", "accepted":true},
+    {"name":"http-private-ipv4-port", "input":"http://192.168.11.29:18080/api", "accepted":true},
+    {"name":"http-loopback-ipv4", "input":"http://127.0.0.1:18080/api", "accepted":true},
+    {"name":"http-doc-ipv4", "input":"http://203.0.113.10/api", "accepted":true},
+    {"name":"http-doc-ipv6", "input":"http://[2001:db8::10]/api", "accepted":true},
+    {"name":"http-ula-ipv6", "input":"http://[fd00::10]:8443/api", "accepted":true},
+    {"name":"unsupported-scheme", "input":"ftp://nas.example.test/api", "accepted":false}
   ]
 }
