@@ -19,6 +19,10 @@ export const explicitFilenameProducer = '1b7200d768c1231179725cfa2f85c8c3452882f
 export const receiptObservationProducer = '0813c7127faa2f6383b723d5f81ec05487c4e446'
 export const receiptBindingProducer = 'd25a7fcc4ad05ae43a5c42d3c7e79cfb99535d91'
 export const endpointRouteProducer = '212ae2445fe7a5fbe95479a4f2024069bf83332b'
+// The generation that shipped between the v2 route pin and the HTTP-capable pin.
+// It is already installed on the production host; recording the pair lets that
+// host read its own package instead of failing the kind/producer check.
+export const previousPinnedProducer = 'bbdb0e2748bb5611827803daffa1302e67a2c624'
 const historicalProgram = '57ae131eff3fb675a51b6ea5ee945bfa0b9de837'
 const recordedProducerPrograms = new Map([
   [historicalProgram,historicalProducer],
@@ -26,6 +30,8 @@ const recordedProducerPrograms = new Map([
   ['890131d277e8d44301d4b4304f3054b761a4b38b',receiptObservationProducer],
   ['b2b0bfc1e963db90af6f6faeb480833c31cb1916',receiptBindingProducer],
   ['c879d1622eeadcf02ec4b16590ade2cee6e1ac85',endpointRouteProducer],
+  ['9f8b0969f3a07d62bb10b04d9de5973888d4bd98',previousPinnedProducer],
+  ['f7133563e6e6489086c6550d4774b52c012e01f1',previousPinnedProducer],
 ])
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 const demand = (ok, code) => { if (!ok) throw Object.assign(new Error(code), { code }) }

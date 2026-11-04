@@ -8,8 +8,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { validateConfig, validateDirectory, isNativeRuntimeConfig, isWindowsUNCWorkspacePath, requireNativeRuntime } from './endpoint.mjs'
 import { DeploymentTransactions, DeploymentError, deploymentLayout, hostReferenceLayout, readDeploymentState } from './deployment.mjs'
 import { acquireLeases } from './lifecycle.mjs'
-import { boundedRead, readSessionHistory } from './session-diagnostics.mjs'
-import { captureSessionContinuation, verifySessionContinuation } from './session-continuation.mjs'
+import { boundedRead } from './session-diagnostics.mjs'
+import { captureSessionContinuation, verifySessionContinuation, sessionCheckpoint } from './session-continuation.mjs'
 import { validateRuntimeRequest } from './runtime.mjs'
 import { verifyCandidate, verifyRecordedCandidate, stageCandidate, programProfileHash } from './candidate.mjs'
 import { producerPendingName, transactProducerUpgrade, verifyProducerTransition } from './producer-upgrade.mjs'
@@ -434,7 +434,12 @@ export class ProgramDeployment extends DeploymentTransactions {
     // tasks. Consume only the original durable infrastructure-recovery digest,
     // never a caller-supplied owner/idle declaration or an unverified handoff.
     const recovery = state.infrastructureRecovery
-    if (!isNativeRuntimeConfig(this.config) || !state.sessionContinuation || !recovery) return 'task_handoff_unverified'
+    if (!isNativeRuntimeConfig(this.config) || !recovery) return 'task_handoff_unverified'
+    // The checkpoint is re-derived from the official files when this journal
+    // predates recording one; a recorded checkpoint is still verified as before.
+    let continuation
+    try { continuation = await sessionCheckpoint(this.config, state) }
+    catch (error) { return error.code || 'session_continuation_unavailable' }
     if (recovery.configuration !== recoveryConfigurationHash(this.configRaw, this.runtimeRaw) &&
         !await verifyProducerTransition(this, state)) return 'task_handoff_unverified'
     if (await attemptEvidence(this.config) !== recovery.attempts) return 'task_handoff_unverified'
@@ -465,7 +470,7 @@ export class ProgramDeployment extends DeploymentTransactions {
       demand(await boundedRead(files.state, 262144) === stateRaw && await boundedRead(files.status, 32768) === statusRaw &&
         await boundedRead(logFile, 65536) === logRaw && await attemptEvidence(this.config) === recovery.attempts, 'deployment_retained_work_changed')
       if (backupFile) demand(await boundedRead(backupFile, 262144) === backupRaw, 'deployment_retained_work_changed')
-      await verifySessionContinuation(this.config, state.sessionContinuation)
+      await verifySessionContinuation(this.config, continuation)
     }
     // Preserve the FIRST comparison through both work checks and every atomic
     // selector publication. A later observation cannot silently adopt a change.
@@ -531,13 +536,8 @@ export class ProgramDeployment extends DeploymentTransactions {
     // This is a stopped-program switch, not a claim of global business idle or
     // an admission barrier for an external producer. No component/queue writer
     // is upgraded here; its original path and exact producer revision remain.
-    if (state.sessionContinuation) {
-      try { await verifySessionContinuation(this.config, state.sessionContinuation) }
-      catch (error) { return error.code || 'session_continuation_unavailable' }
-    } else {
-      const history = await readSessionHistory(this.config)
-      if (!['no_saved_history', 'no_saved_workspaces'].includes(history.startup)) return 'existing_herdr_session_requires_handoff'
-    }
+    try { await sessionCheckpoint(this.config, state) }
+    catch (error) { return error.code || 'session_continuation_unavailable' }
     // A task-owner handoff is still required for execution migration. A verified
     // unchanged recovery baseline can instead retain history verbatim across a
     // stopped program-only switch; it does not claim a Pi task ended.

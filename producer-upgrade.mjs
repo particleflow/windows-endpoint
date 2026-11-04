@@ -3,10 +3,10 @@
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { validateConfig, validateDirectory, transferLocations, catalog } from './endpoint.mjs'
+import { validateConfig, validateDirectory, transferLocations, catalog, samePath } from './endpoint.mjs'
 import { boundedRead } from './session-diagnostics.mjs'
-import { producerSessionTransition, verifySessionContinuation } from './session-continuation.mjs'
-import { verifyCandidate, verifyRecordedCandidate, historicalProducer, explicitFilenameProducer, receiptObservationProducer, receiptBindingProducer, endpointRouteProducer, programProfileHash } from './candidate.mjs'
+import { producerSessionTransition, verifySessionContinuation, sessionCheckpoint } from './session-continuation.mjs'
+import { verifyCandidate, verifyRecordedCandidate, historicalProducer, explicitFilenameProducer, receiptObservationProducer, receiptBindingProducer, endpointRouteProducer, previousPinnedProducer, programProfileHash } from './candidate.mjs'
 import { attemptEvidence, nativeRecoveryEvidence, recoveryConfigurationHash, verifyReplacementSecurity } from './host-recovery.mjs'
 import { producerReferenceAdapter } from './producer-reference.mjs'
 import { validateRuntimeRequest } from './runtime.mjs'
@@ -111,6 +111,17 @@ async function producerProof(verified, directory) {
     proof.files.length === files.length && new Set(proof.files.map(file => file.name)).size === files.length && proof.files.every(file =>
       Object.keys(file).sort().join(',') === 'name,sha256' && files.some(expected => expected.path === `transfer/${file.name}` && expected.sha256 === file.sha256)), 'producer_upgrade_provenance_mismatch')
 }
+// A configured pluginRoot is package-local when it is the verified transfer
+// subtree of any owned package, not only of the currently selected one. An
+// installed host may legitimately point at a different owned generation; that is
+// still our own immutable package reference and must not be read as external.
+async function ownedPluginRoot(manager, selected, pluginRoot) {
+  const record = selected.packages.find(item => samePath(pluginRoot, path.join(manager.layout.packages, item.hash, 'transfer')))
+  if (!record) return null
+  await verifyRecordedCandidate(path.join(manager.layout.packages, record.hash), record)
+  return record.hash
+}
+
 async function originals(manager, requestId) {
   const dir = history(manager, requestId), raw = await boundedRead(path.join(dir, 'plan.json'), planLimit)
   const plan = JSON.parse(raw)
@@ -128,8 +139,10 @@ async function originals(manager, requestId) {
   const configurationAfter = encode(after)
   demand(sha(configurationAfter) === plan.nextConfiguration, 'producer_upgrade_plan_invalid')
   if (plan.schema===3) referenceFor(manager).validate(plan.producerSource,selected,before,manager.layout)
-  else demand(before.transfer.pluginRoot === path.join(manager.layout.packages, plan.from, 'transfer'),'producer_upgrade_plan_invalid')
-  const nextContinuation = await producerSessionTransition(before, after, state.sessionContinuation)
+  // The starting reference must be our own package transfer subtree. It may name
+  // an owned package other than the selected one; that is still not external.
+  else demand(await ownedPluginRoot(manager,selected,before.transfer.pluginRoot),'producer_upgrade_plan_invalid')
+  const nextContinuation = await producerSessionTransition(before, after, await sessionCheckpoint(before, state))
   demand(JSON.stringify(nextContinuation) === JSON.stringify(plan.continuation), 'producer_upgrade_evidence_changed')
   await assertTransferConfiguration(before,plan.transferConfiguration)
   const pointer = { schema: 1, requestId, planSha256: sha(raw) }
@@ -162,7 +175,11 @@ export async function verifyProducerTransition(manager, state) {
 }
 
 async function stoppedEvidence(manager, before, state, status, producerRoots, configurationRaw, runtimeRaw, additional = []) {
-  demand(state.phase === 'stopped' && state.attention === null && !state.handoff && state.sessionContinuation, 'producer_upgrade_stop_unverified')
+  // A host that never recorded a continuation (it consumed one at start and the
+  // stop path predates the record) still has the official bytes. Rebuild and
+  // verify them instead of refusing the stop; see sessionCheckpoint.
+  await sessionCheckpoint(before, state)
+  demand(state.phase === 'stopped' && state.attention === null && !state.handoff, 'producer_upgrade_stop_unverified')
   demand(status.schema === 1 && status.owner === 'windows-endpoint-host' && uuid(status.runId) && Number.isSafeInteger(status.pid) && status.pid > 0 && Number.isSafeInteger(status.updatedAt), 'producer_upgrade_stop_unverified')
   const recovery = state.infrastructureRecovery
   if (recovery) demand(recovery.configuration === recoveryConfigurationHash(configurationRaw,runtimeRaw) && recovery.attempts === await attemptEvidence(before), 'producer_upgrade_recovery_mismatch')
@@ -207,10 +224,10 @@ export async function transactProducerUpgrade(manager, options, { checkpoint = a
       const oldRecord = await manager.owned(selected, selected.current), newRecord = await manager.owned(selected, target)
       const oldRoot = path.join(manager.layout.packages, selected.current), nextRoot = path.join(manager.layout.packages, target)
       const old = await verifyRecordedCandidate(oldRoot, oldRecord), next = await verifyCandidate(nextRoot, target)
-      demand([historicalProducer,explicitFilenameProducer,receiptObservationProducer,receiptBindingProducer,endpointRouteProducer].includes(old.manifest.producer_commit) && next.manifest.producer_commit === catalog.components.transfer.revision && newRecord.profile === programProfileHash, 'producer_upgrade_version_unsupported')
+      demand([historicalProducer,explicitFilenameProducer,receiptObservationProducer,receiptBindingProducer,endpointRouteProducer,previousPinnedProducer].includes(old.manifest.producer_commit) && next.manifest.producer_commit === catalog.components.transfer.revision && newRecord.profile === programProfileHash, 'producer_upgrade_version_unsupported')
       // Outside the selected package, only the exact recorded producer witness
       // can justify a reference change. It grants no directory adoption/write.
-      const external=manager.config.transfer?.pluginRoot !== path.join(oldRoot,'transfer')
+      const external=!(await ownedPluginRoot(manager,selected,manager.config.transfer?.pluginRoot))
       let producerSource
       if (external) {
         demand(old.manifest.producer_commit===historicalProducer,'producer_upgrade_external_version_unsupported')
@@ -222,7 +239,7 @@ export async function transactProducerUpgrade(manager, options, { checkpoint = a
       await producerProof(old, oldRoot); await producerProof(next, nextRoot)
       await manager.projectRoot(target)
       const after = structuredClone(manager.config); after.transfer.pluginRoot = path.join(nextRoot, 'transfer'); validateConfig(after)
-      const continuation = await producerSessionTransition(manager.config, after, state.sessionContinuation)
+      const continuation = await producerSessionTransition(manager.config, after, await sessionCheckpoint(manager.config, state))
       const statusRaw = await boundedRead(path.join(manager.lifecycleDirectory, 'host-status.json'), 32768)
       await stoppedEvidence(manager, manager.config, state, JSON.parse(statusRaw), [manager.config.transfer.pluginRoot, after.transfer.pluginRoot],manager.configRaw,manager.runtimeRaw)
       const plan = { schema: external?3:2, requestId, from: selected.current, target, configuration: configurationSha256, lifecycle: lifecycleSha256, selection: selectionSha256,transferConfiguration,...(external?{producerSource}:{}),
@@ -293,7 +310,7 @@ export async function transactProducerUpgrade(manager, options, { checkpoint = a
         await producerStateEvidence(record.before) === plan.queue && await registryEvidence(record.before) === plan.registration, 'producer_upgrade_evidence_changed')
       const statusRaw = await boundedRead(statusFile,32768)
       demand(sha(statusRaw) === plan.status, 'producer_upgrade_evidence_changed')
-      await verifySessionContinuation(record.before,record.state.sessionContinuation)
+      await verifySessionContinuation(record.before, await sessionCheckpoint(record.before, record.state))
       await stoppedEvidence(manager, record.before, record.state, JSON.parse(statusRaw), [completedReference?record.after.transfer.pluginRoot:record.before.transfer.pluginRoot,record.after.transfer.pluginRoot],record.configuration,runtime,
         ['plan','configuration','lifecycle','selection'].map(name=>path.join(record.dir,name+'.json')).concat(markerRaw===null?[]:[markerFile],rollbackRaw===null?[]:[rollbackFile]))
       const oldRecord = record.selected.packages.find(item=>item.hash===plan.from)

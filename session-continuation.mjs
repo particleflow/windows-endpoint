@@ -49,6 +49,19 @@ export async function verifySessionContinuation(config, checkpoint) {
   if (!checkpoint.ordinary || !current.ordinary) reject('existing_herdr_session_requires_handoff')
 }
 
+// Official capture re-run against the same config. A journal written by an older
+// program may lack the checkpoint because that program consumed it at start and
+// never recorded a new one; the official files are still the authority. The
+// derived value is verified by the same function as a recorded one, so it cannot
+// stand in for a changed session, root or agent-bearing history.
+export async function sessionCheckpoint(config, state) {
+  const recorded = state?.sessionContinuation
+  if (recorded) { await verifySessionContinuation(config, recorded); return recorded }
+  const derived = await captureSessionContinuation(config)
+  await verifySessionContinuation(config, derived)
+  return derived
+}
+
 // A producer reference change has its own offline transaction. Never use this
 // for a Pi profile, task root, enrollment, origin or credential-reference change.
 // Both bindings are calculated from real, unchanged ordinary saved workspaces.

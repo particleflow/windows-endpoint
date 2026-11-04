@@ -23,7 +23,7 @@ function keys(value, required, optional = []) {
   requireThat(value && typeof value === 'object' && !Array.isArray(value), 'invalid_object')
   requireThat(required.every(k => Object.hasOwn(value, k)) && Object.keys(value).every(k => [...required, ...optional].includes(k)), 'unknown_or_missing_field')
 }
-function samePath(a, b) {
+export function samePath(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false
   return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
 }
