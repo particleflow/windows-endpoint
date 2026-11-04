@@ -172,6 +172,38 @@ identity; the endpoint does not impersonate another user, change ACLs or provide
 alternate privileged reader. An OS access denial still blocks that observation
 and cannot be treated as permission to restart, clear the journal or take ownership.
 
+## Connector disconnect observation
+
+The owned connector record now also carries `disconnect` and `closeCode` beside
+the existing `lastError`. Both are fixed machine codes derived from the official
+Runtime's own bounded status line, never its raw text:
+
+| `disconnect` | Official text it matches |
+| --- | --- |
+| `handshake_closed` | `WebSocket closed during handshake` |
+| `closed_before_open` | `closed before the connection was established` |
+| `dns_failure` | `getaddrinfo`, `ENOTFOUND`, `EAI_AGAIN` |
+| `refused` | `ECONNREFUSED` |
+| `reset` | `ECONNRESET`, `connection reset` |
+| `timeout` | `ETIMEDOUT`, handshake timeout |
+| `hangup` | `socket hang up` |
+| `frame_invalid` | `Invalid WebSocket frame` |
+| `upgrade_rejected` | `Unexpected server response` |
+| `session_closed` | `runtime connection closed` |
+| `unclassified` | any other disconnect text |
+
+`closeCode` is a number only when the official text states one. The bundled
+WebSocket client does not forward its close code or reason through the bridge, so
+the endpoint does not substitute `1006`: a peer close frame and the official
+Runtime watchdog's own `terminate()` both surface as the exact text
+`runtime connection closed`, and inventing `1006` would erase that distinction.
+`session_closed` is therefore neutral, not an attribution.
+
+The last observed cause survives a reconnect; a bare `stopped` never erases it.
+These fields are diagnostic only. They do not change reconnect policy, restart
+policy, attention states or cleanup authority, and `nativeConnectorObservation`
+keeps its existing return shape.
+
 ## Drain and restart boundaries
 
 The wrapper uses `EndpointLifecycle` and its existing ownership and finite transfer
