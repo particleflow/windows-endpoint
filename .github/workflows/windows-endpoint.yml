@@ -26,7 +26,7 @@ jobs:
         if: runner.os == 'Linux'
         with:
           repository: particleflow/Memoh
-          ref: bbdb0e2748bb5611827803daffa1302e67a2c624
+          ref: 3a75aa92b9ac7f7312ad3caaa4c85aa6a5ad4d1e
           path: producer-source
           persist-credentials: false
       - uses: actions/setup-go@v5
@@ -114,7 +114,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: particleflow/Memoh
-          ref: bbdb0e2748bb5611827803daffa1302e67a2c624
+          ref: 3a75aa92b9ac7f7312ad3caaa4c85aa6a5ad4d1e
           path: producer-source
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -128,7 +128,7 @@ jobs:
         shell: pwsh
         working-directory: producer-source
         run: |
-          if ((git rev-parse HEAD) -ne 'bbdb0e2748bb5611827803daffa1302e67a2c624') { throw 'Wrong producer source' }
+          if ((git rev-parse HEAD) -ne '3a75aa92b9ac7f7312ad3caaa4c85aa6a5ad4d1e') { throw 'Wrong producer source' }
           python scripts/build-transferqueue-bundle.py --output '${{ runner.temp }}/endpoint-transfer-source-build'
           if ($LASTEXITCODE -ne 0) { throw 'Producer source build failed' }
       - uses: actions/checkout@v4

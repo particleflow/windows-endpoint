@@ -88,7 +88,7 @@ export async function verifyFormalReceipt(candidate,summaryFile,source,go,mode='
   const summary=JSON.parse(await boundedRead(summaryFile,65536))
   const {manifest}=await verifyCandidate(candidate,summary.manifest_sha256)
   need(summary.source_commit===manifest.source_commit&&summary.producer_commit===manifest.producer_commit,'formal_receipt_summary_mismatch')
-  need(manifest.producer_commit==='bbdb0e2748bb5611827803daffa1302e67a2c624'&&manifest.producer_commit===catalog.components.transfer.revision,'formal_receipt_producer_mismatch')
+  need(manifest.producer_commit==='3a75aa92b9ac7f7312ad3caaa4c85aa6a5ad4d1e'&&manifest.producer_commit===catalog.components.transfer.revision,'formal_receipt_producer_mismatch')
   await validateDirectory(source)
   const run=promisify(execFile)
   const ref=await run('git',['-C',source,'rev-parse','HEAD'],{encoding:'utf8',timeout:15000,windowsHide:true,shell:false})
