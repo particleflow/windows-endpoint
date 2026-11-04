@@ -4,9 +4,9 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
 import { catalog, digest } from './endpoint.mjs'
-import { verifyCandidate, verifyRecordedCandidate, historicalProducer, receiptObservationProducer, receiptBindingProducer, endpointRouteProducer, profileForProducer, programProfileHash } from './candidate.mjs'
+import { verifyCandidate, verifyRecordedCandidate, historicalProducer, receiptObservationProducer, receiptBindingProducer, endpointRouteProducer, previousPinnedProducer, profileForProducer, programProfileHash } from './candidate.mjs'
 import { programDeployment, runSelectedProgram } from './program-deployment.mjs'
-import { captureSessionContinuation, producerSessionTransition } from './session-continuation.mjs'
+import { captureSessionContinuation, producerSessionTransition, sessionCheckpoint } from './session-continuation.mjs'
 import { transactProducerUpgrade, producerPendingName, producerStateEvidence } from './producer-upgrade.mjs'
 import { nativeInstalledFixture } from './test-support/installed-fixture.mjs'
 import { programPackage } from './test-support/program-package.mjs'
@@ -56,17 +56,21 @@ test('the existing raw lifecycle attention fence prevents validation and compone
   assert.deepEqual(calls,[])
   assert.equal(state.attention,'producer_upgrade_pending')
 })
-async function fixture(t,{snapshot=true,agent=false,external=false,externalRecorded=false,baseline8351=false,baseline890=false,baselineB2=false,baselineC879=false,transfer='disabled',preexistingV6=false}={}) {
+async function fixture(t,{snapshot=true,agent=false,external=false,externalRecorded=false,baseline8351=false,baseline890=false,baselineB2=false,baselineC879=false,baselineBbdb=false,pluginRootOtherOwned=false,transfer='disabled',preexistingV6=false}={}) {
   const f=await nativeInstalledFixture(t), root=path.join(f.base,'host')
-  const old=await packageFixture(path.join(f.base,'old'),true,baselineC879?'c879d1622eeadcf02ec4b16590ade2cee6e1ac85':baselineB2?'b2b0bfc1e963db90af6f6faeb480833c31cb1916':baseline890?'890131d277e8d44301d4b4304f3054b761a4b38b':baseline8351?'8351b9c433922762f579c1c7b70e755d45b6ed2c':undefined,
-    baselineC879?endpointRouteProducer:baselineB2?receiptBindingProducer:baseline890?receiptObservationProducer:baseline8351?'1b7200d768c1231179725cfa2f85c8c3452882fb':historicalProducer), next=await packageFixture(path.join(f.base,'new'),false)
+  const oldSource=baselineBbdb?'9f8b0969f3a07d62bb10b04d9de5973888d4bd98':baselineC879?'c879d1622eeadcf02ec4b16590ade2cee6e1ac85':baselineB2?'b2b0bfc1e963db90af6f6faeb480833c31cb1916':baseline890?'890131d277e8d44301d4b4304f3054b761a4b38b':baseline8351?'8351b9c433922762f579c1c7b70e755d45b6ed2c':undefined
+  const oldProducer=baselineBbdb?previousPinnedProducer:baselineC879?endpointRouteProducer:baselineB2?receiptBindingProducer:baseline890?receiptObservationProducer:baseline8351?'1b7200d768c1231179725cfa2f85c8c3452882fb':historicalProducer
+  const old=await packageFixture(path.join(f.base,'old'),true,oldSource,oldProducer), next=await packageFixture(path.join(f.base,'new'),false)
+  // The installed host can point pluginRoot at another owned generation than the
+  // selected one. Both are our own immutable packages, so this is not external.
+  const other=pluginRootOtherOwned?await packageFixture(path.join(f.base,'other owned'),true,'f7133563e6e6489086c6550d4774b52c012e01f1',previousPinnedProducer):null
   const source=externalRecorded?await packageFixture(path.join(f.base,'original candidate'),true,externalProducerIdentity.sourceCommit):null
   const securityOverrides=new Map(),securityDefault={ownerSid:'S-1-5-21-1-2-3-1001',groupSid:'S-1-5-32-545',descriptorSha256:sha('inert fixture descriptor')}
   const reference=source?createProducerReferenceAdapter({identity:{...externalProducerIdentity,manifestSha256:source.hash,
     executableSha256:source.manifest.files.find(file=>file.path==='transfer/transferqueue.exe').sha256,
     executableSize:source.manifest.files.find(file=>file.path==='transfer/transferqueue.exe').size},
     security:async files=>files.map(file=>securityOverrides.get(file)||securityDefault)}):null
-  const config={...f.config,transfer:{pluginRoot:source?path.join(source.directory,'transfer'):external?path.join(f.base,'external'):path.join(root,'packages',old.hash,'transfer'),nasOrigin:'https://nas.example.com'},
+  const config={...f.config,transfer:{pluginRoot:source?path.join(source.directory,'transfer'):external?path.join(f.base,'external'):other?path.join(root,'packages',other.hash,'transfer'):path.join(root,'packages',old.hash,'transfer'),nasOrigin:'https://nas.example.com'},
     transferConfigDir:path.join(f.base,'transfer-config'),transferStateDir:path.join(f.base,'transfer-state')}
   await fs.mkdir(config.transferConfigDir);await fs.mkdir(config.transferStateDir)
   const transferFile=path.join(config.transferConfigDir,'transfer.json')
@@ -80,6 +84,7 @@ async function fixture(t,{snapshot=true,agent=false,external=false,externalRecor
   await fs.cp(old.directory,path.join(root,'packages',old.hash),{recursive:true})
   const selected={schema:1,owner:config.deviceId,packages:[{hash:old.hash,profile:profileForProducer(old.manifest.producer_commit)}],current:old.hash,previous:null,pending:null}
   if(source){await fs.cp(source.directory,path.join(root,'packages',source.hash),{recursive:true});selected.packages.push({hash:source.hash,profile:profileForProducer(historicalProducer)})}
+  if(other){await fs.cp(other.directory,path.join(root,'packages',other.hash),{recursive:true});selected.packages.push({hash:other.hash,profile:profileForProducer(other.manifest.producer_commit)})}
   await fs.writeFile(manager.file,encode(selected))
   const checkpoint=await captureSessionContinuation(config)
   await manager.lifecycleStore.save({schema:1,identity:config.deviceId,phase:'stopped',restarts:[],attention:null,sessionContinuation:checkpoint})
@@ -110,7 +115,7 @@ async function fixture(t,{snapshot=true,agent=false,external=false,externalRecor
     assert.equal(await producerStateEvidence(config),queue)
     if(transfer)assert.equal(await fs.readFile(transferFile,'utf8'),transferRaw)
   }
-  return{...f,root,config,manager,old,next,oldRaw,options,run,create,preserved,preservedCheck,transferFile,transferRaw,source,reference,securityOverrides,securityDefault,programProbe:f.run}
+  return{...f,root,config,manager,old,next,other,oldRaw,options,run,create,preserved,preservedCheck,transferFile,transferRaw,source,reference,securityOverrides,securityDefault,programProbe:f.run}
 }
 
 for(const preexistingV6 of [true,false])test(`rollback format proof refuses existing-queue baseline ${preexistingV6?'v6':'unknown'}`,async t=>{
@@ -399,6 +404,116 @@ test('ordinary program update defers cross-producer instead of publishing only t
   assert.equal(await fs.readFile(f.manager.file,'utf8'),f.oldRaw.selection)
   await f.preservedCheck()
 })
+
+test('the installed previous-generation pair is recorded, so the host reads its own package and crosses once',async t=>{
+  const f=await fixture(t,{baselineBbdb:true})
+  const record={hash:f.old.hash,profile:profileForProducer(previousPinnedProducer)}
+  const verified=await verifyRecordedCandidate(f.old.directory,record)
+  assert.equal(verified.manifest.source_commit,'9f8b0969f3a07d62bb10b04d9de5973888d4bd98')
+  assert.equal(verified.manifest.producer_commit,previousPinnedProducer)
+  // Recording the pair still refuses a fabricated profile or a new staging.
+  await assert.rejects(verifyRecordedCandidate(f.old.directory,{...record,profile:programProfileHash}),{code:'candidate_record_profile_mismatch'})
+  await assert.rejects(verifyCandidate(f.old.directory,f.old.hash),{code:'candidate_kind_or_producer_mismatch'})
+  // The ordinary stopped switch still needs the explicit producer transaction.
+  assert.equal((await f.manager.select(f.next.hash,'update')).reason,'producer_transaction_required')
+  assert.equal((await f.run()).state,'host_producer_selected')
+  assert.equal((await f.manager.read()).current,f.next.hash)
+  await f.preservedCheck()
+})
+
+test('a pluginRoot pointing at another owned package is not an external reference and needs no witness digest',async t=>{
+  const f=await fixture(t,{baselineBbdb:true,pluginRootOtherOwned:true})
+  assert.equal(f.config.transfer.pluginRoot,path.join(f.root,'packages',f.other.hash,'transfer'))
+  const plan=await f.run({action:'plan-producer'})
+  assert.equal(plan.state,'producer_upgrade_plan')
+  assert.equal(plan.pluginRoot.reason,'immutable_owned_package')
+  assert.equal(Object.hasOwn(plan,'referenceSha256'),false)
+  assert.equal((await f.run()).state,'host_producer_selected')
+  const after=JSON.parse(await fs.readFile(f.manager.configFile,'utf8'))
+  assert.equal(after.transfer.pluginRoot,path.join(f.root,'packages',f.next.hash,'transfer'))
+  await f.preservedCheck()
+  // An unowned configured path is still external and still requires the witness.
+  const other=await fixture(t,{baselineBbdb:true})
+  await fs.writeFile(other.manager.configFile,encode({...other.config,transfer:{...other.config.transfer,pluginRoot:path.join(other.base,'not a package')}}))
+  const configRaw=await fs.readFile(other.manager.configFile,'utf8')
+  await assert.rejects(transactProducerUpgrade(await programDeployment(other.root,injected),{...other.options,configurationSha256:sha(configRaw)},{verifySecurity:security}),
+    {code:'producer_upgrade_external_version_unsupported'})
+})
+
+test('a journal without a recorded checkpoint derives the official one instead of refusing the stopped switch',async t=>{
+  const f=await fixture(t)
+  const state=await f.manager.lifecycleStore.load()
+  delete state.sessionContinuation
+  await f.manager.lifecycleStore.save(state)
+  assert.equal((await f.manager.lifecycleStore.load()).sessionContinuation,undefined)
+  // The caller hashes the journal it actually read, as the CLI does after a stop.
+  const lifecycleSha256=sha(await fs.readFile(f.manager.lifecycleStore.file,'utf8'))
+  f.options.lifecycleSha256=lifecycleSha256
+  const plan=await f.run({action:'plan-producer'})
+  assert.equal(plan.state,'producer_upgrade_plan')
+  // The derived checkpoint is the real on-disk capture, not an invented digest:
+  // the official configuration and snapshot bytes are carried unchanged, and only
+  // the data binding follows the reference change.
+  const captured=await captureSessionContinuation(f.config)
+  assert.equal((await f.run()).state,'host_producer_selected')
+  const archived=JSON.parse(await fs.readFile(path.join(f.manager.lifecycleDirectory,'producer-upgrade-history',f.options.requestId,'plan.json'),'utf8'))
+  assert.equal(archived.continuation.configuration,captured.configuration)
+  assert.equal(archived.continuation.snapshot,captured.snapshot)
+  assert.notEqual(archived.continuation.binding,captured.binding)
+  const selected=await f.manager.lifecycleStore.load()
+  assert.equal(selected.sessionContinuation?.binding,(await captureSessionContinuation(JSON.parse(await fs.readFile(f.manager.configFile,'utf8')))).binding)
+  // A changed or agent-bearing session still refuses: derivation is not a bypass.
+  const g=await fixture(t,{agent:true})
+  const journal=await g.manager.lifecycleStore.load()
+  delete journal.sessionContinuation
+  await g.manager.lifecycleStore.save(journal)
+  await assert.rejects(sessionCheckpoint(g.config,journal),{code:'existing_herdr_session_requires_handoff'})
+})
+test('a completed earlier transaction no longer blocks the next one, but an unproven pointer still does',async t=>{
+  const f=await fixture(t,{baselineBbdb:true})
+  // This is the production shape: a finished transaction from an earlier
+  // generation left its pointer behind while the host stayed selected.
+  assert.equal((await f.run()).state,'host_producer_selected')
+  const first=await f.manager.lifecycleStore.load()
+  assert.ok(first.producerUpgrade)
+  // Rewind the journal to the archived pre-transaction state plus the pointer, so
+  // the same starting generation meets a newer target and a stale pointer.
+  const archived=JSON.parse(await fs.readFile(path.join(f.manager.lifecycleDirectory,'producer-upgrade-history',f.options.requestId,'plan.json'),'utf8'))
+  const dir=path.join(f.manager.lifecycleDirectory,'producer-upgrade-history',f.options.requestId)
+  const readyFile=path.join(dir,'upgrade-ready.json'), readyRaw=await fs.readFile(readyFile,'utf8')
+  const readyPlanSha=f.options.requestId
+  // Stale pointer case: keep the completed archive, restore the original selection
+  // and configuration, and point the journal at the finished transaction.
+  const originalConfig=JSON.parse(await fs.readFile(path.join(dir,'configuration.json'),'utf8'))
+  const originalLifecycle=JSON.parse(await fs.readFile(path.join(dir,'lifecycle.json'),'utf8'))
+  const originalSelection=JSON.parse(await fs.readFile(path.join(dir,'selection.json'),'utf8'))
+  await fs.writeFile(f.manager.configFile,encode(originalConfig))
+  await fs.writeFile(f.manager.file,encode(originalSelection))
+  await f.manager.lifecycleStore.save({...originalLifecycle,producerUpgrade:first.producerUpgrade})
+  const lifecycleSha=sha(await fs.readFile(f.manager.lifecycleStore.file,'utf8'))
+  const planNext=async()=>transactProducerUpgrade(await f.create(),{action:'plan-producer',requestId:randomUUID(),target:f.next.hash,
+    configurationSha256:sha(await fs.readFile(f.manager.configFile,'utf8')),lifecycleSha256:sha(await fs.readFile(f.manager.lifecycleStore.file,'utf8')),
+    selectionSha256:sha(await fs.readFile(f.manager.file,'utf8'))},{verifySecurity:security})
+  assert.equal(archived.target,f.next.hash)
+  assert.ok(lifecycleSha)
+  assert.equal((await planNext()).state,'producer_upgrade_plan')
+  // The proof is exact: a tampered ready receipt, a reverse intent or a pending
+  // marker each refuse the same pointer.
+  const refuse=async label=>await assert.rejects(planNext(),{code:'producer_upgrade_selection_invalid'},label)
+  await fs.writeFile(readyFile,readyRaw.replace('joint_publication_verified','prepared'))
+  await refuse('tampered ready state')
+  await fs.writeFile(readyFile,readyRaw)
+  await fs.writeFile(path.join(dir,'rollback.json'),encode({schema:1,requestId:f.options.requestId,planSha256:JSON.parse(readyRaw).planSha256,direction:'rollback'}))
+  await refuse('reverse direction recorded')
+  await fs.unlink(path.join(dir,'rollback.json'))
+  await fs.writeFile(path.join(f.manager.lifecycleDirectory,producerPendingName),encode({schema:1,requestId:f.options.requestId,planSha256:JSON.parse(readyRaw).planSha256}))
+  // A live intent marker is a harder stop: plan-producer refuses before any read.
+  await assert.rejects(planNext(),{code:'producer_upgrade_pending_conflict'},'pending marker present')
+  await fs.unlink(path.join(f.manager.lifecycleDirectory,producerPendingName))
+  assert.equal((await planNext()).state,'producer_upgrade_plan')
+  await f.preservedCheck()
+})
+
 test('dry-run preserves config, selection, lifecycle, journals and private references; an owned host defers without stopping it',async t=>{
   const f=await fixture(t)
   const result=await f.run({action:'plan-producer'})

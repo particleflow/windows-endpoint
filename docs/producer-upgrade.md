@@ -17,10 +17,15 @@ already-recorded package additionally accepts only these native historical pairs
 | `890131d277e8d44301d4b4304f3054b761a4b38b` | `0813c7127faa2f6383b723d5f81ec05487c4e446` | Retain the already-recorded receipt-GET candidate/profile for a stopped package-local transaction; never stage or silently select it as the new producer. |
 | `b2b0bfc1e963db90af6f6faeb480833c31cb1916` | `d25a7fcc4ad05ae43a5c42d3c7e79cfb99535d91` | Preserve the recorded read-only receipt-export candidate/profile before the same stopped transaction to the v2 endpoint-capable producer. |
 | `c879d1622eeadcf02ec4b16590ade2cee6e1ac85` | `212ae2445fe7a5fbe95479a4f2024069bf83332b` | Preserve the recorded v2 route candidate/profile before the stopped retry-state producer upgrade. |
+| `9f8b0969f3a07d62bb10b04d9de5973888d4bd98` | `bbdb0e2748bb5611827803daffa1302e67a2c624` | Verify the installed production package that the HTTP-capable pin replaces. |
+| `f7133563e6e6489086c6550d4774b52c012e01f1` | `bbdb0e2748bb5611827803daffa1302e67a2c624` | Verify the preserved previous package of the same installed generation for rollback inspection. |
 
 This exception does not stage or execute historical programs. It does not accept
 arbitrary old revisions, an invented profile or a substituted producer. Legacy
 schema 1/2 execution remains retired. Historical task records remain readable.
+The bbdb pairs were added on 2026-11-04 because that generation is already
+installed on the production host and was absent from this list; recording them
+does not widen staging, which stays pinned to `3a75aa92`.
 
 The bbdb producer preserves original queue/receipt/root identities but can retain
 diagnostic retry counters above 12. Old Go readers reject those records even
@@ -33,10 +38,14 @@ parsers cannot be made compatible by modifying a manifest or clearing attention.
 `pluginRoot` inside `packages/<old-hash>/transfer` is an immutable package
 reference. Replacing that EXE in place would invalidate the old manifest, so this
 transaction moves only the reference to `packages/<new-hash>/transfer`. The old
-package remains byte-verifiable for history and rollback. A configured external
-path alone is not ownership evidence. The single recorded external source below
-has a read-only reference adapter; it never imports, adopts, writes or deletes
-that directory. In-place replacement at an external path is not supported.
+package remains byte-verifiable for history and rollback. A configured path that
+is the transfer subtree of any **other owned** package is still package-local:
+the installed host may legitimately point at a different owned generation, so it
+is not read as external and needs no witness digest. Only a path that no owned
+package claims is external. A configured external path alone is not ownership
+evidence. The single recorded external source below has a read-only reference
+adapter; it never imports, adopts, writes or deletes that directory. In-place
+replacement at an external path is not supported.
 
 The external source must be the exact manifest
 `3ccaa153c386d8c4b6cda76c3201d39eebee0c6d747fda296ce7dc441491517a`,
@@ -108,6 +117,14 @@ and snapshot bytes must match the original checkpoint. Agent-bearing snapshots,
 missing snapshots, changed Pi/enrollment/source/state roots or changed origin
 refuse. Only `transfer.pluginRoot` may differ. The new checkpoint is calculated
 from the real unchanged snapshot and new reference; no old digest is forged.
+
+A host consumes its in-memory checkpoint at start, so a journal written by the
+installed program can carry none. That is not treated as missing history: the
+same official `captureSessionContinuation` is re-run against the same config and
+the derived value goes through the identical verification, including the ordinary
+(no agent) requirement and unchanged configuration/snapshot bytes. A recorded
+checkpoint is still verified as recorded; nothing is written to the journal by
+the derivation.
 
 ## Publication, CAS and recovery
 
