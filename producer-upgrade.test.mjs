@@ -469,6 +469,51 @@ test('a journal without a recorded checkpoint derives the official one instead o
   await g.manager.lifecycleStore.save(journal)
   await assert.rejects(sessionCheckpoint(g.config,journal),{code:'existing_herdr_session_requires_handoff'})
 })
+test('a completed earlier transaction no longer blocks the next one, but an unproven pointer still does',async t=>{
+  const f=await fixture(t,{baselineBbdb:true})
+  // This is the production shape: a finished transaction from an earlier
+  // generation left its pointer behind while the host stayed selected.
+  assert.equal((await f.run()).state,'host_producer_selected')
+  const first=await f.manager.lifecycleStore.load()
+  assert.ok(first.producerUpgrade)
+  // Rewind the journal to the archived pre-transaction state plus the pointer, so
+  // the same starting generation meets a newer target and a stale pointer.
+  const archived=JSON.parse(await fs.readFile(path.join(f.manager.lifecycleDirectory,'producer-upgrade-history',f.options.requestId,'plan.json'),'utf8'))
+  const dir=path.join(f.manager.lifecycleDirectory,'producer-upgrade-history',f.options.requestId)
+  const readyFile=path.join(dir,'upgrade-ready.json'), readyRaw=await fs.readFile(readyFile,'utf8')
+  const readyPlanSha=f.options.requestId
+  // Stale pointer case: keep the completed archive, restore the original selection
+  // and configuration, and point the journal at the finished transaction.
+  const originalConfig=JSON.parse(await fs.readFile(path.join(dir,'configuration.json'),'utf8'))
+  const originalLifecycle=JSON.parse(await fs.readFile(path.join(dir,'lifecycle.json'),'utf8'))
+  const originalSelection=JSON.parse(await fs.readFile(path.join(dir,'selection.json'),'utf8'))
+  await fs.writeFile(f.manager.configFile,encode(originalConfig))
+  await fs.writeFile(f.manager.file,encode(originalSelection))
+  await f.manager.lifecycleStore.save({...originalLifecycle,producerUpgrade:first.producerUpgrade})
+  const lifecycleSha=sha(await fs.readFile(f.manager.lifecycleStore.file,'utf8'))
+  const planNext=async()=>transactProducerUpgrade(await f.create(),{action:'plan-producer',requestId:randomUUID(),target:f.next.hash,
+    configurationSha256:sha(await fs.readFile(f.manager.configFile,'utf8')),lifecycleSha256:sha(await fs.readFile(f.manager.lifecycleStore.file,'utf8')),
+    selectionSha256:sha(await fs.readFile(f.manager.file,'utf8'))},{verifySecurity:security})
+  assert.equal(archived.target,f.next.hash)
+  assert.ok(lifecycleSha)
+  assert.equal((await planNext()).state,'producer_upgrade_plan')
+  // The proof is exact: a tampered ready receipt, a reverse intent or a pending
+  // marker each refuse the same pointer.
+  const refuse=async label=>await assert.rejects(planNext(),{code:'producer_upgrade_selection_invalid'},label)
+  await fs.writeFile(readyFile,readyRaw.replace('joint_publication_verified','prepared'))
+  await refuse('tampered ready state')
+  await fs.writeFile(readyFile,readyRaw)
+  await fs.writeFile(path.join(dir,'rollback.json'),encode({schema:1,requestId:f.options.requestId,planSha256:JSON.parse(readyRaw).planSha256,direction:'rollback'}))
+  await refuse('reverse direction recorded')
+  await fs.unlink(path.join(dir,'rollback.json'))
+  await fs.writeFile(path.join(f.manager.lifecycleDirectory,producerPendingName),encode({schema:1,requestId:f.options.requestId,planSha256:JSON.parse(readyRaw).planSha256}))
+  // A live intent marker is a harder stop: plan-producer refuses before any read.
+  await assert.rejects(planNext(),{code:'producer_upgrade_pending_conflict'},'pending marker present')
+  await fs.unlink(path.join(f.manager.lifecycleDirectory,producerPendingName))
+  assert.equal((await planNext()).state,'producer_upgrade_plan')
+  await f.preservedCheck()
+})
+
 test('dry-run preserves config, selection, lifecycle, journals and private references; an owned host defers without stopping it',async t=>{
   const f=await fixture(t)
   const result=await f.run({action:'plan-producer'})

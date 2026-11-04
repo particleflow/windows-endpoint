@@ -121,6 +121,25 @@ function ownedPluginRoot(manager, selected, pluginRoot) {
   return record ? record.hash : null
 }
 
+// An archived producer transaction that reached its joint publication is a
+// historical record, not a pending intent. Its immutable ready receipt plus the
+// absence of the intent marker and of any reverse direction prove completion
+// without consulting the current configuration, which later updates have already
+// moved past. A new transaction may replace such a pointer; an unfinished or
+// unprovable one still refuses.
+async function completedProducerHistory(manager, pointer) {
+  if (!pointer || Object.keys(pointer).sort().join(',') !== 'planSha256,requestId,schema' || pointer.schema !== 1 || !uuid(pointer.requestId) || !hash(pointer.planSha256)) return false
+  const dir = history(manager, pointer.requestId)
+  let raw
+  try { raw = await boundedRead(path.join(dir, 'plan.json'), planLimit) } catch { return false }
+  if (sha(raw) !== pointer.planSha256) return false
+  if (await optional(path.join(manager.lifecycleDirectory, producerPendingName), 16384) !== null) return false
+  if (await optional(path.join(dir, 'rollback.json'), 16384) !== null) return false
+  if (await optional(path.join(dir, 'rollback-ready.json'), 16384) !== null) return false
+  return await optional(path.join(dir, 'upgrade-ready.json'), 16384) ===
+    encode({ schema: 1, requestId: pointer.requestId, planSha256: pointer.planSha256, direction: 'upgrade', state: 'joint_publication_verified' })
+}
+
 async function originals(manager, requestId) {
   const dir = history(manager, requestId), raw = await boundedRead(path.join(dir, 'plan.json'), planLimit)
   const plan = JSON.parse(raw)
@@ -217,7 +236,8 @@ export async function transactProducerUpgrade(manager, options, { checkpoint = a
       const lifecycleRaw = await boundedRead(manager.lifecycleStore.file, 262144), state = await manager.lifecycleStore.load()
       demand(sha(manager.configRaw) === configurationSha256 && sha(lifecycleRaw) === lifecycleSha256 && sha(selectionRaw) === selectionSha256, 'producer_upgrade_expected_hash_mismatch')
       const transferConfiguration = await transferConfigurationEvidence(manager.config)
-      demand(selected.pending === null && selected.current !== null && selected.current !== target && !state.producerUpgrade, 'producer_upgrade_selection_invalid')
+      demand(selected.pending === null && selected.current !== null && selected.current !== target &&
+        (!state.producerUpgrade || await completedProducerHistory(manager, state.producerUpgrade)), 'producer_upgrade_selection_invalid')
       const oldRecord = await manager.owned(selected, selected.current), newRecord = await manager.owned(selected, target)
       const oldRoot = path.join(manager.layout.packages, selected.current), nextRoot = path.join(manager.layout.packages, target)
       const old = await verifyRecordedCandidate(oldRoot, oldRecord), next = await verifyCandidate(nextRoot, target)
