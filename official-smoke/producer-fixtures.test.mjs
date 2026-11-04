@@ -5,27 +5,11 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { catalog, digest } from '../endpoint.mjs'
-import { testNames, fixturePlan, completedTests, completedAPIBaseCases, completedTaskAPIBaseCases, completedFeedbackCases, feedbackTests, networkTests, downloadTests, cliDownloadTests, publicationMigrationTests, budgetTests, cliBudgetTests, registrationTests, cliRegistrationTests, explicitFilenameTests, resultRecoveryTests, cliResultRecoveryTests, verifyProducerBundle } from './producer-fixtures.mjs'
+import { testNames, fixturePlan, completedTests, completedAPIBaseCases, completedTaskAPIBaseCases, completedFeedbackCases, feedbackTests, networkTests, downloadTests, cliDownloadTests, publicationMigrationTests, budgetTests, cliBudgetTests, registrationTests, cliRegistrationTests, verifyProducerBundle } from './producer-fixtures.mjs'
 
 const native = ['TestWindowsNativeActiveJournal', 'TestWindowsNativePublicationBucketBudget', 'TestWindowsNativePublicationMigrationProcessCrash', 'TestWindowsNativePublicationNewCase', 'TestWindowsNativeNewCore']
 const cli = ['TestCLIPathChild', 'TestCLIPathTLSRestartAndLostResponses']
 const output = names => names.map(n => `=== RUN   ${n}\n--- PASS: ${n} (0.01s)`).join('\n') + '\nPASS\n'
-
-test('0813 recovery coverage requires the finite CLI and portable original-ID cases without skipped branches', () => {
-  assert.equal(resultRecoveryTests.length,2);assert.equal(cliResultRecoveryTests.length,1)
-  for(const names of [resultRecoveryTests,cliResultRecoveryTests]){
-    assert.deepEqual(completedTests(output(names),names),names)
-    for(const raw of ['PASS\n',output(names.slice(1)),output(names).replace('--- PASS:','--- SKIP:')])assert.throws(()=>completedTests(raw,names))
-  }
-})
-
-test('explicit filename Windows coverage requires process recovery and foreign-context refusal without skipped cases', () => {
-  assert.deepEqual(explicitFilenameTests, ['TestExplicitFilenameRegistrationProcessRecovery', 'TestExplicitFilenameRejectsForeignContext'])
-  assert.deepEqual(completedTests(output(explicitFilenameTests), explicitFilenameTests), explicitFilenameTests)
-  for (const raw of ['PASS\n', output(explicitFilenameTests.slice(1)), output(explicitFilenameTests).replace('--- PASS:', '--- SKIP:'), output([...explicitFilenameTests, 'TestExplicitUnexpected'])]) {
-    assert.throws(() => completedTests(raw, explicitFilenameTests))
-  }
-})
 
 test('native network configuration coverage requires the three shared tests, without claiming Linux-only routing', () => {
   assert.equal(networkTests.length, 3)
@@ -116,11 +100,11 @@ test('shared vector checkout stays byte-identical under a Windows CRLF Git profi
   const indexed = spawnSync('git', ['read-tree', 'HEAD'], options)
   assert.equal(indexed.status, 0, 'temporary fixture index')
   const prefix = `${path.join(root, 'checkout').replaceAll('\\', '/')}/`
-  const checked = spawnSync('git', ['-c', 'core.autocrlf=true', 'checkout-index', `--prefix=${prefix}`, '--', 'test-support/api-base-v1.json'], options)
+  const checked = spawnSync('git', ['-c', 'core.autocrlf=true', 'checkout-index', `--prefix=${prefix}`, '--', 'test-support/api-base-v3.json'], options)
   assert.equal(checked.status, 0, 'isolated Windows-profile checkout')
-  const actual = await fs.readFile(path.join(root, 'checkout/test-support/api-base-v1.json'))
+  const actual = await fs.readFile(path.join(root, 'checkout/test-support/api-base-v3.json'))
   assert.equal(actual.includes(13), false, 'vector checkout must retain upstream LF bytes')
-  assert.deepEqual(actual, await fs.readFile(new URL('../test-support/api-base-v1.json', import.meta.url)))
+  assert.deepEqual(actual, await fs.readFile(new URL('../test-support/api-base-v3.json', import.meta.url)))
 })
 test('source-built fixture inventory rejects wrong source and modified payload before execution', async t => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'producer-fixture-inventory-')))

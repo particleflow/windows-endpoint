@@ -42,12 +42,12 @@ manifest, assertion, synchronization or original `verify-fixtures.ps1` is edited
 That original verifier remains hash-checked; its aggregate invocation is replaced
 only in this downstream job.
 
-The current source pin is `a51ddcb1cab8e246ee32fe50762e633f221ef271`.
+The current source pin is `3a75aa92b9ac7f7312ad3caaa4c85aa6a5ad4d1e`.
 Its three API-base top-level tests are outside those two historical selections.
 The same packaged test executable runs `TestAPIBaseContractVectors` separately
 from the fixed source's `internal/transferclient` directory. That test reads its own
-`testdata/api-base-v1.json`; those bytes must match the endpoint's shared vectors.
-All 30 named subcases and the top-level pass are required, with zero skips or
+`testdata/api-base-v3.json`; those bytes must match the endpoint's shared vectors.
+All 38 named subcases and the top-level pass are required, with zero skips or
 duplicates. A second invocation runs `TestTaskAPIBaseLengthBoundary` and
 `TestTaskAPIBaseBoundaryPreservesChecks`, requiring both top-level passes and
 all 13 distinct subcases. Each invocation retains a 30-second Go alarm and

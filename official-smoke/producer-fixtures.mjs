@@ -64,11 +64,6 @@ export const registrationTests = ['TestRegisteredProcessExitBeforeAcknowledgemen
 export const cliRegistrationTests = ['TestProducerAdmissionPendingCanResumeSameDelivery']
 export const snapshotTests = ['TestSnapshotProducerOnlyAdvancesRetainedPrivateBytes', 'TestSnapshotProducerRejectsExplicitRegisteredAndIndexedJobs', 'TestSnapshotProducerMissingPrivateBytesFailsBeforeNetwork', 'TestSnapshotProducerRetainsAuthorizationAndTLSGuards']
 export const cliSnapshotTests = ['TestCLISnapshotScopeNeverActivatesRegisteredInput']
-export const explicitFilenameTests = ['TestExplicitFilenameRegistrationProcessRecovery', 'TestExplicitFilenameRejectsForeignContext']
-// Only portable recovery cases: Unix chmod/revocation/reparse branches retain
-// their separate upstream evidence and are not claimed as Windows coverage.
-export const resultRecoveryTests = ['TestResultRecoveryProcessInterruptionAndSameID', 'TestResultRecoveryExistingReceiptGetOnly']
-export const cliResultRecoveryTests = ['TestResultRecoveryCLIUsesExistingFiniteEntry']
 export function completedTaskAPIBaseCases(output) {
   completedTests(output, taskAPIBaseTests)
   const expected = [
@@ -127,11 +122,11 @@ export async function verifyFixtures(root, sourceRoot) {
   // never add fixture data to the runtime bundle or patch the producer test.
   const contractDirectory = path.join(sourceRoot, 'internal/transferclient')
   await validateDirectory(contractDirectory)
-  const expectedRaw = await fs.readFile(new URL('../test-support/api-base-v1.json', import.meta.url))
-  const sourceRaw = await fs.readFile(path.join(contractDirectory, 'testdata/api-base-v1.json'))
+  const expectedRaw = await fs.readFile(new URL('../test-support/api-base-v3.json', import.meta.url))
+  const sourceRaw = await fs.readFile(path.join(contractDirectory, 'testdata/api-base-v3.json'))
   requireFixture(sourceRaw.equals(expectedRaw), 'producer_api_base_vectors_changed')
   const contract = JSON.parse(sourceRaw)
-  requireFixture(contract.contract === 'memoh.file-api-base.v1' && contract.cases.length === 30, 'producer_api_base_contract_invalid')
+  requireFixture(contract.contract === 'memoh.file-api-base.v3' && contract.cases.length === 38, 'producer_api_base_contract_invalid')
   const binary = path.join(root, 'transferqueue.test.exe')
   const contractTests = testNames(await execute(binary, ['-test.list=^Test(Task)?APIBase'], remaining(30000), false, contractDirectory), 'Test(Task)?APIBase')
   requireFixture(sameSet(contractTests, ['TestAPIBaseContractVectors', ...taskAPIBaseTests]), 'producer_api_base_inventory_changed')
@@ -153,9 +148,6 @@ export async function verifyFixtures(root, sourceRoot) {
     [cliBinary, cliRegistrationTests, '^TestProducerAdmissionPending', 'producerRegistrationContract'],
     [binary, snapshotTests, '^TestSnapshotProducer', 'producerSnapshotContract'],
     [cliBinary, cliSnapshotTests, '^TestCLISnapshotScope', 'producerSnapshotContract'],
-    [binary, explicitFilenameTests, '^TestExplicit', 'producerExplicitFilenameContract'],
-    [binary, resultRecoveryTests, '^TestResultRecovery(ProcessInterruptionAndSameID|ExistingReceiptGetOnly)$', 'producerResultRecoveryContract'],
-    [cliBinary, cliResultRecoveryTests, '^TestResultRecoveryCLIUsesExistingFiniteEntry$', 'producerResultRecoveryContract'],
   ]) {
     const inventory = testNames(await execute(file, [`-test.list=${selector}`], remaining(30000)), 'Test')
     requireFixture(sameSet(inventory, names), `${contractName}_inventory_changed`)

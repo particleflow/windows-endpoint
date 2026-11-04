@@ -131,7 +131,7 @@ try {
   assert.equal(await fs.readFile(path.join(config.sourceRoot, 'invocations.txt'), 'utf8'), 'once\n')
   assert.deepEqual(model.snapshot(), { requests: 2, offeredWrites: 1 })
   stage = 'producer_projection'
-  const { summarize } = createRequire(import.meta.url)(path.join(source, 'internal/agenvo/pi_result.cjs'))
+  const { summarize } = createRequire(import.meta.url)(path.join(source, 'internal/computertarget/pi_result.cjs'))
   const expected = { pi_session_id: session, provider: fixtureProvider, model: fixtureModel }
   const result = summarize(path.join(config.sourceRoot, 'stdout.jsonl'), expected, exited.status)
   assert.equal(result.result.outcome, 'succeeded'); assert.equal(result.result.output, fixtureOutput)

@@ -10,21 +10,12 @@ import { installedFixture, nativeInstalledFixture } from './test-support/install
 import { stageCandidate, verifyCandidate } from './candidate.mjs'
 import { programPackage } from './test-support/program-package.mjs'
 
-const apiBaseVectors = JSON.parse(await fs.readFile(new URL('./test-support/api-base-v1.json', import.meta.url)))
-assert.equal(apiBaseVectors.contract, 'memoh.file-api-base.v1')
-assert.equal(apiBaseVectors.cases.length, 30)
-// v3 drops the scheme/private-network classification: HTTP and HTTPS are both
-// accepted for every host. The v1 file stays byte-identical to the fixed
-// producer source's contract fixture; v3 is the endpoint's current policy.
+// memoh.file-api-base.v3 is the contract both sides now share: the producer
+// source's own testdata fixture and this endpoint's copy carry the same vector
+// file, and plain HTTP is accepted for every host.
 const apiBaseVectorsV3 = JSON.parse(await fs.readFile(new URL('./test-support/api-base-v3.json', import.meta.url)))
 assert.equal(apiBaseVectorsV3.contract, 'memoh.file-api-base.v3')
 assert.equal(apiBaseVectorsV3.cases.length, 38)
-// Only the scheme verdict may differ: v3 accepts plain HTTP for every host.
-for (const earlier of apiBaseVectors.cases) {
-  const carried = apiBaseVectorsV3.cases.find(vector => vector.input === earlier.input)
-  assert.ok(carried, `v3 must carry v1 vector for ${earlier.input}`)
-  if (earlier.accepted) assert.ok(carried.accepted, `v3 must keep accepted v1 vector ${earlier.input}`)
-}
 
 async function json(file, value) {
   await fs.mkdir(path.dirname(file), { recursive: true })
