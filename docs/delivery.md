@@ -147,6 +147,10 @@ retained, never deleted automatically. Staging does not switch an active version
 guarantee NTFS directory durability through physical power loss, migrate a queue,
 or roll back component state.
 
+The later [offline transaction batch](deployment-transactions.md) records package
+ownership and recoverable candidate selection on top of this staging primitive.
+It is tested with synthetic packages and does not activate a real installation.
+
 Before implementing activation/update, resolve the approved absolute binary-path
 contract with the connector owner: a version-directory switch changes the
 instance fingerprint, while an in-place switch needs an offline journal/backup
