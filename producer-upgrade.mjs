@@ -5,7 +5,7 @@ import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { validateConfig, validateDirectory, transferLocations, catalog, samePath } from './endpoint.mjs'
 import { boundedRead } from './session-diagnostics.mjs'
-import { producerSessionTransition, sessionCheckpoint } from './session-continuation.mjs'
+import { producerSessionTransition, sessionCheckpoint, archivedSessionTransition } from './session-continuation.mjs'
 import { verifyCandidate, verifyRecordedCandidate, historicalProducer, explicitFilenameProducer, receiptObservationProducer, receiptBindingProducer, endpointRouteProducer, previousPinnedProducer, programProfileHash } from './candidate.mjs'
 import { attemptEvidence, nativeRecoveryEvidence, recoveryConfigurationHash, verifyReplacementSecurity } from './host-recovery.mjs'
 import { producerReferenceAdapter } from './producer-reference.mjs'
@@ -52,6 +52,23 @@ async function assertTransferConfiguration(config, expected) {
   demand(validTransferEvidence(expected),'producer_upgrade_transfer_configuration_unrecorded')
   const current = await transferConfigurationEvidence(config)
   demand(current.sha256 === expected.sha256 && current.version === expected.version,'producer_upgrade_transfer_configuration_changed')
+}
+// transfer.json is not archived, so a later recheck cannot compare its bytes to
+// the original transaction: an operator origin cutover legitimately rewrites it.
+// What is still checkable is that the file stayed in its one canonical form and
+// still names the origin and source root this configuration declares. Any other
+// drift — an appended newline, a reformatted document, a different origin —
+// refuses exactly as before.
+async function assertTransferOrigin(config) {
+  const file = path.join(transferLocations(config).config,'transfer.json')
+  const raw = await boundedRead(file, 8192)
+  let parsed
+  try { parsed = JSON.parse(raw) } catch { fail('producer_upgrade_transfer_configuration_changed') }
+  // The canonical form is the compact document, optionally followed by the one
+  // newline this codebase writes. Anything else is drift.
+  const canonical = raw.endsWith('\n') ? raw.slice(0, -1) : raw
+  demand(JSON.stringify(parsed) === canonical && parsed.version === 1 &&
+    parsed.origin === config.transfer?.nasOrigin && parsed.source_root === config.sourceRoot,'producer_upgrade_transfer_configuration_changed')
 }
 async function optional(file, limit = 262144) {
   try { return await boundedRead(file, limit) } catch (error) { if (error.code === 'ENOENT') return null; throw error }
@@ -140,7 +157,11 @@ async function completedProducerHistory(manager, pointer) {
     encode({ schema: 1, requestId: pointer.requestId, planSha256: pointer.planSha256, direction: 'upgrade', state: 'joint_publication_verified' })
 }
 
-async function originals(manager, requestId) {
+// Parse one archived transaction and verify it against its own recorded digests.
+// Nothing outside the archive is read here: this is what an archive can prove on
+// its own, and it is the shared base of both the live transaction and the later
+// post-completion recheck.
+async function archivedOriginals(manager, requestId) {
   const dir = history(manager, requestId), raw = await boundedRead(path.join(dir, 'plan.json'), planLimit)
   const plan = JSON.parse(raw)
   demand(validTransferEvidence(plan.transferConfiguration),'producer_upgrade_transfer_configuration_unrecorded')
@@ -160,35 +181,54 @@ async function originals(manager, requestId) {
   // The starting reference must be our own package transfer subtree. It may name
   // an owned package other than the selected one; that is still not external.
   else demand(ownedPluginRoot(manager,selected,before.transfer.pluginRoot),'producer_upgrade_plan_invalid')
+  return { dir, raw, plan, before, after, state, selected, configuration, lifecycle, selection, configurationAfter }
+}
+
+// The live transaction path. Every archived byte must also describe the world
+// right now, because it is about to publish over it.
+async function originals(manager, requestId) {
+  const record = await archivedOriginals(manager, requestId)
+  const { before, after, state, selected, plan } = record
   const nextContinuation = await producerSessionTransition(before, after, await sessionCheckpoint(before, state))
   demand(JSON.stringify(nextContinuation) === JSON.stringify(plan.continuation), 'producer_upgrade_evidence_changed')
   await assertTransferConfiguration(before,plan.transferConfiguration)
-  const pointer = { schema: 1, requestId, planSha256: sha(raw) }
+  const pointer = { schema: 1, requestId, planSha256: sha(record.raw) }
   const finalState = { ...state, sessionContinuation: nextContinuation, producerUpgrade: pointer }
-  return { dir, raw, plan, before, after, state, selected, configuration, lifecycle, selection, configurationAfter,
+  return { ...record,
     lifecycleAfter: encode(finalState), fence: encode({ ...state, attention: 'producer_upgrade_pending' }),
     nextFence: encode({ ...finalState, attention: 'producer_upgrade_pending' }),
     selectionFence: encode({ ...selected, pending: { kind: 'switch', from: plan.from, to: plan.target, phase: 'prepared' } }),
     selectionAfter: encode({ ...selected, current: plan.target, previous: plan.from, pending: null }) }
 }
 
-// Validate a derived continuation against its archived ORIGINAL checkpoint and
-// configuration. The infrastructure recovery hash remains historical, unchanged.
+// A completed transaction stays history. Rechecking it must therefore ask what
+// the archive proves about its own publication, not whether the world has stood
+// still since: ordinary host cycles rotate the session snapshot, operator work
+// moves the origin, and the producer keeps writing its own queue. So the checks
+// are archive integrity, the still-selected reference, the archived recovery and
+// attempt digests, and the standing transfer.json/config agreement. A pending
+// marker or reverse intent still refuses, and so does any drift in the archive.
 export async function verifyProducerTransition(manager, state) {
   const pointer = state.producerUpgrade
   if (!pointer || Object.keys(pointer).sort().join(',') !== 'planSha256,requestId,schema' || pointer.schema !== 1 || !uuid(pointer.requestId) || !hash(pointer.planSha256)) return false
-  const record = await originals(manager, pointer.requestId)
+  const record = await archivedOriginals(manager, pointer.requestId)
+  if (sha(record.raw) !== pointer.planSha256) return false
   if (record.plan.schema===3) {
     demand(await optional(path.join(manager.lifecycleDirectory,producerPendingName),16384)===null,'producer_upgrade_evidence_changed')
     demand(await optional(path.join(record.dir,'rollback.json'),16384)===null,'producer_upgrade_evidence_changed')
     demand(await boundedRead(path.join(record.dir,'upgrade-ready.json'),16384)===encode({schema:1,requestId:pointer.requestId,planSha256:sha(record.raw),direction:'upgrade',state:'joint_publication_verified'}),'producer_upgrade_evidence_changed')
   }
-  const valid = sha(record.raw) === pointer.planSha256 && manager.configRaw === record.configurationAfter &&
-    JSON.stringify(state.sessionContinuation) === JSON.stringify(record.plan.continuation) &&
-    JSON.stringify(state.infrastructureRecovery) === JSON.stringify(record.state.infrastructureRecovery) &&
+  // The archived transaction's own record of the session must stay ordinary and
+  // internally consistent; the live snapshot is allowed to have rotated.
+  await archivedSessionTransition(record.before, record.after, record.state, record.plan.continuation)
+  // The reference this transaction published is still the one in force.
+  demand(manager.config.transfer?.pluginRoot === record.after.transfer.pluginRoot, 'producer_upgrade_evidence_changed')
+  const valid = JSON.stringify(state.infrastructureRecovery) === JSON.stringify(record.state.infrastructureRecovery) &&
     record.state.infrastructureRecovery?.configuration === recoveryConfigurationHash(record.configuration, manager.runtimeRaw) &&
-    await attemptEvidence(record.before) === record.plan.attempts && await producerStateEvidence(record.before) === record.plan.queue
-  await assertTransferConfiguration(record.before,record.plan.transferConfiguration)
+    await attemptEvidence(record.before) === record.plan.attempts
+  // transfer.json is not archived, so only its standing invariant is checked:
+  // the file still names this configuration's origin and source root.
+  await assertTransferOrigin(manager.config)
   return valid
 }
 

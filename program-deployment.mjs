@@ -435,13 +435,20 @@ export class ProgramDeployment extends DeploymentTransactions {
     // never a caller-supplied owner/idle declaration or an unverified handoff.
     const recovery = state.infrastructureRecovery
     if (!isNativeRuntimeConfig(this.config) || !recovery) return 'task_handoff_unverified'
-    // The checkpoint is re-derived from the official files when this journal
-    // predates recording one; a recorded checkpoint is still verified as before.
-    let continuation
-    try { continuation = await sessionCheckpoint(this.config, state) }
-    catch (error) { return error.code || 'session_continuation_unavailable' }
-    if (recovery.configuration !== recoveryConfigurationHash(this.configRaw, this.runtimeRaw) &&
-        !await verifyProducerTransition(this, state)) return 'task_handoff_unverified'
+    // A journal carrying a completed producer transaction is judged by that
+    // transaction's own archive: the checkpoint it recorded named the session as
+    // it stood then, and every later host start/stop legitimately rewrote it.
+    // Without such a transaction the recorded checkpoint must still match the
+    // live files byte for byte, and a recovery baseline that no longer describes
+    // this configuration refuses outright.
+    let continuation = null
+    if (state.producerUpgrade !== undefined) {
+      if (!await verifyProducerTransition(this, state)) return 'task_handoff_unverified'
+    } else if (recovery.configuration !== recoveryConfigurationHash(this.configRaw, this.runtimeRaw)) return 'task_handoff_unverified'
+    else {
+      try { continuation = await sessionCheckpoint(this.config, state) }
+      catch (error) { return error.code || 'session_continuation_unavailable' }
+    }
     if (await attemptEvidence(this.config) !== recovery.attempts) return 'task_handoff_unverified'
     const files = { root: this.root, config: this.configFile, runtime: this.runtimeFile,
       state: this.lifecycleStore.file, status: path.join(this.lifecycleDirectory, 'host-status.json') }
@@ -470,7 +477,7 @@ export class ProgramDeployment extends DeploymentTransactions {
       demand(await boundedRead(files.state, 262144) === stateRaw && await boundedRead(files.status, 32768) === statusRaw &&
         await boundedRead(logFile, 65536) === logRaw && await attemptEvidence(this.config) === recovery.attempts, 'deployment_retained_work_changed')
       if (backupFile) demand(await boundedRead(backupFile, 262144) === backupRaw, 'deployment_retained_work_changed')
-      await verifySessionContinuation(this.config, continuation)
+      if (continuation) await verifySessionContinuation(this.config, continuation)
     }
     // Preserve the FIRST comparison through both work checks and every atomic
     // selector publication. A later observation cannot silently adopt a change.
@@ -536,8 +543,12 @@ export class ProgramDeployment extends DeploymentTransactions {
     // This is a stopped-program switch, not a claim of global business idle or
     // an admission barrier for an external producer. No component/queue writer
     // is upgraded here; its original path and exact producer revision remain.
-    try { await sessionCheckpoint(this.config, state) }
-    catch (error) { return error.code || 'session_continuation_unavailable' }
+    // A completed producer transaction is re-checked through its own archive
+    // (retainedHistory); the session it recorded has legitimately rotated since.
+    if (state.producerUpgrade === undefined) {
+      try { await sessionCheckpoint(this.config, state) }
+      catch (error) { return error.code || 'session_continuation_unavailable' }
+    }
     // A task-owner handoff is still required for execution migration. A verified
     // unchanged recovery baseline can instead retain history verbatim across a
     // stopped program-only switch; it does not claim a Pi task ended.
