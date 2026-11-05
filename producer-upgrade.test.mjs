@@ -791,3 +791,93 @@ if(process.platform==='win32')test('external reference reads actual source and r
   await actual.assert(before,state,f.config,f.manager.layout)
   await f.preservedCheck()
 })
+
+// The installed host deletes its checkpoint before every start and recaptures it
+// at the confirmed stop (lifecycle.mjs), so each start/stop rewrites session.json.
+// A completed transaction therefore cannot be re-checked against today's bytes.
+const sessionFile = config => path.join(config.herdrConfigRoot, 'sessions', config.session, 'session.json')
+async function rotateSession(f, label) {
+  await f.write(sessionFile(f.config), encode({ version: 3, workspaces: [{ id: label, tabs: [{ panes: { one: { cwd: f.config.sourceRoot, label } } }] }] }))
+}
+// Production shape: the completed transaction sits in a journal whose recovery
+// baseline still describes that generation. That baseline is what keeps the
+// journal's own checkpoint meaningful, so both are exercised together.
+async function recoveredCompletion(t) {
+  const f = await fixture(t), statusFile = path.join(f.manager.lifecycleDirectory, 'host-status.json')
+  const status = JSON.parse(await fs.readFile(statusFile, 'utf8'))
+  status.phase = 'running'; await fs.writeFile(statusFile, encode(status))
+  const priorRaw = encode({ schema: 1, identity: f.config.deviceId, phase: 'running', attention: null, restarts: [] })
+  await fs.writeFile(path.join(f.manager.lifecycleDirectory, `lifecycle-before-recheck-${sha(priorRaw)}.json`), priorRaw)
+  const stopped = JSON.parse(f.oldRaw.lifecycle)
+  stopped.infrastructureRecovery = { schema: 1, fromState: sha(priorRaw), run: status.runId,
+    configuration: recoveryConfigurationHash(f.oldRaw.configuration, await fs.readFile(f.manager.runtimeFile, 'utf8')),
+    attempts: await attemptEvidence(f.config), previousPhase: 'running', previousAttention: null, businessReplayed: false }
+  await f.manager.lifecycleStore.save(stopped)
+  f.oldRaw.lifecycle = await fs.readFile(f.manager.lifecycleStore.file, 'utf8')
+  f.options.lifecycleSha256 = sha(f.oldRaw.lifecycle)
+  await f.write(path.join(f.root, 'logs/endpoint-host', status.runId + '.jsonl'), encode({ schema: 1, runId: status.runId, phase: 'starting', at: status.updatedAt - 1 }))
+  await f.run()
+  return f
+}
+test('a rotated ordinary session does not revoke a completed producer transaction',async t=>{
+  const f=await recoveredCompletion(t)
+  const dir=path.join(f.manager.lifecycleDirectory,'producer-upgrade-history',f.options.requestId)
+  const archived=JSON.parse(await fs.readFile(path.join(dir,'plan.json'),'utf8'))
+  const before=await captureSessionContinuation(f.config)
+  assert.equal(archived.continuation.snapshot,before.snapshot)
+  // Two ordinary host cycles: start consumes the checkpoint, stop recaptures it.
+  await rotateSession(f,'after-first-start')
+  const first=await captureSessionContinuation(f.config)
+  await rotateSession(f,'after-second-start')
+  const now=await captureSessionContinuation(f.config)
+  assert.notEqual(first.snapshot,now.snapshot)
+  assert.notEqual(now.snapshot,before.snapshot)
+  assert.equal(now.configuration,archived.continuation.configuration,'config.toml never rotates')
+  const manager=await f.create()
+  const state=await manager.lifecycleStore.load()
+  assert.equal(await manager.retainedHistory(state,true),null)
+  assert.equal(await manager.work(programProfileHash),null)
+  assert.equal((await manager.select(f.next.hash,'update')).state,'already_selected')
+  await f.preservedCheck()
+})
+test('a completed transaction still refuses a tampered archive, an agent-bearing session and a changed official config',async t=>{
+  const f=await recoveredCompletion(t)
+  const dir=path.join(f.manager.lifecycleDirectory,'producer-upgrade-history',f.options.requestId)
+  const archive=async name=>fs.readFile(path.join(dir,name+'.json'),'utf8')
+  const original={plan:await archive('plan'),lifecycle:await archive('lifecycle'),configuration:await archive('configuration'),selection:await archive('selection')}
+  const restore=async()=>{for(const [name,raw]of Object.entries(original))await fs.writeFile(path.join(dir,name+'.json'),raw)}
+  const refuseWork=async(label,code='task_handoff_unverified')=>{
+    const manager=await f.create(), state=await manager.lifecycleStore.load()
+    let result
+    try { result=await manager.retainedHistory(state,true) }
+    catch (error) { result=error.code||error.message }
+    assert.equal(result,code,label)
+    await restore()
+  }
+  await rotateSession(f,'after-a-start')
+  // Rotation alone passes; each archived-byte change below does not.
+  const passing=await f.create()
+  assert.equal(await passing.retainedHistory(await passing.lifecycleStore.load(),true),null)
+  const changed=JSON.parse(original.plan)
+  changed.continuation={...changed.continuation,snapshot:'c'.repeat(64)}
+  await fs.writeFile(path.join(dir,'plan.json'),encode(changed))
+  await refuseWork('tampered archived snapshot')
+  // The journal's own archived checkpoint must agree with the plan it archived.
+  const journal=JSON.parse(original.lifecycle)
+  journal.sessionContinuation={...journal.sessionContinuation,snapshot:'d'.repeat(64)}
+  await fs.writeFile(path.join(dir,'lifecycle.json'),encode(journal))
+  await refuseWork('archived journal disagreeing with its plan','producer_upgrade_archive_conflict')
+  const configuration=JSON.parse(original.configuration)
+  configuration.piConfigDir+='-other'
+  await fs.writeFile(path.join(dir,'configuration.json'),encode(configuration))
+  await refuseWork('tampered archived configuration','producer_upgrade_archive_conflict')
+  // An agent-bearing live session is unknown work, not an ordinary rotation.
+  await f.write(sessionFile(f.config),encode({version:3,workspaces:[{id:'agent',tabs:[{panes:{one:{cwd:f.config.sourceRoot,agent_name:'pi'}}}]}]}))
+  await assert.rejects((await f.create()).work(programProfileHash),{code:'existing_herdr_session_requires_handoff'})
+  await rotateSession(f,'ordinary again')
+  assert.equal(await (await f.create()).work(programProfileHash),null)
+  // config.toml is not rewritten by a host cycle, so a change there still refuses.
+  await fs.appendFile(path.join(f.config.herdrConfigRoot,'config.toml'),'\n# changed official config\n')
+  await assert.rejects((await f.create()).work(programProfileHash),{code:'session_continuation_changed'})
+  await f.preservedCheck()
+})

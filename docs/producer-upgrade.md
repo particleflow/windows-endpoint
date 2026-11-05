@@ -118,6 +118,18 @@ missing snapshots, changed Pi/enrollment/source/state roots or changed origin
 refuse. Only `transfer.pluginRoot` may differ. The new checkpoint is calculated
 from the real unchanged snapshot and new reference; no old digest is forged.
 
+A completed transaction is re-checked as an archive, not as a claim that the
+world has stood still. The host deletes its checkpoint before every start and
+recaptures it at the confirmed stop, so each ordinary start/stop legitimately
+rewrites `session.json`; an operator origin cutover meanwhile moves the live
+configuration past the archived `nextConfiguration`, and the producer keeps
+writing its own queue. Re-verification therefore checks the archive's own
+integrity (plan/journal/selection digests, one ordinary and internally consistent
+transition, the archived config.toml it captured), that the reference it
+published is still the one in force, and the archived recovery and attempt
+digests. Agent-bearing history still requires a handoff, and any archived-byte
+drift still refuses. Transaction-time publication keeps its full live CAS.
+
 A host consumes its in-memory checkpoint at start, so a journal written by the
 installed program can carry none. That is not treated as missing history: the
 same official `captureSessionContinuation` is re-run against the same config and

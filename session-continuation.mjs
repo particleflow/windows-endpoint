@@ -62,18 +62,52 @@ export async function sessionCheckpoint(config, state) {
   return derived
 }
 
-// A producer reference change has its own offline transaction. Never use this
-// for a Pi profile, task root, enrollment, origin or credential-reference change.
-// Both bindings are calculated from real, unchanged ordinary saved workspaces.
-export async function producerSessionTransition(before, after, checkpoint) {
+// Only the producer reference may differ; every other data identity stays exact.
+function referenceChange(before, after) {
   if (!before.transfer || !after.transfer || before.transfer.pluginRoot === after.transfer.pluginRoot) reject('producer_session_reference_invalid')
   const expected = structuredClone(before)
   expected.transfer.pluginRoot = after.transfer.pluginRoot
   if (JSON.stringify(expected) !== JSON.stringify(after)) reject('producer_session_identity_changed')
+}
+
+// A producer reference change has its own offline transaction. Never use this
+// for a Pi profile, task root, enrollment, origin or credential change.
+// Both bindings are calculated from real, unchanged ordinary saved workspaces.
+export async function producerSessionTransition(before, after, checkpoint) {
+  referenceChange(before, after)
   await verifySessionContinuation(before, checkpoint)
   if (checkpoint.snapshot === null) reject('producer_session_snapshot_required')
   const next = await captureSessionContinuation(after)
   if (!next.ordinary || next.snapshot !== checkpoint.snapshot || next.configuration !== checkpoint.configuration) reject('producer_session_snapshot_changed')
   await verifySessionContinuation(before, checkpoint)
   return next
+}
+
+// An archived producer transaction records what was confirmed at that time. It
+// cannot be re-verified against today's session.json byte for byte: the host
+// deletes the checkpoint before every start and recaptures it at the confirmed
+// stop, so each start/stop rewrites the official snapshot (lifecycle.mjs). What
+// the archive still proves is its own integrity — a well-formed ordinary
+// checkpoint, bound to the roots of the configuration it was taken under and to
+// the archived official config.toml — while an agent-bearing live session still
+// needs the explicit handoff. Session rotation is tolerated, adoption is not.
+//   before/after: configs rebuilt from the archived bytes.
+//   archivedState: the companion journal archived beside the plan.
+//   expected: plan.continuation, the transition the archived plan recorded.
+export async function archivedSessionTransition(before, after, archivedState, expected) {
+  referenceChange(before, after)
+  if (!validSessionContinuation(expected) || !expected.ordinary || expected.snapshot === null) reject('session_continuation_invalid')
+  // Only pluginRoot may move, so the recorded binding must be one of the two.
+  if (![binding(before), binding(after)].includes(expected.binding)) reject('producer_upgrade_evidence_changed')
+  // config.toml is the one official byte a host cycle never rewrites.
+  if (expected.configuration !== hash(await boundedRead(path.join(before.herdrConfigRoot, 'config.toml'), 262144))) reject('session_continuation_changed')
+  // The journal archived beside the plan must record that same transition, taken
+  // before the reference change it announces.
+  const recorded = archivedState?.sessionContinuation
+  if (recorded !== undefined && (!validSessionContinuation(recorded) || !recorded.ordinary ||
+    recorded.binding !== binding(before) || recorded.snapshot !== expected.snapshot || recorded.configuration !== expected.configuration))
+    reject('producer_upgrade_evidence_changed')
+  // An agent-bearing live session is unknown work, not an ordinary rotation.
+  if (!(await captureSessionContinuation(before)).ordinary) reject('existing_herdr_session_requires_handoff')
+  return expected
 }
