@@ -14,7 +14,7 @@ import {completedTests} from './producer-fixtures.mjs'
 
 const hash=raw=>createHash('sha256').update(raw).digest('hex')
 const need=(ok,code)=>{if(!ok)throw Error(code)}
-// Memoh@3a75aa92 cmd/transferqueue/cli_path_test.go, canonical LF bytes.
+// Memoh@a235cc2b cmd/transferqueue/cli_path_test.go, canonical LF bytes.
 export const endpointFixtureSha256='4ac00f4ac2188bced673b4019d339f236da67e2b42378aad9d971e4c49780b00'
 export const endpointFixtureTest='TestCLIPathPhysicalEndpointEXERestart'
 const anchor='cmd := exec.CommandContext(t.Context(), bin, "-test.run=^TestCLIPathChild$") //nolint:gosec // Current test executable, fixed arguments; no shell.'
@@ -75,7 +75,7 @@ export async function verifyFormalEndpoint(candidate,summaryFile,source,go){
   const summary=JSON.parse(await boundedRead(summaryFile,65536))
   const {manifest}=await verifyCandidate(candidate,summary.manifest_sha256)
   need(summary.source_commit===manifest.source_commit&&summary.producer_commit===manifest.producer_commit,'formal_endpoint_summary_mismatch')
-  need(manifest.producer_commit==='3a75aa92b9ac7f7312ad3caaa4c85aa6a5ad4d1e'&&manifest.producer_commit===catalog.components.transfer.revision,'formal_endpoint_producer_mismatch')
+  need(manifest.producer_commit==='a235cc2b610aa7182890a6488bffdd25341e548c'&&manifest.producer_commit===catalog.components.transfer.revision,'formal_endpoint_producer_mismatch')
   await validateDirectory(source)
   const run=promisify(execFile)
   const ref=await run('git',['-C',source,'rev-parse','HEAD'],{encoding:'utf8',timeout:15000,windowsHide:true,shell:false})

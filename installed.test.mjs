@@ -538,7 +538,7 @@ test('external transfer roots preserve data boundaries and existing configuratio
   const f = await installedTransferFixture(t)
   assert.throws(() => validateConfig({ ...f.config, transfer: { ...f.config.transfer, pluginRoot: f.config.sourceRoot } }), { code: 'data_program_overlap' })
   assert.throws(() => validateConfig({ ...f.config, transfer: { ...f.config.transfer, nasOrigin: 'http://nas.example.test/api/../x' } }), { code: 'api_base_invalid' })
-  for (const nasOrigin of ['http://nas.example.test', 'http://192.168.1.10/api', 'http://nas.begonia.cloud:18068/api']) {
+  for (const nasOrigin of ['http://nas.example.test', 'http://192.168.1.10/api', 'http://nas.example.test:18068/api']) {
     const candidate = { ...f.config, transfer: { ...f.config.transfer, nasOrigin } }
     assert.equal(validateConfig(candidate), candidate)
   }

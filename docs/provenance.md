@@ -61,7 +61,7 @@ redistributed by this repository. See [scope and limits](explicit-runtime.md).
 
 `test-support/api-base-v3.json` is the byte-identical shared syntax-vector file
 from Memoh `internal/transferclient/testdata/api-base-v3.json` at the current
-producer pin `3a75aa92b9ac7f7312ad3caaa4c85aa6a5ad4d1e`, under the retained
+producer pin `a235cc2b610aa7182890a6488bffdd25341e548c`, under the retained
 AGPL-3.0 license. Only those 38 data vectors are imported; no Go implementation
 is copied. With `memoh.file-api-base.v3`, HTTP and HTTPS are accepted for every
 host: there is no private-network or loopback classification and no `.invalid`

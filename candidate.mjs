@@ -23,6 +23,10 @@ export const endpointRouteProducer = '212ae2445fe7a5fbe95479a4f2024069bf83332b'
 // It is already installed on the production host; recording the pair lets that
 // host read its own package instead of failing the kind/producer check.
 export const previousPinnedProducer = 'bbdb0e2748bb5611827803daffa1302e67a2c624'
+// The HTTP-capable generation, superseded only by the reserved-host vector edit.
+// Its Go source and vector verdicts are unchanged, but the installed production
+// packages still record this producer, so they stay readable across the move.
+export const httpCapableProducer = '3a75aa92b9ac7f7312ad3caaa4c85aa6a5ad4d1e'
 const historicalProgram = '57ae131eff3fb675a51b6ea5ee945bfa0b9de837'
 const recordedProducerPrograms = new Map([
   [historicalProgram,historicalProducer],
@@ -32,6 +36,8 @@ const recordedProducerPrograms = new Map([
   ['c879d1622eeadcf02ec4b16590ade2cee6e1ac85',endpointRouteProducer],
   ['9f8b0969f3a07d62bb10b04d9de5973888d4bd98',previousPinnedProducer],
   ['f7133563e6e6489086c6550d4774b52c012e01f1',previousPinnedProducer],
+  ['bce2a40af03355130933cbaf8bd1a668e3cd5956',httpCapableProducer],
+  ['de31b9bc0446ffc658f3030246e4e93f922e197d',httpCapableProducer],
 ])
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 const demand = (ok, code) => { if (!ok) throw Object.assign(new Error(code), { code }) }

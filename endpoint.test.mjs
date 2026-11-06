@@ -135,7 +135,7 @@ test('transfer binary provenance remains tied to the exact component commit', as
 test('configuration has no secret fields, rejects malformed origin and overlapping roots', async t => {
   const { config } = await fixture(t)
   for (const nasOrigin of ['https://user:secret@example.test', 'https://example.test/api/../other', 'https://example.test?token=secret', 'ftp://example.test/api', 'relative/api', 'https://host.invalid']) assert.throws(() => validateConfig({ ...config, nasOrigin }), /api_base_invalid/)
-  for (const nasOrigin of ['http://nas.begonia.cloud:18068/api', 'http://192.168.1.10/api', 'http://10.0.0.5:18080/api', 'http://[fd00::10]:8443/api', 'http://[::ffff:172.16.0.29]/api', 'https://nas.begonia.cloud:18443/api']) {
+  for (const nasOrigin of ['http://nas.example.test:18068/api', 'http://192.168.1.10/api', 'http://10.0.0.5:18080/api', 'http://[fd00::10]:8443/api', 'http://[::ffff:172.16.0.29]/api', 'https://nas.example.test:18443/api']) {
     const accepted = { ...config, nasOrigin }
     assert.equal(validateConfig(accepted), accepted)
   }

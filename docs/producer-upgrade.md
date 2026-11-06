@@ -7,7 +7,7 @@ against the NAS. The c036 artifact is unchanged and does not contain this code.
 ## Version and ownership boundary
 
 New candidates and new staging retain the exact `dependencies.json` producer
-pin `3a75aa92b9ac7f7312ad3caaa4c85aa6a5ad4d1e`. Read-only verification of an
+pin `a235cc2b610aa7182890a6488bffdd25341e548c`. Read-only verification of an
 already-recorded package additionally accepts only these native historical pairs:
 
 | Program source | Producer source | Purpose |
@@ -19,13 +19,18 @@ already-recorded package additionally accepts only these native historical pairs
 | `c879d1622eeadcf02ec4b16590ade2cee6e1ac85` | `212ae2445fe7a5fbe95479a4f2024069bf83332b` | Preserve the recorded v2 route candidate/profile before the stopped retry-state producer upgrade. |
 | `9f8b0969f3a07d62bb10b04d9de5973888d4bd98` | `bbdb0e2748bb5611827803daffa1302e67a2c624` | Verify the installed production package that the HTTP-capable pin replaces. |
 | `f7133563e6e6489086c6550d4774b52c012e01f1` | `bbdb0e2748bb5611827803daffa1302e67a2c624` | Verify the preserved previous package of the same installed generation for rollback inspection. |
+| `bce2a40af03355130933cbaf8bd1a668e3cd5956` | `3a75aa92b9ac7f7312ad3caaa4c85aa6a5ad4d1e` | Verify the installed HTTP-capable generation before the reserved-host vector move; its Go source and vector verdicts are unchanged. |
+| `de31b9bc0446ffc658f3030246e4e93f922e197d` | `3a75aa92b9ac7f7312ad3caaa4c85aa6a5ad4d1e` | Verify the preserved previous package of the same HTTP-capable generation for rollback inspection. |
 
 This exception does not stage or execute historical programs. It does not accept
 arbitrary old revisions, an invented profile or a substituted producer. Legacy
 schema 1/2 execution remains retired. Historical task records remain readable.
 The bbdb pairs were added on 2026-11-04 because that generation is already
 installed on the production host and was absent from this list; recording them
-does not widen staging, which stays pinned to `3a75aa92`.
+does not widen staging, which stays pinned to `a235cc2b`. The two 3a75aa92 pairs
+were added on 2026-11-06 for the same reason: the host's current and preserved
+packages record that producer, and the move to the reserved-host vector edit
+changes no Go source, no vector verdict and no queue byte.
 
 The bbdb producer preserves original queue/receipt/root identities but can retain
 diagnostic retry counters above 12. Old Go readers reject those records even

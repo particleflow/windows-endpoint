@@ -6,7 +6,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { validateConfig, validateDirectory, transferLocations, catalog, samePath } from './endpoint.mjs'
 import { boundedRead } from './session-diagnostics.mjs'
 import { producerSessionTransition, sessionCheckpoint, archivedSessionTransition } from './session-continuation.mjs'
-import { verifyCandidate, verifyRecordedCandidate, historicalProducer, explicitFilenameProducer, receiptObservationProducer, receiptBindingProducer, endpointRouteProducer, previousPinnedProducer, programProfileHash } from './candidate.mjs'
+import { verifyCandidate, verifyRecordedCandidate, historicalProducer, explicitFilenameProducer, receiptObservationProducer, receiptBindingProducer, endpointRouteProducer, previousPinnedProducer, httpCapableProducer, programProfileHash } from './candidate.mjs'
 import { attemptEvidence, nativeRecoveryEvidence, recoveryConfigurationHash, verifyReplacementSecurity } from './host-recovery.mjs'
 import { producerReferenceAdapter } from './producer-reference.mjs'
 import { validateRuntimeRequest } from './runtime.mjs'
@@ -281,7 +281,7 @@ export async function transactProducerUpgrade(manager, options, { checkpoint = a
       const oldRecord = await manager.owned(selected, selected.current), newRecord = await manager.owned(selected, target)
       const oldRoot = path.join(manager.layout.packages, selected.current), nextRoot = path.join(manager.layout.packages, target)
       const old = await verifyRecordedCandidate(oldRoot, oldRecord), next = await verifyCandidate(nextRoot, target)
-      demand([historicalProducer,explicitFilenameProducer,receiptObservationProducer,receiptBindingProducer,endpointRouteProducer,previousPinnedProducer].includes(old.manifest.producer_commit) && next.manifest.producer_commit === catalog.components.transfer.revision && newRecord.profile === programProfileHash, 'producer_upgrade_version_unsupported')
+      demand([historicalProducer,explicitFilenameProducer,receiptObservationProducer,receiptBindingProducer,endpointRouteProducer,previousPinnedProducer,httpCapableProducer].includes(old.manifest.producer_commit) && next.manifest.producer_commit === catalog.components.transfer.revision && newRecord.profile === programProfileHash, 'producer_upgrade_version_unsupported')
       // Outside the selected package, only the exact recorded producer witness
       // can justify a reference change. It grants no directory adoption/write.
       const external=!ownedPluginRoot(manager,selected,manager.config.transfer?.pluginRoot)

@@ -42,7 +42,7 @@ manifest, assertion, synchronization or original `verify-fixtures.ps1` is edited
 That original verifier remains hash-checked; its aggregate invocation is replaced
 only in this downstream job.
 
-The current source pin is `3a75aa92b9ac7f7312ad3caaa4c85aa6a5ad4d1e`.
+The current source pin is `a235cc2b610aa7182890a6488bffdd25341e548c`.
 Its three API-base top-level tests are outside those two historical selections.
 The same packaged test executable runs `TestAPIBaseContractVectors` separately
 from the fixed source's `internal/transferclient` directory. That test reads its own

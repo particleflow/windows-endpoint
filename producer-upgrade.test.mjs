@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
 import { catalog, digest } from './endpoint.mjs'
-import { verifyCandidate, verifyRecordedCandidate, historicalProducer, receiptObservationProducer, receiptBindingProducer, endpointRouteProducer, previousPinnedProducer, profileForProducer, programProfileHash } from './candidate.mjs'
+import { verifyCandidate, verifyRecordedCandidate, historicalProducer, receiptObservationProducer, receiptBindingProducer, endpointRouteProducer, previousPinnedProducer, httpCapableProducer, profileForProducer, programProfileHash } from './candidate.mjs'
 import { programDeployment, runSelectedProgram } from './program-deployment.mjs'
 import { captureSessionContinuation, producerSessionTransition, sessionCheckpoint } from './session-continuation.mjs'
 import { transactProducerUpgrade, producerPendingName, producerStateEvidence } from './producer-upgrade.mjs'
@@ -56,10 +56,10 @@ test('the existing raw lifecycle attention fence prevents validation and compone
   assert.deepEqual(calls,[])
   assert.equal(state.attention,'producer_upgrade_pending')
 })
-async function fixture(t,{snapshot=true,agent=false,external=false,externalRecorded=false,baseline8351=false,baseline890=false,baselineB2=false,baselineC879=false,baselineBbdb=false,pluginRootOtherOwned=false,transfer='disabled',preexistingV6=false}={}) {
+async function fixture(t,{snapshot=true,agent=false,external=false,externalRecorded=false,baseline8351=false,baseline890=false,baselineB2=false,baselineC879=false,baselineBbdb=false,baselineHttpCapable=false,pluginRootOtherOwned=false,transfer='disabled',preexistingV6=false}={}) {
   const f=await nativeInstalledFixture(t), root=path.join(f.base,'host')
-  const oldSource=baselineBbdb?'9f8b0969f3a07d62bb10b04d9de5973888d4bd98':baselineC879?'c879d1622eeadcf02ec4b16590ade2cee6e1ac85':baselineB2?'b2b0bfc1e963db90af6f6faeb480833c31cb1916':baseline890?'890131d277e8d44301d4b4304f3054b761a4b38b':baseline8351?'8351b9c433922762f579c1c7b70e755d45b6ed2c':undefined
-  const oldProducer=baselineBbdb?previousPinnedProducer:baselineC879?endpointRouteProducer:baselineB2?receiptBindingProducer:baseline890?receiptObservationProducer:baseline8351?'1b7200d768c1231179725cfa2f85c8c3452882fb':historicalProducer
+  const oldSource=baselineHttpCapable?'bce2a40af03355130933cbaf8bd1a668e3cd5956':baselineBbdb?'9f8b0969f3a07d62bb10b04d9de5973888d4bd98':baselineC879?'c879d1622eeadcf02ec4b16590ade2cee6e1ac85':baselineB2?'b2b0bfc1e963db90af6f6faeb480833c31cb1916':baseline890?'890131d277e8d44301d4b4304f3054b761a4b38b':baseline8351?'8351b9c433922762f579c1c7b70e755d45b6ed2c':undefined
+  const oldProducer=baselineHttpCapable?httpCapableProducer:baselineBbdb?previousPinnedProducer:baselineC879?endpointRouteProducer:baselineB2?receiptBindingProducer:baseline890?receiptObservationProducer:baseline8351?'1b7200d768c1231179725cfa2f85c8c3452882fb':historicalProducer
   const old=await packageFixture(path.join(f.base,'old'),true,oldSource,oldProducer), next=await packageFixture(path.join(f.base,'new'),false)
   // The installed host can point pluginRoot at another owned generation than the
   // selected one. Both are our own immutable packages, so this is not external.
@@ -416,6 +416,25 @@ test('the installed previous-generation pair is recorded, so the host reads its 
   await assert.rejects(verifyCandidate(f.old.directory,f.old.hash),{code:'candidate_kind_or_producer_mismatch'})
   // The ordinary stopped switch still needs the explicit producer transaction.
   assert.equal((await f.manager.select(f.next.hash,'update')).reason,'producer_transaction_required')
+  assert.equal((await f.run()).state,'host_producer_selected')
+  assert.equal((await f.manager.read()).current,f.next.hash)
+  await f.preservedCheck()
+})
+
+test('the HTTP-capable generation stays readable after the reserved-host vector move',async t=>{
+  const f=await fixture(t,{baselineHttpCapable:true})
+  const record={hash:f.old.hash,profile:profileForProducer(httpCapableProducer)}
+  const verified=await verifyRecordedCandidate(f.old.directory,record)
+  assert.equal(verified.manifest.source_commit,'bce2a40af03355130933cbaf8bd1a668e3cd5956')
+  assert.equal(verified.manifest.producer_commit,httpCapableProducer)
+  // Recording the pair still refuses a fabricated profile or a new staging.
+  await assert.rejects(verifyRecordedCandidate(f.old.directory,{...record,profile:programProfileHash}),{code:'candidate_record_profile_mismatch'})
+  await assert.rejects(verifyCandidate(f.old.directory,f.old.hash),{code:'candidate_kind_or_producer_mismatch'})
+  // The moved pin still needs the explicit stopped producer transaction.
+  assert.equal((await f.manager.select(f.next.hash,'update')).reason,'producer_transaction_required')
+  const plan=await f.run({action:'plan-producer'})
+  assert.equal(plan.oldProducer,httpCapableProducer)
+  assert.equal(plan.newProducer,catalog.components.transfer.revision)
   assert.equal((await f.run()).state,'host_producer_selected')
   assert.equal((await f.manager.read()).current,f.next.hash)
   await f.preservedCheck()
