@@ -1,0 +1,104 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/particleflow/Memoh",
+  "pullRequest": 49,
+  "commit": "906f021ca9488a41911b41648a184ae2c3c7b2d6",
+  "baseCommit": "c29391f543743b879bb7e09055fd1c121cae0f7a",
+  "files": [
+    {
+      "sourcePath": ".github/workflows/windows-endpoint.yml",
+      "destinationPath": ".github/workflows/windows-endpoint.yml",
+      "sourceSha256": "0440f9aa2d83aace8a008ab1e50df47f8614867c14987804d59ec6b3de3892c4"
+    },
+    {
+      "sourcePath": "LICENSE",
+      "destinationPath": "LICENSE",
+      "sourceSha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
+    },
+    {
+      "sourcePath": "contrib/windows-endpoint/README.md",
+      "destinationPath": "docs/delivery.md",
+      "sourceSha256": "a3afc01868a14bdced15c02717f224c1f1782d816c04c5d732408e52f6c90657"
+    },
+    {
+      "sourcePath": "contrib/windows-endpoint/dependencies.json",
+      "destinationPath": "dependencies.json",
+      "sourceSha256": "e88c5679a304e492d6c953f08d5e0fb9b1e05c8ad2c1763939443dc5fa9e46c2"
+    },
+    {
+      "sourcePath": "contrib/windows-endpoint/endpoint.example.json",
+      "destinationPath": "endpoint.example.json",
+      "sourceSha256": "9da2c10776e2f165a14abd6983af8895bdf840664898ed347379a7787e855718"
+    },
+    {
+      "sourcePath": "contrib/windows-endpoint/endpoint.mjs",
+      "destinationPath": "endpoint.mjs",
+      "sourceSha256": "8ec5761a69a13f8f2b23282e1f142941ffc8fc118231c15063942ae52380dfee"
+    },
+    {
+      "sourcePath": "contrib/windows-endpoint/endpoint.ps1",
+      "destinationPath": "endpoint.ps1",
+      "sourceSha256": "010ae6b2bc0eef1f6707ceb04a34a344d27f3291a0959feda42142e3a3230e2e"
+    },
+    {
+      "sourcePath": "contrib/windows-endpoint/endpoint.test.mjs",
+      "destinationPath": "endpoint.test.mjs",
+      "sourceSha256": "558faf7d760371d8a0812ce136a043dec19fe7e83026e332a3905a9312bf9afa"
+    },
+    {
+      "sourcePath": "contrib/windows-endpoint/lifecycle.md",
+      "destinationPath": "docs/lifecycle.md",
+      "sourceSha256": "d144947d5e372c108725e06aaba1d0a3fbd98bd991b6e9ee2c3456dd4d8c9961"
+    },
+    {
+      "sourcePath": "contrib/windows-endpoint/lifecycle.mjs",
+      "destinationPath": "lifecycle.mjs",
+      "sourceSha256": "bd55d87b14861d4a41813c20837c0368270cb00db6d39308c80e2e5efc39151b"
+    },
+    {
+      "sourcePath": "contrib/windows-endpoint/lifecycle.test.mjs",
+      "destinationPath": "lifecycle.test.mjs",
+      "sourceSha256": "4e8b01fca01ec535a853c8955d41f962774f5073dc1696346feaa80ac14d27fd"
+    },
+    {
+      "sourcePath": "contrib/windows-endpoint/official-smoke/artifacts.json",
+      "destinationPath": "official-smoke/artifacts.json",
+      "sourceSha256": "39f9f4d7a98c54bc00826310e89a5048023272664ab60875b367923d38888b3f"
+    },
+    {
+      "sourcePath": "contrib/windows-endpoint/official-smoke/lifecycle.mjs",
+      "destinationPath": "official-smoke/lifecycle.mjs",
+      "sourceSha256": "82070de4d94b12e051ae6c853f182f86e1c8b0a6527d018273c3729d5dccc8fc"
+    },
+    {
+      "sourcePath": "contrib/windows-endpoint/official-smoke/package-lock.json",
+      "destinationPath": "official-smoke/package-lock.json",
+      "sourceSha256": "a14e8388c134382e6ce647eabecf092d7a0d175fb036732a083b744cccb1dab3"
+    },
+    {
+      "sourcePath": "contrib/windows-endpoint/official-smoke/package.json",
+      "destinationPath": "official-smoke/package.json",
+      "sourceSha256": "5f2fb8c9aa5f18f8fc4b6e202371bca17b336d88dee9690ddc0b2c6c4f5918c1"
+    },
+    {
+      "sourcePath": "contrib/windows-endpoint/official-smoke/prepare.ps1",
+      "destinationPath": "official-smoke/prepare.ps1",
+      "sourceSha256": "73d515fd08fc5fff1b8a1b69c158f66e98202fe78af1863e0f5189fe3a387b80"
+    },
+    {
+      "sourcePath": "contrib/windows-endpoint/official-smoke/verify.mjs",
+      "destinationPath": "official-smoke/verify.mjs",
+      "sourceSha256": "cdfd1fd830ff1699a2d64fd00ae81739d14c5f6dd64bdbde58971a2dd217cbb1"
+    },
+    {
+      "sourcePath": "contrib/windows-endpoint/owned-herdr.ps1",
+      "destinationPath": "owned-herdr.ps1",
+      "sourceSha256": "64bd917716e617606e7a40022872301b348a61a29ed5978d1ecc8ce10041ac39"
+    },
+    {
+      "sourcePath": "contrib/windows-endpoint/transfer-lifecycle-contract.md",
+      "destinationPath": "docs/transfer-lifecycle-contract.md",
+      "sourceSha256": "061f9c6cdfefd4b9c120351daeeb8cf9647c73d3023dc53411d4419948b047a1"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+node_modules/
+*.log
+.env
+.env.*
+/endpoint.json
+/bundle/
+/artifacts/
+/fixture/
+/packaging/__pycache__/

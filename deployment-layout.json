@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "references": {
+    "sourceRoot": "data/exports",
+    "herdrConfigRoot": "config/herdr",
+    "herdrStateRoot": "data/herdr",
+    "agenvoConfigDir": "config/agenvo",
+    "piConfigDir": "data/pi",
+    "transferConfigDir": "config/herdr/plugins/config/memoh.delivery",
+    "transferStateDir": "data/herdr/plugins/memoh.delivery"
+  }
+}
